@@ -1,0 +1,7 @@
+packages:
+  - apps/extension
+  - packages/*
+onlyBuiltDependencies:
+  - esbuild
+  - node-llama-cpp
+  - better-sqlite3

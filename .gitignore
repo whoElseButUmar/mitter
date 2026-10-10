@@ -1,0 +1,10 @@
+node_modules/
+**/.wxt/
+**/.output/
+dist/
+*.gguf
+.mitter/
+*.sqlite*
+.DS_Store
+
+apps/extension/public/mitter-page.js

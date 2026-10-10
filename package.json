@@ -1,0 +1,39 @@
+{
+  "name": "mitter",
+  "version": "1.0.0-rc.21",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.11.0",
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "scripts": {
+    "build": "pnpm build:host && pnpm build:extension && pnpm verify:build",
+    "build:host": "tsc -p tsconfig.host.json && node scripts/build-page.mjs",
+    "build:extension": "node scripts/check-security-policy.mjs && node scripts/check-extension-boundaries.mjs && pnpm --filter @mitter/extension build",
+    "check": "node scripts/check-security-policy.mjs && node scripts/check-extension-boundaries.mjs && tsc -p tsconfig.host.json --noEmit && pnpm --filter @mitter/extension typecheck",
+    "dev": "pnpm build:host && pnpm --filter @mitter/extension dev",
+    "setup": "node scripts/setup.mjs",
+    "mitter": "node dist/apps/host/src/cli.js",
+    "register": "pnpm verify:build && node scripts/register-host.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "models:install": "node scripts/install-models.mjs",
+    "prepare:terminal": "node scripts/prepare-terminal.mjs --repair",
+    "prepare:font": "node scripts/prepare-font.mjs",
+    "verify:build": "node scripts/verify-build.mjs"
+  },
+  "dependencies": {
+    "xstate": "5.33.2",
+    "better-sqlite3": "12.11.1",
+    "node-pty": "1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "typescript": "5.8.3"
+  },
+  "mitter": {
+    "modelRuntimes": {
+      "node-llama-cpp": "3.14.0"
+    }
+  }
+}

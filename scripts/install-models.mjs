@@ -1,0 +1,11 @@
+import {spawn} from 'node:child_process';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {readFileSync} from 'node:fs';
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const packages=JSON.parse(readFileSync(path.join(root,'package.json'),'utf8')).mitter.modelRuntimes;
+console.log('Installing local inference libraries (not model weights). This changes package.json and the lockfile. Network access is required for this installation only.');
+const args=['--yes','pnpm@10.11.0','add','--workspace-root','--save-optional',...Object.entries(packages).map(([name,version])=>`${name}@${version}`)];
+const child=spawn(process.platform==='win32'?'npx.cmd':'npx',args,{cwd:root,stdio:'inherit',shell:process.platform==='win32'});
+child.on('error',error=>{console.error(error.message);process.exitCode=1;});
+child.on('exit',code=>{process.exitCode=code??1;if(code===0)console.log('Run node scripts/doctor.mjs to check the optional libraries. Then configure your own local GGUF file path in Mitter.');});
