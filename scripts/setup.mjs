@@ -1,42 +1,102 @@
-import {spawn} from 'node:child_process';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
+import {
+  parseSetupArguments,
+  readBootstrapProject,
+  readPackageManager,
+  supportsSetupNode,
+} from './installation/bootstrap.mjs';
+import { errorMessage, isMainModule } from './helpers/runtime.mjs';
 
-const root=path.resolve(import.meta.dirname,'..');
-const args=process.argv.slice(2);
-const allowed=['--build-only','--chromium','--help'];
-if(args.some(arg=>!allowed.includes(arg))||new Set(args).size!==args.length){
-  console.error('Usage: node scripts/setup.mjs [--build-only] [--chromium]');
-  process.exit(1);
-}
-if(args.includes('--help')){
-  console.log('Install dependencies and build Miter. --build-only skips native-host registration; --chromium registers with Chromium.');
-  process.exit(0);
-}
-const [major,minor]=process.versions.node.split('.').map(Number);
-if(major<22||(major===22&&minor<16)){
-  console.error('Miter needs Node.js >=22.16.0.');
-  process.exit(1);
-}
-const win=process.platform==='win32';
-function run(program,args){
-  return new Promise((resolve,reject)=>{
-    const child=spawn(program,args,{cwd:root,stdio:'inherit',shell:win});
-    child.once('error',reject);
-    child.once('exit',code=>code===0?resolve():reject(Error(`${program} exited ${code}`)));
+const root = path.resolve(import.meta.dirname, '..');
+const windows = process.platform === 'win32';
+
+function run(program, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(program, args, {
+      cwd: root,
+      stdio: 'inherit',
+      shell: windows,
+    });
+
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`${program} exited ${code}`));
+      }
+    });
   });
 }
-const pnpm=(...args)=>run(win?'npx.cmd':'npx',['--yes','pnpm@10.11.0',...args]);
-try{
-  await pnpm('install','--frozen-lockfile');
-  // pnpm owns dependency build consent. The user makes any pending selections.
-  await pnpm('approve-builds');
-  await pnpm('build');
-  await run(process.execPath,['scripts/prepare-terminal.mjs','--repair']);
-  if(!args.includes('--build-only')){
-    await run(process.execPath,['scripts/register-host.mjs',...(args.includes('--chromium')?['--chromium']:[])]);
+
+async function setup() {
+  let options;
+
+  try {
+    options = parseSetupArguments(process.argv.slice(2));
+  } catch (error) {
+    console.error(errorMessage(error));
+    process.exitCode = 1;
+
+    return;
   }
-  console.log('Build ready. Load or reload apps/extension/.output/chrome-mv3 in Chrome. Keep this folder in place after registration.');
-}catch(error){
-  console.error('Setup stopped:',error.message);
-  process.exitCode=1;
+
+  if (options.help) {
+    console.log(
+      'Install dependencies and build Miter. --build-only skips native-host registration; ' +
+        '--chromium registers with Chromium.',
+    );
+
+    return;
+  }
+
+  if (!supportsSetupNode(process.versions.node)) {
+    console.error('Miter needs Node.js >=22.16.0.');
+    process.exitCode = 1;
+
+    return;
+  }
+
+  try {
+    const project = readBootstrapProject(root);
+    const packageManager = readPackageManager(project);
+    let program = 'npx';
+
+    if (windows) {
+      program = 'npx.cmd';
+    }
+
+    function pnpm(...args) {
+      return run(program, ['--yes', packageManager, ...args]);
+    }
+
+    await pnpm('install', '--no-frozen-lockfile');
+    // pnpm owns dependency build consent. The user makes any pending selections.
+    await pnpm('approve-builds');
+    await pnpm('build');
+    await run(process.execPath, ['scripts/prepare-terminal.mjs', '--repair']);
+
+    if (!options.buildOnly) {
+      const registrationArguments = ['scripts/register-host.mjs'];
+
+      if (options.chromium) {
+        registrationArguments.push('--chromium');
+      }
+
+      await run(process.execPath, registrationArguments);
+    }
+
+    console.log(
+      'Build ready. Load or reload apps/extension/.output/chrome-mv3 in Chrome. ' +
+        'Keep this folder in place after registration.',
+    );
+  } catch (error) {
+    console.error('Setup stopped:', errorMessage(error));
+    process.exitCode = 1;
+  }
+}
+
+if (isMainModule(import.meta.url)) {
+  await setup();
 }

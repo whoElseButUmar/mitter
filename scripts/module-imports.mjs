@@ -1,37 +1,96 @@
-/** Build-only syntax inspection. Using an AST avoids treating text in prompts,
- * comments, regexes or generated-code examples as real JavaScript imports. */
-const {default:ts}=await import(process.env.MITTER_TYPESCRIPT_MODULE||'typescript');
+import { parseSync, Visitor } from 'rolldown/utils';
 
-export function moduleReferences(source,fileName='module.ts') {
-  const file=ts.createSourceFile(fileName,source,ts.ScriptTarget.Latest,true);
-  const references=[];
-  const add=(node,value,typeOnly=false)=>{
-    if(typeof value==='string')references.push({specifier:value,typeOnly,line:file.getLineAndCharacterOfPosition(node.getStart(file)).line+1});
-  };
-  function visit(node) {
-    if(ts.isImportDeclaration(node)) {
-      const clause=node.importClause;
-      const named=clause?.namedBindings;
-      const allTypes=!!named&&ts.isNamedImports(named)&&named.elements.length>0&&named.elements.every(e=>e.isTypeOnly)&&!clause.name;
-      add(node,node.moduleSpecifier.text,!!clause?.isTypeOnly||allTypes);
-    } else if(ts.isExportDeclaration(node)&&node.moduleSpecifier) {
-      const named=node.exportClause;
-      const allTypes=!!named&&ts.isNamedExports(named)&&named.elements.length>0&&named.elements.every(e=>e.isTypeOnly);
-      add(node,node.moduleSpecifier.text,!!node.isTypeOnly||allTypes);
-    } else if(ts.isImportEqualsDeclaration(node)&&ts.isExternalModuleReference(node.moduleReference)) {
-      add(node,node.moduleReference.expression?.text,!!node.isTypeOnly);
-    } else if(ts.isCallExpression(node)&&(
-      node.expression.kind===ts.SyntaxKind.ImportKeyword||
-      (ts.isIdentifier(node.expression)&&node.expression.text==='require')
-    )) {
-      const arg=node.arguments[0];
-      if(arg&&(ts.isStringLiteral(arg)||ts.isNoSubstitutionTemplateLiteral(arg)))add(node,arg.text);
-    }
-    ts.forEachChild(node,visit);
+/** Inspect syntax so strings and comments cannot masquerade as module imports. */
+export function moduleReferences(source, filename = 'module.ts') {
+  const parsed = parseSync(filename, source);
+
+  if (parsed.errors.length > 0) {
+    const details = parsed.errors.map((error) => {
+      return error.message;
+    });
+
+    throw new Error('Cannot inspect ' + filename + ': ' + details.join('; '));
   }
-  visit(file);
+
+  const references = [];
+
+  function addReference(node, specifier, typeOnly = false) {
+    if (typeof specifier !== 'string') {
+      return;
+    }
+
+    const precedingLines = source.slice(0, node.start).split(/\r\n?|\n/);
+
+    references.push({
+      specifier,
+      typeOnly,
+      line: precedingLines.length,
+    });
+  }
+
+  function stringValue(node) {
+    if (node?.type === 'Literal') {
+      return node.value;
+    }
+
+    if (node?.type === 'TemplateLiteral' && node.expressions.length === 0) {
+      return node.quasis[0]?.value.cooked;
+    }
+
+    return undefined;
+  }
+
+  const visitor = new Visitor({
+    ImportDeclaration(node) {
+      const onlyNamedTypes =
+        node.specifiers.length > 0 &&
+        node.specifiers.every((specifier) => {
+          return specifier.importKind === 'type';
+        });
+
+      addReference(node, node.source.value, node.importKind === 'type' || onlyNamedTypes);
+    },
+
+    ExportNamedDeclaration(node) {
+      if (!node.source) {
+        return;
+      }
+
+      const onlyNamedTypes =
+        node.specifiers.length > 0 &&
+        node.specifiers.every((specifier) => {
+          return specifier.exportKind === 'type';
+        });
+
+      addReference(node, node.source.value, node.exportKind === 'type' || onlyNamedTypes);
+    },
+
+    ExportAllDeclaration(node) {
+      addReference(node, node.source.value, node.exportKind === 'type');
+    },
+
+    TSImportEqualsDeclaration(node) {
+      if (node.moduleReference.type === 'TSExternalModuleReference') {
+        addReference(node, stringValue(node.moduleReference.expression), node.importKind === 'type');
+      }
+    },
+
+    ImportExpression(node) {
+      addReference(node, stringValue(node.source));
+    },
+
+    CallExpression(node) {
+      if (node.callee.type === 'Identifier' && node.callee.name === 'require') {
+        addReference(node, stringValue(node.arguments[0]));
+      }
+    },
+  });
+
+  visitor.visit(parsed.program);
+
   return references;
 }
+
 export function isFrameworkSpecifier(value) {
   return /^(?:solid-js(?:\/|$)|wxt(?:\/|$)|@wxt-dev\/|#imports(?:\/|$))/.test(value);
 }

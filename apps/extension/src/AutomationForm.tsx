@@ -1,17 +1,79 @@
+import {
+  chatChoiceSchema,
+  mountStartSheet,
+  type StartSheetDependencies,
+} from '../../../packages/bridge/src/start-sheet';
+import { taskBoundarySchema, type TaskBoundary } from '../../../packages/protocol/src/index';
+import type { ViewRPC } from './ui/rpc';
+import { callResult } from './ui/rpc';
+import { requireElement } from './ui/dom';
+import { createChatStartCleanup } from './ui/chat-start-cleanup';
 import { onMount, onCleanup } from 'solid-js';
 import { Modal } from './components';
-import { mountStartSheet, type ChatChoice } from '../../../packages/bridge/src/start-sheet';
-export function AutomationForm(props:{close:()=>void;rpc:<T=unknown>(method:string,params?:Record<string,unknown>)=>Promise<T>;workerId:string;started:()=>void}) {
- let root!:HTMLDivElement;
- onMount(()=>{
-  const dispose=mountStartSheet(root,{
-   authorize:()=>chrome.permissions.request({origins:['https://chatgpt.com/*','https://chat.openai.com/*']}),
-   lastChat:()=>props.rpc<ChatChoice|null>('bridge.lastChat',{workerId:props.workerId}),
-   loadChats:()=>props.rpc<ChatChoice[]>('bridge.tabs'),
-   start:options=>props.rpc('bridge.start',{workerId:props.workerId,...options}),
-   stop:()=>props.rpc('bridge.stop',{workerId:props.workerId}),
-   close:props.close,started:props.started,
-  });onCleanup(dispose);
- });
- return <Modal title="Run with ChatGPT" close={props.close}><div ref={root}/></Modal>;
+type AutomationFormProps = {
+  close: () => void;
+  rpc: ViewRPC;
+  workerId: string;
+  expectedRun: TaskBoundary;
+  started: () => void;
+};
+
+export function createAutomationFormRequests(props: AutomationFormProps): StartSheetDependencies {
+  const { workerId, rpc, close, started } = props;
+  const expectedRun = taskBoundarySchema.parse(props.expectedRun);
+  const cleanup = createChatStartCleanup(rpc);
+  let alive = true;
+  onCleanup(() => {
+    alive = false;
+  });
+
+  return {
+    authorize: () => {
+      if (!alive) {
+        return Promise.resolve(false);
+      }
+      return chrome.permissions.request({
+        origins: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
+      });
+    },
+    lastChat: () => callResult(rpc, chatChoiceSchema.nullable(), 'bridge.lastChat', { workerId }),
+    loadChats: () => callResult(rpc, chatChoiceSchema.array(), 'bridge.tabs'),
+    start: (options) => {
+      if (!alive) {
+        return Promise.reject(new Error('This task dialog is closed. Review the task before starting.'));
+      }
+      return cleanup.start(() => rpc('bridge.start', { ...options, workerId, expectedRun }));
+    },
+    stop: cleanup.stop,
+    close: () => {
+      if (alive) {
+        alive = false;
+        close();
+      }
+    },
+    started: () => {
+      if (alive) {
+        started();
+      }
+    },
+  };
+}
+
+export function AutomationForm(props: AutomationFormProps) {
+  const requests = createAutomationFormRequests(props);
+  let root: HTMLDivElement | undefined;
+  onMount(() => {
+    const dispose = mountStartSheet(requireElement(root, 'AutomationForm root'), requests);
+    onCleanup(dispose);
+  });
+
+  return (
+    <Modal title="Run with ChatGPT" close={requests.close}>
+      <div
+        ref={(element) => {
+          root = element;
+        }}
+      />
+    </Modal>
+  );
 }

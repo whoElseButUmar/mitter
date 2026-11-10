@@ -1,39 +1,171 @@
-import {MAX_FRAME} from './index.js';
-const EVENT='miter.native-part/1';
-export const MAX_NATIVE_TRANSFER=32*1024*1024;
-const PART_CHARS=128000;
-/** Outgoing-only framing: the browser cannot use this to enlarge action input. */
-export function nativeMessages(message:unknown,transferId:string):unknown[]{
- const text=JSON.stringify(message),bytes=new TextEncoder().encode(text).byteLength;
- if(bytes<=MAX_FRAME)return [message];
- if(bytes>MAX_NATIVE_TRANSFER)throw new Error('Native response exceeds the 32 MB transfer limit.');
- const parts=Math.ceil(text.length/PART_CHARS);
- return Array.from({length:parts},(_,index)=>({event:EVENT,transferId,index,parts,characters:text.length,text:text.slice(index*PART_CHARS,(index+1)*PART_CHARS)}));
+import { MAX_FRAME } from './constants.js';
+import { parseSchema } from './helpers.js';
+import { isRecord } from './schemas/primitives.js';
+import {
+  nativeFragmentSchema,
+  NATIVE_PART_EVENT,
+  MAX_NATIVE_TRANSFER,
+  PART_CHARS,
+  type NativeFragment,
+} from './schemas/native-transfer.js';
+
+export { MAX_NATIVE_TRANSFER, nativeFragmentSchema, type NativeFragment } from './schemas/native-transfer.js';
+
+/** Outgoing-only framing; it cannot enlarge browser action input. */
+export function nativeMessages(message: unknown, transferId: string): unknown[] {
+  const serialized = JSON.stringify(message);
+
+  // JSON.stringify has no payload for undefined/functions/symbols. The legacy
+  // sender passed those through rather than treating them as fragmented data.
+  if (serialized === undefined) {
+    return [message];
+  }
+
+  const bytes = new TextEncoder().encode(serialized).byteLength;
+
+  if (bytes <= MAX_FRAME) {
+    return [message];
+  }
+
+  if (bytes > MAX_NATIVE_TRANSFER) {
+    throw new Error('Native response exceeds the 32 MB transfer limit.');
+  }
+
+  const parts = Math.ceil(serialized.length / PART_CHARS);
+
+  return Array.from({ length: parts }, (_, index) => ({
+    event: NATIVE_PART_EVENT,
+    transferId,
+    index,
+    parts,
+    characters: serialized.length,
+    text: serialized.slice(index * PART_CHARS, (index + 1) * PART_CHARS),
+  }));
 }
-interface Pending {parts:number;characters:number;next:number;received:number;text:string[];expires:number}
-/** Per-native-port decoder; bounded, ordered, expires stale partial responses. */
+
+/** In-memory assembly state, not a serialized protocol record. */
+type PendingTransfer = {
+  parts: number;
+  characters: number;
+  next: number;
+  received: number;
+  bytes: number;
+  trailingHighSurrogate: boolean;
+  text: string[];
+  expires: number;
+};
+
+/** Per-port, ordered decoder. Completed or passthrough messages remain unknown:
+ * callers must validate the method/event payload instead of assuming a type. */
 export class NativeMessageInbox {
- private pending=new Map<string,Pending>();
- constructor(private clock=()=>Date.now()){}
- accept(message:any):any|undefined{
-  const now=this.clock();for(const [id,p] of this.pending)if(p.expires<now)this.pending.delete(id);
-  if(message?.event!==EVENT)return message;
-  const {transferId,index,parts,characters,text}=message;
-  if(typeof transferId!=='string'||!/^[\w-]{1,100}$/.test(transferId)||!Number.isInteger(index)||!Number.isInteger(parts)||parts<2||parts>263||index<0||index>=parts||!Number.isInteger(characters)||characters<1||characters>MAX_NATIVE_TRANSFER||typeof text!=='string'||text.length>PART_CHARS)throw Error('Invalid native response fragment.');
-  let p=this.pending.get(transferId);
-  if(!p){if(index!==0||this.pending.size>=4)throw Error('Unexpected native response fragment.');p={parts,characters,next:0,received:0,text:[],expires:now+10000};this.pending.set(transferId,p);}
-  if(p.parts!==parts||p.characters!==characters||p.next!==index){this.pending.delete(transferId);throw Error('Out-of-order native response fragments.');}
-  p.received+=text.length;
-  if(p.received>characters){this.pending.delete(transferId);throw Error('Native response size mismatch.');}
-  p.text.push(text);p.next++;p.expires=now+10000;
-  if(p.next!==parts)return undefined;
-  this.pending.delete(transferId);
-  if(p.received!==characters)throw Error('Truncated native response.');
-  const payload=p.text.join('');
-  if(new TextEncoder().encode(payload).byteLength>MAX_NATIVE_TRANSFER)throw Error('Native response exceeds its byte limit.');
-  const result=JSON.parse(payload);
-  if(result?.event===EVENT)throw Error('Nested native response fragments are not supported.');
-  return result;
- }
- clear(){this.pending.clear();}
+  private readonly pending = new Map<string, PendingTransfer>();
+  private readonly clock: () => number;
+
+  constructor(clock: () => number = () => Date.now()) {
+    this.clock = clock;
+  }
+
+  accept(message: unknown): unknown {
+    const now = this.clock();
+
+    for (const [transferId, pending] of this.pending) {
+      if (pending.expires < now) {
+        this.pending.delete(transferId);
+      }
+    }
+
+    if (!isRecord(message) || message.event !== NATIVE_PART_EVENT) {
+      return message;
+    }
+
+    let fragment: NativeFragment;
+    try {
+      fragment = parseSchema(nativeFragmentSchema, message);
+    } catch (error) {
+      if (typeof message.transferId === 'string') {
+        this.pending.delete(message.transferId);
+      }
+      throw error;
+    }
+    const { transferId, index, parts, characters, text } = fragment;
+    let pending = this.pending.get(transferId);
+
+    if (!pending) {
+      if (index !== 0 || this.pending.size >= 4) {
+        throw new Error('Unexpected native response fragment.');
+      }
+
+      pending = {
+        parts,
+        characters,
+        next: 0,
+        received: 0,
+        bytes: 0,
+        trailingHighSurrogate: false,
+        text: [],
+        expires: now + 10_000,
+      };
+      this.pending.set(transferId, pending);
+    }
+
+    if (pending.parts !== parts || pending.characters !== characters || pending.next !== index) {
+      this.pending.delete(transferId);
+      throw new Error('Out-of-order native response fragments.');
+    }
+
+    pending.received += text.length;
+
+    if (pending.received > characters) {
+      this.pending.delete(transferId);
+      throw new Error('Native response size mismatch.');
+    }
+
+    pending.bytes += new TextEncoder().encode(text).byteLength;
+    if (text.length > 0) {
+      const first = text.charCodeAt(0);
+      if (pending.trailingHighSurrogate && first >= 0xdc00 && first <= 0xdfff) {
+        // Separate encodings count two replacement characters (6 bytes), while
+        // joining the split surrogate pair produces one code point (4 bytes).
+        pending.bytes -= 2;
+      }
+      const last = text.charCodeAt(text.length - 1);
+      pending.trailingHighSurrogate = last >= 0xd800 && last <= 0xdbff;
+    }
+    if (pending.bytes > MAX_NATIVE_TRANSFER) {
+      this.pending.delete(transferId);
+      throw new Error('Native response exceeds its byte limit.');
+    }
+
+    pending.text.push(text);
+    pending.next += 1;
+    pending.expires = now + 10_000;
+
+    if (pending.next !== parts) {
+      return undefined;
+    }
+
+    this.pending.delete(transferId);
+
+    if (pending.received !== characters) {
+      throw new Error('Truncated native response.');
+    }
+
+    const payload = pending.text.join('');
+
+    if (new TextEncoder().encode(payload).byteLength > MAX_NATIVE_TRANSFER) {
+      throw new Error('Native response exceeds its byte limit.');
+    }
+
+    const result: unknown = JSON.parse(payload);
+
+    if (isRecord(result) && result.event === NATIVE_PART_EVENT) {
+      throw new Error('Nested native response fragments are not supported.');
+    }
+
+    return result;
+  }
+
+  clear(): void {
+    this.pending.clear();
+  }
 }

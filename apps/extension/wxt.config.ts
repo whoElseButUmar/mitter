@@ -1,6 +1,7 @@
 import { defineConfig } from 'wxt';
 import solid from 'vite-plugin-solid';
 import { enforceExplicitImportPolicy } from './build/import-policy';
+
 export default defineConfig({
   // Keep WXT's implicit auto-import transform disabled. Shared packages use
   // ordinary identifiers such as `storage`; auto-importing them can inject
@@ -34,11 +35,18 @@ export default defineConfig({
     // https://github.com/chromium/chromium/blob/main/chrome/common/extensions/permissions/chrome_api_permissions.cc
     permissions: ['nativeMessaging', 'sidePanel', 'storage', 'clipboardWrite', 'scripting', 'fontSettings'],
     optional_permissions: ['clipboardRead', 'notifications'],
-    optional_host_permissions: ['https://chatgpt.com/*','https://chat.openai.com/*'],
+    optional_host_permissions: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
     action: { default_title: 'Open Miter' },
-    commands: { 'open-mitter': { suggested_key: { default: 'Ctrl+Shift+L' }, description: 'Open the Miter side panel' } },
-    icons: {16:'icon-16.png',32:'icon-32.png',48:'icon-48.png',128:'icon-128.png'},
+    commands: {
+      'open-mitter': { suggested_key: { default: 'Ctrl+Shift+L' }, description: 'Open the Miter side panel' },
+    },
+    icons: { 16: 'icon-16.png', 32: 'icon-32.png', 48: 'icon-48.png', 128: 'icon-128.png' },
     sandbox: { pages: ['preview-sandbox.html'] },
-    content_security_policy: { extension_pages: "script-src 'self'; object-src 'none'; frame-src 'self' blob:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' blob:", sandbox: "sandbox allow-scripts; script-src 'self' 'unsafe-inline'; child-src 'self' blob: about:; object-src 'none'" },
+    content_security_policy: {
+      extension_pages:
+        "script-src 'self'; object-src 'none'; frame-src 'self' blob:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' blob:",
+      sandbox:
+        "sandbox allow-scripts; script-src 'self' 'unsafe-inline'; child-src 'self' blob: about:; object-src 'none'",
+    },
   },
 });

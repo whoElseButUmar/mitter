@@ -3,7 +3,7 @@
   "version": "1.0.0-rc.21",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10.11.0",
+  "packageManager": "pnpm@12.11.2",
   "engines": {
     "node": ">=22.16.0"
   },
@@ -11,7 +11,17 @@
     "build": "pnpm build:host && pnpm build:extension && pnpm verify:build",
     "build:host": "tsc -p tsconfig.host.json && node scripts/build-page.mjs",
     "build:extension": "node scripts/check-security-policy.mjs && node scripts/check-extension-boundaries.mjs && pnpm --filter @mitter/extension build",
-    "check": "node scripts/check-security-policy.mjs && node scripts/check-extension-boundaries.mjs && tsc -p tsconfig.host.json --noEmit && pnpm --filter @mitter/extension typecheck",
+    "check": "pnpm check:standards && pnpm format:check && pnpm check:protocol && pnpm check:bridge && pnpm check:terminal && pnpm check:ui && pnpm check:host && pnpm check:extension && pnpm check:scripts",
+    "check:standards": "node scripts/check-source-standards.mjs",
+    "check:protocol": "pnpm --filter @mitter/protocol check",
+    "check:ui": "tsc -p packages/ui/tsconfig.json && node --import ./packages/bridge/src/runner/test-source-loader.mjs --test packages/ui/test/*.test.mjs",
+    "check:host": "tsc -p tsconfig.host.json --noEmit && tsc -p apps/host/src/core/service/tsconfig.json && node --import ./packages/bridge/src/runner/test-source-loader.mjs --test apps/host/test/*.test.mjs apps/inference/test/*.test.mjs apps/host/src/core/service/*.test.mjs",
+    "check:extension": "pnpm --filter @mitter/extension typecheck && node --import ./packages/bridge/src/runner/test-source-loader.mjs --test apps/extension/test/transport/*.test.mjs && node apps/extension/test/ui/run.mjs && node scripts/check-security-policy.mjs && node scripts/check-extension-boundaries.mjs",
+    "check:scripts": "node --test scripts/module-imports.test.mjs scripts/test/*.test.mjs scripts/release-checks/*.test.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check:bridge": "tsc -p packages/bridge/tsconfig.json && node --import ./packages/bridge/src/runner/test-source-loader.mjs --test packages/bridge/src/**/*.test.mjs packages/bridge/src/support.test.mjs packages/bridge/src/dom/chat-dom.test.ts",
+    "check:terminal": "tsc -p packages/terminal/tsconfig.json && node --experimental-strip-types --test packages/terminal/test/terminal.test.mjs",
     "dev": "pnpm build:host && pnpm --filter @mitter/extension dev",
     "setup": "node scripts/setup.mjs",
     "mitter": "node dist/apps/host/src/cli.js",
@@ -20,20 +30,26 @@
     "models:install": "node scripts/install-models.mjs",
     "prepare:terminal": "node scripts/prepare-terminal.mjs --repair",
     "prepare:font": "node scripts/prepare-font.mjs",
-    "verify:build": "node scripts/verify-build.mjs"
+    "verify:build": "node scripts/verify-build.mjs",
+    "verify:pty": "node --import ./packages/bridge/src/runner/test-source-loader.mjs apps/host/test/runtime-smoke.mjs",
+    "verify:chrome": "node scripts/release-checks/chrome.mjs",
+    "verify:fresh-install": "node scripts/release-checks/fresh-install.mjs"
   },
   "dependencies": {
+    "better-sqlite3": "13.0.3",
+    "node-pty": "1.1.0",
     "xstate": "5.33.2",
-    "better-sqlite3": "12.11.1",
-    "node-pty": "1.1.0"
+    "zod": "4.6.5"
   },
   "devDependencies": {
-    "@types/node": "22.20.4",
-    "typescript": "5.8.3"
+    "@types/node": "26.6.5",
+    "prettier": "3.9.10",
+    "rolldown": "1.2.13",
+    "typescript": "7.0.2"
   },
   "mitter": {
     "modelRuntimes": {
-      "node-llama-cpp": "3.14.0"
+      "node-llama-cpp": "3.22.1"
     }
   }
 }

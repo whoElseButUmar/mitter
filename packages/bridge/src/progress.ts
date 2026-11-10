@@ -1,56 +1,195 @@
-import {parseReceipt, type OutboundReceipt} from './message-wire.js';
+import { z } from 'zod';
+import { bridgeProgressSummarySchema } from '../../protocol/src/index.js';
+import { outboundReceiptSchema, parseReceipt } from './message-wire.js';
+import {
+  conversationUrlSchema,
+  identifierSchema,
+  nonNegativeIntegerSchema,
+  sha256Schema,
+} from './schemas/primitives.js';
 
-/** Durable task bookkeeping. No prompt/reply bodies, credentials, session token,
- * command approvals, or permission grants are stored in this record. Version is
- * deliberately independent of the application version. Old releases leave the
- * additive host KV entry alone; new releases must migrate rather than reset it. */
-export interface TaskProgress {
-  version:1; revision:number; workerId:string; projectId:string; goalHash:string;
-  turns:number; maxTurns:number; lowerBound:boolean;
-  activeMs:number; maxMinutes:number; startedAt:number; updatedAt:number;
-  stage:'ready'|'prepared'|'commit_intent'|'waiting_reply'|'local_batch'|'report_due'|'review'|'complete';
-  // A route observed immediately after Send is pinned separately from proof
-  // of message ownership. Optional, additive v1 field for older checkpoints.
-  conversationUrl?:string;
-  lastReceipt?:OutboundReceipt;
-  // Explicit user-approved recovery: exact validated envelope, not a task-wide bypass.
-  approvedReply?:{id:string;hash:string;url:string;at:number};
-  lastImportedId?:string; lastActionsHash?:string; repeats:number;
-  formatRepairs:number;
-  phase:string; reason:string; errorCode?:string;
-}
-const identifier=(x:unknown):x is string=>typeof x==='string'&&/^[a-zA-Z0-9_-]{1,100}$/.test(x);
-const hash=(x:unknown):x is string=>typeof x==='string'&&/^[a-f0-9]{64}$/.test(x);
-const integer=(x:unknown,max=Number.MAX_SAFE_INTEGER):x is number=>Number.isSafeInteger(x)&&Number(x)>=0&&Number(x)<=max;
-export function parseTaskProgress(raw:unknown):TaskProgress|undefined {
-  if(!raw||typeof raw!=='object'||Array.isArray(raw))return;
-  const v=raw as Record<string,unknown>;
-  if(v.version!==1||!integer(v.revision)||!identifier(v.workerId)||!identifier(v.projectId)||!hash(v.goalHash))return;
-  if(!integer(v.turns,100000)||!integer(v.maxTurns,100000)||Number(v.maxTurns)<1)return;
-  if(!integer(v.activeMs)||!integer(v.maxMinutes,100000)||Number(v.maxMinutes)<1||!integer(v.startedAt)||!integer(v.updatedAt))return;
-  if(!['ready','prepared','commit_intent','waiting_reply','local_batch','report_due','review','complete'].includes(String(v.stage))||typeof v.lowerBound!=='boolean'||!integer(v.repeats,100)||!integer(v.formatRepairs,100))return;
-  const p:TaskProgress={version:1,revision:v.revision,workerId:v.workerId,projectId:v.projectId,goalHash:v.goalHash,
-    turns:v.turns,maxTurns:v.maxTurns,lowerBound:v.lowerBound,activeMs:v.activeMs,maxMinutes:v.maxMinutes,
-    startedAt:v.startedAt,updatedAt:v.updatedAt,stage:v.stage as TaskProgress['stage'],repeats:v.repeats,formatRepairs:v.formatRepairs,
-    phase:typeof v.phase==='string'?v.phase.slice(0,40):'stopped',reason:typeof v.reason==='string'?v.reason.slice(0,500):'Progress saved.'};
-  if(typeof v.errorCode==='string'&&/^[A-Z0-9_]{1,64}$/.test(v.errorCode))p.errorCode=v.errorCode;
-  if(v.conversationUrl!==undefined){
-    if(typeof v.conversationUrl!=='string'||v.conversationUrl.length>600)return;
-    try{const u=new URL(v.conversationUrl);if(!['https://chatgpt.com','https://chat.openai.com'].includes(u.origin)||!/^\/(?:g\/[^/]+\/)?c\/[a-zA-Z0-9-]+$/.test(u.pathname)||u.search||u.hash)return;p.conversationUrl=u.origin+u.pathname;}catch{return;}
+export const taskProgressStageSchema = z
+  .enum([
+    'ready',
+    'prepared',
+    'commit_intent',
+    'waiting_reply',
+    'local_batch',
+    'report_due',
+    'review',
+    'complete',
+  ])
+  .describe('The saved step to resume without repeating a send or a local action.');
+
+export const approvedReplySchema = z
+  .object({
+    id: identifierSchema.describe('The reply selected by the user.'),
+    hash: sha256Schema.describe('A fingerprint of the complete validated reply.'),
+    url: conversationUrlSchema.describe('The conversation where the user selected the reply.'),
+    at: nonNegativeIntegerSchema.describe('When the user confirmed this exact reply.'),
+  })
+  .describe('Approval for one exact reply; it does not approve later replies or bypass file checks.');
+
+export type ApprovedReply = z.infer<typeof approvedReplySchema>;
+
+/** The version is independent of app releases. This record never stores prompt
+ * bodies, session tokens, command approvals, or permission grants. */
+const taskProgressFieldsSchema = z.object({
+  version: z.literal(1).describe('The saved progress format version.'),
+  revision: nonNegativeIntegerSchema.describe('The revision used to reject outdated saves.'),
+  workerId: identifierSchema.describe('The task whose progress is saved.'),
+  projectId: identifierSchema.describe('The project that owns the task.'),
+  goalHash: sha256Schema.describe('A fingerprint of the complete task goal.'),
+  turns: nonNegativeIntegerSchema.max(100000).describe('The automatic chat turns already reserved.'),
+  maxTurns: nonNegativeIntegerSchema.min(1).max(100000).describe('The saved automatic turn limit.'),
+  lowerBound: z
+    .boolean()
+    .describe('Earlier releases may have missed turns, so the count is a known minimum.'),
+  activeMs: nonNegativeIntegerSchema.describe('The task time used while active, in milliseconds.'),
+  maxMinutes: nonNegativeIntegerSchema.min(1).max(100000).describe('The saved active-time limit in minutes.'),
+  startedAt: nonNegativeIntegerSchema.describe('When this task first started recording progress.'),
+  updatedAt: nonNegativeIntegerSchema.describe('When this progress record was last saved.'),
+  stage: taskProgressStageSchema,
+  conversationUrl: conversationUrlSchema
+    .optional()
+    .describe('The pinned conversation, once its route is known.'),
+  lastReceipt: outboundReceiptSchema.optional().describe('The exact outgoing message waiting for its reply.'),
+  approvedReply: approvedReplySchema.optional().describe('An exact reply explicitly selected by the user.'),
+  lastImportedId: identifierSchema.optional().describe('The latest reply accepted by the local host.'),
+  lastActionsHash: sha256Schema.optional().describe('A fingerprint used to detect repeated action batches.'),
+  repeats: nonNegativeIntegerSchema.max(100).describe('Consecutive repeated action batches.'),
+  formatRepairs: nonNegativeIntegerSchema.max(100).describe('Reply correction attempts used so far.'),
+  phase: z.string().max(40).describe('The last published task status.'),
+  reason: z.string().max(500).describe('A short explanation of that status.'),
+  errorCode: z
+    .string()
+    .regex(/^[A-Z0-9_]{1,64}$/)
+    .optional()
+    .describe('A failure code when the task needs attention.'),
+});
+
+function checkReceiptBinding(
+  progress: z.infer<typeof taskProgressFieldsSchema>,
+  context: z.RefinementCtx,
+): void {
+  const receipt = progress.lastReceipt;
+
+  if (!receipt) {
+    return;
   }
-  if(v.approvedReply!==undefined){
-    const a=v.approvedReply as Record<string,unknown>;
-    if(!a||!identifier(a.id)||!hash(a.hash)||!integer(a.at)||typeof a.url!=='string'||a.url.length>600)return;
-    try{const u=new URL(a.url);if(!['https://chatgpt.com','https://chat.openai.com'].includes(u.origin)||!/^\/(?:g\/[^/]+\/)?c\/[a-zA-Z0-9-]+$/.test(u.pathname)||u.search||u.hash)return;}catch{return;}
-    p.approvedReply={id:a.id,hash:a.hash,url:a.url,at:a.at};
+
+  const sameTask = receipt.workerId === progress.workerId && receipt.projectId === progress.projectId;
+  const sameGoal = receipt.goalHash === progress.goalHash;
+
+  if (!sameTask || !sameGoal) {
+    context.addIssue({
+      code: 'custom',
+      path: ['lastReceipt'],
+      message: 'The saved message belongs to a different task, project, or goal.',
+    });
   }
-  if(v.lastReceipt!==undefined){const r=parseReceipt(v.lastReceipt);if(!r||r.workerId!==p.workerId||r.projectId!==p.projectId||r.goalHash!==p.goalHash)return;p.lastReceipt=r;}
-  if(v.lastImportedId!==undefined){if(!identifier(v.lastImportedId))return;p.lastImportedId=v.lastImportedId;}
-  if(v.lastActionsHash!==undefined){if(!hash(v.lastActionsHash))return;p.lastActionsHash=v.lastActionsHash;}
-  return p;
 }
-export const progressKey=(workerId:string)=>'mitter.taskProgress.v1.'+workerId;
-export function progressSummary(p:TaskProgress){
-  return {workerId:p.workerId,turns:p.turns,maxTurns:p.maxTurns,lowerBound:p.lowerBound,
-    activeMs:p.activeMs,maxMinutes:p.maxMinutes,startedAt:p.startedAt,phase:p.phase,reason:p.reason,errorCode:p.errorCode};
+
+export const taskProgressSchema = taskProgressFieldsSchema
+  .superRefine(checkReceiptBinding)
+  .describe('Durable task progress used to resume safely after a pause or restart.');
+
+export type TaskProgress = z.infer<typeof taskProgressSchema>;
+
+function readSavedPhase(value: unknown): string {
+  if (typeof value === 'string') {
+    return value.slice(0, 40);
+  }
+
+  return 'stopped';
+}
+
+function readSavedReason(value: unknown): string {
+  if (typeof value === 'string') {
+    return value.slice(0, 500);
+  }
+
+  return 'Progress saved.';
+}
+
+export const savedTaskProgressSchema = taskProgressFieldsSchema
+  .extend({
+    phase: z
+      .preprocess(readSavedPhase, z.string().max(40))
+      .describe('Legacy display phase clipped to forty characters, defaulting to stopped when unreadable.'),
+    reason: z
+      .preprocess(readSavedReason, z.string().max(500))
+      .describe('Legacy display reason clipped to five hundred characters, with a fallback when unreadable.'),
+    errorCode: taskProgressFieldsSchema.shape.errorCode
+      .catch(undefined)
+      .describe('A valid legacy failure code; malformed display hints are discarded.'),
+    lastReceipt: z
+      .preprocess(parseReceipt, outboundReceiptSchema)
+      .optional()
+      .describe(
+        'An optional migrated receipt; malformed required hashes or task bindings reject the record.',
+      ),
+    conversationUrl: conversationUrlSchema
+      .transform((address) => {
+        const url = new URL(address);
+        return url.origin + url.pathname;
+      })
+      .optional()
+      .describe('The supported saved conversation normalized to its origin and path, absent until binding.'),
+  })
+  .superRefine(checkReceiptBinding)
+  .transform((progress) => {
+    if (progress.errorCode === undefined) {
+      delete progress.errorCode;
+    }
+    return progress;
+  })
+  .describe('Legacy task progress normalized without resetting counters, bindings, receipts, or approvals.');
+
+export function parseTaskProgress(raw: unknown): TaskProgress | undefined {
+  const result = savedTaskProgressSchema.safeParse(raw);
+
+  if (!result.success) {
+    return;
+  }
+
+  return result.data;
+}
+
+export function progressKey(workerId: string): string {
+  return 'mitter.taskProgress.v1.' + workerId;
+}
+
+export const taskProgressSummarySchema = bridgeProgressSummarySchema
+  .extend(
+    taskProgressFieldsSchema.pick({
+      workerId: true,
+      turns: true,
+      maxTurns: true,
+      lowerBound: true,
+      activeMs: true,
+      maxMinutes: true,
+      startedAt: true,
+      phase: true,
+      reason: true,
+      errorCode: true,
+    }).shape,
+  )
+  .describe('Task counters, limits, and status without private message receipts.');
+
+export type TaskProgressSummary = z.infer<typeof taskProgressSummarySchema>;
+
+export function progressSummary(progress: TaskProgress): TaskProgressSummary {
+  return {
+    workerId: progress.workerId,
+    turns: progress.turns,
+    maxTurns: progress.maxTurns,
+    lowerBound: progress.lowerBound,
+    activeMs: progress.activeMs,
+    maxMinutes: progress.maxMinutes,
+    startedAt: progress.startedAt,
+    phase: progress.phase,
+    reason: progress.reason,
+    errorCode: progress.errorCode,
+  };
 }

@@ -1,31 +1,133 @@
-import { parseFileTarget,validateFileTarget } from '../../../packages/ui/src/file-target';
-import type { PreviewRPC } from '../../../packages/ui/src/preview';
-/** No workspace subscription and no mutation RPCs for a standalone viewer. */
-export function bindFilePreviewPort(port:chrome.runtime.Port,deps:{extensionId:string;viewerURL:string;rpc:PreviewRPC}):boolean {
- const url=port.sender?.url;
- if(port.name!=='miter-file-preview'||port.sender?.id!==deps.extensionId||!url||url.split(/[?#]/)[0]!==deps.viewerURL){try{port.disconnect();}catch{}return false;}
- let target;try{target=parseFileTarget(url);}catch{port.disconnect();return false;}
- const workerId=target.workerId;
- let closed=false;
- const inFlight=new Set<string>();
- const post=(message:unknown)=>{if(!closed)try{port.postMessage(message);}catch{closed=true;}};
- port.onDisconnect.addListener(()=>{closed=true;});
- port.onMessage.addListener(message=>{
-  if(closed||!message||typeof message.id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(message.id))return;
-  const id=message.id;
-  if(inFlight.has(id))return; // Do not emit a duplicate response for the same operation.
-  try{
-   if(message.method!=='worker.asset'||!message.params||message.params.workerId!==workerId)throw new Error('This viewer can only read files from its original task.');
-   validateFileTarget({workerId,path:message.params.path});
-   if(inFlight.size>=4)throw new Error('Too many pending preview reads. Retry after the current load.');
-   // Copy only the bounded read parameters, never arbitrary properties.
-   const {path,offset,length,stamp}=message.params;
-   inFlight.add(id);
-   void deps.rpc('worker.asset',{workerId,path,offset,length,...(stamp===undefined?{}:{stamp})})
-    .then(result=>post({id,ok:true,result}))
-    .catch(error=>post({id,ok:false,error:error instanceof Error?error.message:String(error)}))
-    .finally(()=>inFlight.delete(id));
-  }catch(error){post({id,ok:false,error:error instanceof Error?error.message:String(error)});}
- });
- return true;
+import { parseFileTarget } from '../../../packages/ui/src/file-target.js';
+import { assetRequestSchema, validateAssetChunk } from './schemas/preview.js';
+import { rpcRequestSchema } from './schemas/messages.js';
+import { documentURL, errorMessage } from './schemas/primitives.js';
+import type { NativeRPC } from './transport/native-host.js';
+
+type FilePreviewPortDependencies = {
+  extensionId: string;
+  viewerURL: string;
+  rpc: NativeRPC;
+};
+
+/** No workspace subscription or mutation RPCs for a standalone viewer. */
+export function bindFilePreviewPort(
+  port: chrome.runtime.Port,
+  dependencies: FilePreviewPortDependencies,
+): (() => void) | undefined {
+  const sender = port.sender;
+  const url = sender?.url;
+
+  if (
+    port.name !== 'miter-file-preview' ||
+    sender?.id !== dependencies.extensionId ||
+    !url ||
+    documentURL(url) !== dependencies.viewerURL ||
+    (sender.frameId !== undefined && sender.frameId !== 0) ||
+    (sender.origin !== undefined && sender.origin !== 'chrome-extension://' + dependencies.extensionId)
+  ) {
+    try {
+      port.disconnect();
+    } catch {}
+
+    return undefined;
+  }
+
+  let workerId: string;
+
+  try {
+    workerId = parseFileTarget(url).workerId;
+  } catch {
+    try {
+      port.disconnect();
+    } catch {}
+
+    return undefined;
+  }
+
+  let closed = false;
+  const inFlight = new Set<string>();
+  const dispose = (): void => {
+    if (closed) {
+      return;
+    }
+
+    closed = true;
+    inFlight.clear();
+
+    try {
+      try {
+        port.onMessage.removeListener(onMessage);
+      } finally {
+        port.onDisconnect.removeListener(dispose);
+      }
+    } catch (error) {
+      console.warn('Miter file port listeners could not be detached.', error);
+    }
+  };
+  const close = (): void => {
+    dispose();
+
+    try {
+      port.disconnect();
+    } catch {}
+  };
+  const post = (message: unknown): void => {
+    if (closed) {
+      return;
+    }
+
+    try {
+      port.postMessage(message);
+    } catch {
+      close();
+    }
+  };
+
+  const onMessage = (raw: unknown): void => {
+    const header = rpcRequestSchema.safeParse(raw);
+
+    if (closed || !header.success || inFlight.has(header.data.id)) {
+      return;
+    }
+
+    const id = header.data.id;
+
+    try {
+      const request = assetRequestSchema.parse(header.data);
+
+      if (request.params.workerId !== workerId) {
+        throw new Error('This viewer can only read files from its original task.');
+      }
+
+      if (inFlight.size >= 4) {
+        throw new Error('Too many pending preview reads. Retry after the current load.');
+      }
+
+      inFlight.add(id);
+      void dependencies
+        .rpc('worker.asset', header.data.params)
+        .then((result) =>
+          post({
+            id,
+            ok: true,
+            result: validateAssetChunk(result, request.params),
+          }),
+        )
+        .catch((error) => post({ id, ok: false, error: errorMessage(error) }))
+        .finally(() => inFlight.delete(id));
+    } catch (error) {
+      post({ id, ok: false, error: errorMessage(error) });
+    }
+  };
+
+  try {
+    port.onDisconnect.addListener(dispose);
+    port.onMessage.addListener(onMessage);
+  } catch (error) {
+    close();
+    throw error;
+  }
+
+  return dispose;
 }

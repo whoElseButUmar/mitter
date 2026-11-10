@@ -1,47 +1,63 @@
-import type { Settings } from './index.js';
-import { integer, object, only, text } from './index.js';
+import { object, only, parseSchema } from './helpers.js';
+import { isRecord } from './schemas/primitives.js';
+import { settingsSchema, type Settings } from './schemas/model-settings.js';
 
-/** Shared by the host and UI. Unknown persisted fields are not runtime options. */
+export { settingsSchema } from './schemas/model-settings.js';
+
+/** Shared defaults do not load, delete or download model files. */
 export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
-  coderModelPath: '', contextSize: 8192, maxTokens: 2048, gpu: 'auto',
+  coderModelPath: '',
+  contextSize: 8192,
+  maxTokens: 2048,
+  gpu: 'auto',
 });
-const SETTINGS_KEYS = Object.keys(DEFAULT_SETTINGS);
 
-/** RPC input is strict: unsupported fields never grant new capabilities. */
+/** RPC input is strict; only this legacy boundary supplies nullish defaults. */
 export function parseModelSettings(value: unknown): Settings {
-  const s = object(value, 'settings');
-  only(s, SETTINGS_KEYS);
-  const gpu = s.gpu ?? DEFAULT_SETTINGS.gpu;
-  if (gpu !== 'auto' && gpu !== 'cpu') throw new Error('Choose auto or cpu.');
-  const next: Settings = {
-    coderModelPath: text(s.coderModelPath ?? '', 'model path', 2000, true),
-    contextSize: integer(s.contextSize ?? DEFAULT_SETTINGS.contextSize, 'context', 2048, 32768),
-    maxTokens: integer(s.maxTokens ?? DEFAULT_SETTINGS.maxTokens, 'output tokens', 256, 8192),
+  const settings = object(value, 'settings');
+  only(settings, Object.keys(settingsSchema.shape));
+
+  const gpu = parseSchema(settingsSchema.shape.gpu, settings.gpu ?? DEFAULT_SETTINGS.gpu);
+
+  return parseSchema(settingsSchema, {
+    coderModelPath: settings.coderModelPath ?? DEFAULT_SETTINGS.coderModelPath,
+    contextSize: settings.contextSize ?? DEFAULT_SETTINGS.contextSize,
+    maxTokens: settings.maxTokens ?? DEFAULT_SETTINGS.maxTokens,
     gpu,
-  };
-  if (next.maxTokens >= next.contextSize) throw new Error('Output token limit must be smaller than context size.');
-  return next;
+  });
 }
 
-/** Upgrade old settings by copying supported own properties, never spreading a
- * saved object. No model files are loaded, deleted or downloaded during startup.
- * Invalid values get bounded defaults instead of preventing the host from booting. */
+/** Upgrade persisted supported own properties only. Invalid saved values receive
+ * bounded defaults instead of preventing startup; unknown keys are ignored. */
 export function restoreModelSettings(value: unknown): Settings {
-  const s = value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown> : {};
-  const own = (key: keyof Settings): unknown => Object.hasOwn(s, key) ? s[key] : undefined;
-  const bounded = (key: 'contextSize' | 'maxTokens', min: number, max: number): number => {
-    const n = own(key);
-    return typeof n === 'number' && Number.isSafeInteger(n) && n >= min && n <= max
-      ? n : DEFAULT_SETTINGS[key];
+  let settings: Record<string, unknown> = {};
+
+  if (isRecord(value)) {
+    settings = value;
+  }
+
+  function own(key: keyof Settings): unknown {
+    if (Object.hasOwn(settings, key)) {
+      return settings[key];
+    }
+
+    return undefined;
+  }
+
+  const restored = {
+    coderModelPath: settingsSchema.shape.coderModelPath
+      .catch(DEFAULT_SETTINGS.coderModelPath)
+      .parse(own('coderModelPath')),
+    contextSize: settingsSchema.shape.contextSize
+      .catch(DEFAULT_SETTINGS.contextSize)
+      .parse(own('contextSize')),
+    maxTokens: settingsSchema.shape.maxTokens.catch(DEFAULT_SETTINGS.maxTokens).parse(own('maxTokens')),
+    gpu: settingsSchema.shape.gpu.catch(DEFAULT_SETTINGS.gpu).parse(own('gpu')),
   };
-  const modelPath = own('coderModelPath');
-  const contextSize = bounded('contextSize', 2048, 32768);
-  const maxTokens = bounded('maxTokens', 256, 8192);
-  return {
-    coderModelPath: typeof modelPath === 'string' && modelPath.length <= 2000 && !modelPath.includes('\0') ? modelPath : '',
-    contextSize,
-    maxTokens: maxTokens < contextSize ? maxTokens : Math.min(DEFAULT_SETTINGS.maxTokens, Math.floor(contextSize / 2)),
-    gpu: own('gpu') === 'cpu' ? 'cpu' : 'auto',
-  };
+
+  if (restored.maxTokens >= restored.contextSize) {
+    restored.maxTokens = Math.min(DEFAULT_SETTINGS.maxTokens, Math.floor(restored.contextSize / 2));
+  }
+
+  return restored;
 }

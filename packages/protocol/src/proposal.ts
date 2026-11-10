@@ -1,33 +1,91 @@
-import {parseAction,parseEnvelopeWith,object,only,text,MAX_TEXT,type Action,type Envelope} from './index.js';
-import {ReplyValidationError,editBaseError} from './validation.js';
+/** Model wire input is not an executable plan. Only the native host can resolve
+ * a recorded read reference into an executable exact-hash precondition. */
+import { object, only, parseSchema } from './helpers.js';
+import { parseAction } from './parsing/actions.js';
+import { parseEnvelopeWith } from './parsing/envelopes.js';
+import {
+  readReferenceSchema,
+  referencedWriteSchema,
+  referencedReplaceSchema,
+  type ProposalAction,
+} from './schemas/actions.js';
+import type { ProposalEnvelope } from './schemas/envelopes.js';
+import { ReplyValidationError, editBaseError } from './validation.js';
 
-/** Model wire input is NOT an executable plan. Only the native host can resolve
- * a read reference to a recorded SHA-256 and produce an executable Envelope.
- * Legacy exact-hash replies stay supported for saved conversations/queues. */
-export type ReferencedEdit =
-  | {type:'write';path:string;content:string;base:string}
-  | {type:'replace';path:string;before:string;after:string;base:string};
-export type ProposalAction=Action|ReferencedEdit;
-export type ProposalEnvelope=Omit<Envelope,'actions'>&{actions:ProposalAction[]};
-export const isReadReference=(value:unknown):value is string=>typeof value==='string'&&/^r_[a-f0-9]{16}$/.test(value);
-export function parseProposalAction(value:unknown):ProposalAction {
-  const a=object(value,'action');
-  if(a.type!=='write'&&a.type!=='replace')return parseAction(a);
-  if(a.base!==undefined&&a.expectedHash!==undefined)throw new ReplyValidationError({stage:'schema',code:'BASE_CONFLICT',field:'base',message:'An edit must use either base or expectedHash, never both.'});
-  if(a.base===undefined){
-    if(a.expectedHash===undefined)throw new ReplyValidationError({stage:'schema',code:'BASE_REQUIRED',field:'base',message:'An edit needs a recorded read base or an exact expectedHash. No default/current version is assumed.'});
-    return parseAction(a);
-  }
-  if(!isReadReference(a.base)&&a.base!=='missing'||a.type==='replace'&&a.base==='missing')throw editBaseError('base');
-  if(a.type==='write'){
-    only(a,['type','path','content','base']);
-    return {type:'write',path:text(a.path,'path',1000),content:text(a.content,'content',MAX_TEXT,true),base:a.base as string};
-  }
-  only(a,['type','path','before','after','base']);
-  return {type:'replace',path:text(a.path,'path',1000),before:text(a.before,'before',MAX_TEXT),after:text(a.after,'after',MAX_TEXT,true),base:a.base as string};
+export {
+  readReferenceSchema,
+  referencedEditSchema,
+  proposalActionSchema,
+  type ReferencedEdit,
+  type ProposalAction,
+} from './schemas/actions.js';
+export { proposalEnvelopeSchema, type ProposalEnvelope } from './schemas/envelopes.js';
+
+export function isReadReference(value: unknown): value is string {
+  return readReferenceSchema.safeParse(value).success;
 }
-export function parseProposalEnvelope(input:string):ProposalEnvelope {
-  const e=parseEnvelopeWith(input,parseProposalAction);
-  for(let i=0;i<e.actions.length-1;i++)if(e.actions[i]!.type==='finish')throw new ReplyValidationError({stage:'schema',code:'FINISH_ORDER',actionIndex:i,field:'type',message:'finish must be the final action in a batch.'});
-  return e;
+
+export function parseProposalAction(value: unknown): ProposalAction {
+  const action = object(value, 'action');
+
+  if (action.type !== 'write' && action.type !== 'replace') {
+    return parseAction(action);
+  }
+
+  if (action.base !== undefined && action.expectedHash !== undefined) {
+    throw new ReplyValidationError({
+      stage: 'schema',
+      code: 'BASE_CONFLICT',
+      field: 'base',
+      message: 'An edit must use either base or expectedHash, never both.',
+    });
+  }
+
+  if (action.base === undefined) {
+    if (action.expectedHash === undefined) {
+      throw new ReplyValidationError({
+        stage: 'schema',
+        code: 'BASE_REQUIRED',
+        field: 'base',
+        message:
+          'An edit needs a recorded read base or an exact expectedHash. ' +
+          'No default/current version is assumed.',
+      });
+    }
+
+    return parseAction(action);
+  }
+
+  if (
+    (!isReadReference(action.base) && action.base !== 'missing') ||
+    (action.type === 'replace' && action.base === 'missing')
+  ) {
+    throw editBaseError('base');
+  }
+
+  if (action.type === 'write') {
+    only(action, Object.keys(referencedWriteSchema.shape));
+    return parseSchema(referencedWriteSchema, action);
+  }
+
+  only(action, Object.keys(referencedReplaceSchema.shape));
+  return parseSchema(referencedReplaceSchema, action);
+}
+
+export function parseProposalEnvelope(input: string): ProposalEnvelope {
+  const envelope = parseEnvelopeWith(input, parseProposalAction);
+
+  for (const [index, action] of envelope.actions.entries()) {
+    if (action.type === 'finish' && index < envelope.actions.length - 1) {
+      throw new ReplyValidationError({
+        stage: 'schema',
+        code: 'FINISH_ORDER',
+        actionIndex: index,
+        field: 'type',
+        message: 'finish must be the final action in a batch.',
+      });
+    }
+  }
+
+  return envelope;
 }

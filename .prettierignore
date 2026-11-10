@@ -1,0 +1,10 @@
+node_modules/
+.pnpm-store/
+dist/
+**/.output/
+**/.wxt/
+**/.cache/
+coverage/
+pnpm-lock.yaml
+apps/extension/public/mitter-page.js
+apps/extension/public/preview-sandbox.js

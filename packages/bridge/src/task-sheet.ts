@@ -1,115 +1,388 @@
-import {mountDraftRewrite} from '../../ui/src/draft-rewrite.js';
-import type {RewriteRequest} from '../../protocol/src/rewrite.js';
+import { requiredElement } from './sheets/required-element.js';
+import { mountDraftRewrite, type DraftRewriteOptions } from '../../ui/src/draft-rewrite.js';
+import type { RewriteRequest } from '../../protocol/src/rewrite.js';
 import { enhanceSelects } from '../../ui/src/select.js';
-import type { Check, Project } from '../../protocol/src/index.js';
+import type { Check, Project, Worker } from '../../protocol/src/index.js';
+import { identifierSchema } from './schemas/primitives.js';
+import {
+  coreRpcRegistry,
+  parseRpcParams,
+  parseRpcResult,
+  RpcResultValidationError,
+} from '../../protocol/src/rpc.js';
+import { NativeRequestTimeout } from './native-request.js';
 import { buildTaskBrief, suggestedTaskName } from '../../protocol/src/task-brief.js';
-export interface TaskSheetDependencies {
+import { taskSheetTemplate } from './sheets/task-template.js';
+
+export type TaskSheetDependencies = {
   projects: Project[];
   selectedProjectId?: string;
   /** Project is captured when opening its task sheet; not a selectable field. */
   scopedProjectId?: string;
   authorize(): Promise<boolean>;
-  create(params: Record<string, unknown>): Promise<{id: string}>;
-  created(id: string): void;
-  start(id: string, mode: 'handoff'|'local'): Promise<unknown>;
-  stop(id: string, mode: 'handoff'|'local'): Promise<unknown>;
-  rewrite?(request:RewriteRequest,signal:AbortSignal):Promise<string>;
+  create(params: Record<string, unknown>): Promise<unknown>;
+  created(taskId: string): void;
+  start(taskId: string, mode: 'handoff' | 'local'): Promise<unknown>;
+  stop(taskId: string, mode: 'handoff' | 'local'): Promise<unknown>;
+  rewrite?(request: RewriteRequest, signal: AbortSignal): Promise<string>;
   close(): void;
-}
+};
+
 /** Exact production task form, mounted by Solid. Also exercised in Chromium
  * without a substitute mock UI. User text is never inserted as HTML. */
 export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): () => void {
-  const scoped = deps.scopedProjectId ? deps.projects.find(p => p.id === deps.scopedProjectId) : undefined;
-  if (deps.scopedProjectId && !scoped) throw new Error('This project is no longer available. Open a project before creating a task.');
-  root.innerHTML = `<form data-task-form>
-    <label class="field" data-project-field><span>Project</span><select data-project required></select></label>
-    <label class="field"><span>What should Miter do?</span><textarea data-goal required maxlength="4000" rows="3" placeholder="Make me a skeuomorphic tic-tac-toe game." autofocus></textarea><small>A sentence is enough. Miter adds a build brief and works through it.</small></label>
-    <div class="task-rewrite" data-task-rewrite></div>
-    <label class="field"><span>Work in</span><select data-workspace><option value="shared">Current folder / branch</option><option value="worktree">New isolated Git worktree</option></select><small>Worktrees require a clean, committed Git repository.</small></label>
-    <details class="form-advanced"><summary>Options</summary>
-      <label class="field"><span>Task name</span><input data-name maxlength="60" placeholder="Named automatically"/></label>
-      <label class="field"><span>Completion checks</span><select data-rule><option value="human">No extra checks</option><option value="exists">A file exists</option><option value="contains">A file contains this text</option><option value="command">A registered test command passes</option></select></label>
-      <label class="field" data-path-field hidden><span>Project-relative file</span><input data-path placeholder="index.html" disabled/></label>
-      <label class="field" data-text-field hidden><span>Expected text</span><input data-text disabled/></label>
-      <label class="field" data-profile-field hidden><span>Command profile</span><select data-profile disabled></select><small>Register test commands in the task’s Tools menu.</small></label>
-      <label class="field"><span>Coding source</span><select data-mode><option value="handoff">ChatGPT conversation</option><option value="local">Local coding model</option></select></label>
-      <label class="checkline"><input data-start-now type="checkbox" checked/><span>Start after creating the task</span></label>
-      <details class="brief-preview"><summary>Preview Miter’s build brief</summary><div data-brief></div></details>
-    </details>
-    <p class="task-disclosure" data-disclosure>Start shares this task and its project results with ChatGPT. Commands still need your approval.</p>
-    <p class="error" data-error role="alert" hidden></p>
-    <div class="button-row end"><button type="button" data-cancel>Cancel</button><button type="submit" class="primary" data-create>Start task</button></div>
-  </form>`;
-  const get = <T extends HTMLElement>(selector: string) => root.querySelector<T>(selector)!;
-  const form = get<HTMLFormElement>('[data-task-form]'), goal = get<HTMLTextAreaElement>('[data-goal]');
-  const project = get<HTMLSelectElement>('[data-project]'), name = get<HTMLInputElement>('[data-name]');
-  const mode = get<HTMLSelectElement>('[data-mode]'), rule = get<HTMLSelectElement>('[data-rule]');
-  const startNow = get<HTMLInputElement>('[data-start-now]'), submit = get<HTMLButtonElement>('[data-create]');
-  const error = get<HTMLElement>('[data-error]'), disclosure = get<HTMLElement>('[data-disclosure]');
-  let alive = true, busy = false, completed = false, startingId = '', startingMode: 'handoff'|'local' = 'handoff';
-  for (const p of deps.projects) { const option = document.createElement('option'); option.value = p.id; option.textContent = p.name; project.add(option); }
-  if (scoped) { project.value = scoped.id; project.disabled = true; get('[data-project-field]').hidden = true; }
-  else if (deps.projects.some(p => p.id === deps.selectedProjectId)) project.value = deps.selectedProjectId!;
+  let scopedProject: Project | undefined;
+  if (deps.scopedProjectId) {
+    scopedProject = deps.projects.find((project) => project.id === deps.scopedProjectId);
+  }
+  if (deps.scopedProjectId && !scopedProject) {
+    throw new Error('This project is no longer available. Open a project before creating a task.');
+  }
+
+  root.innerHTML = taskSheetTemplate;
+
+  const form = requiredElement(root, '[data-task-form]', HTMLFormElement);
+  const goalInput = requiredElement(root, '[data-goal]', HTMLTextAreaElement);
+  const projectSelect = requiredElement(root, '[data-project]', HTMLSelectElement);
+  const nameInput = requiredElement(root, '[data-name]', HTMLInputElement);
+  const modeSelect = requiredElement(root, '[data-mode]', HTMLSelectElement);
+  const ruleSelect = requiredElement(root, '[data-rule]', HTMLSelectElement);
+  const workspaceSelect = requiredElement(root, '[data-workspace]', HTMLSelectElement);
+  const startNowInput = requiredElement(root, '[data-start-now]', HTMLInputElement);
+  const submitButton = requiredElement(root, '[data-create]', HTMLButtonElement);
+  const errorMessage = requiredElement(root, '[data-error]', HTMLElement);
+  const disclosure = requiredElement(root, '[data-disclosure]', HTMLElement);
+  const pathField = requiredElement(root, '[data-path-field]', HTMLElement);
+  const pathInput = requiredElement(root, '[data-path]', HTMLInputElement);
+  const textField = requiredElement(root, '[data-text-field]', HTMLElement);
+  const expectedTextInput = requiredElement(root, '[data-text]', HTMLInputElement);
+  const profileField = requiredElement(root, '[data-profile-field]', HTMLElement);
+  const profileSelect = requiredElement(root, '[data-profile]', HTMLSelectElement);
+  const briefContainer = requiredElement(root, '[data-brief]', HTMLElement);
+
+  let alive = true;
+  let busy = false;
+  let completed = false;
+  let startingTaskId = '';
+  let startingMode: 'handoff' | 'local' = 'handoff';
+  let selects: ReturnType<typeof enhanceSelects> | undefined;
+
+  for (const project of deps.projects) {
+    const option = document.createElement('option');
+    option.value = project.id;
+    option.textContent = project.name;
+    projectSelect.add(option);
+  }
+
+  if (scopedProject) {
+    projectSelect.value = scopedProject.id;
+    projectSelect.disabled = true;
+    requiredElement(root, '[data-project-field]', HTMLElement).hidden = true;
+  } else {
+    const selectedProject = deps.projects.find((project) => project.id === deps.selectedProjectId);
+    if (selectedProject) {
+      projectSelect.value = selectedProject.id;
+    }
+  }
+
   // A disabled, hidden native control retains the form source for compatibility;
   // submission always uses the captured project ID, never a later UI selection.
-  const selectedProject = () => scoped?.id || project.value;
-  let selects: ReturnType<typeof enhanceSelects> | undefined;
-  function profiles() {
-    const select = get<HTMLSelectElement>('[data-profile]'); select.replaceChildren();
-    const option = document.createElement('option'); option.value = ''; option.textContent = 'Choose a registered command'; select.add(option);
-    for (const p of deps.projects.find(p => p.id === selectedProject())?.profiles || []) { const o = document.createElement('option'); o.value = p.id; o.textContent = p.label; select.add(o); }
+  const selectedProjectId = () => scopedProject?.id || projectSelect.value;
+
+  function updateCommandProfiles() {
+    profileSelect.replaceChildren();
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Choose a registered command';
+    profileSelect.add(placeholder);
+
+    const profiles = deps.projects.find((project) => project.id === selectedProjectId())?.profiles || [];
+    for (const profile of profiles) {
+      const option = document.createElement('option');
+      option.value = profile.id;
+      option.textContent = profile.label;
+      profileSelect.add(option);
+    }
   }
-  function update() {
-    submit.textContent = startNow.checked ? 'Start task' : 'Create task';
-    disclosure.textContent = !startNow.checked ? 'Creates a task without starting it.' : mode.value === 'local' ? 'Uses your configured local models. Commands still need your approval.' : 'Start shares this task and its project results with ChatGPT. Commands still need your approval.';
-    for (const [field, input, visible] of [['[data-path-field]','[data-path]', ['exists','contains'].includes(rule.value)], ['[data-text-field]','[data-text]',rule.value === 'contains'],['[data-profile-field]','[data-profile]',rule.value === 'command']] as const) {
-      get(field).hidden = !visible;
-      const control = get<HTMLInputElement|HTMLSelectElement>(input); control.disabled = !visible; control.required = visible;
+
+  function renderSubmissionDetails() {
+    if (!startNowInput.checked) {
+      submitButton.textContent = 'Create task';
+      disclosure.textContent = 'Creates a task without starting it.';
+      return;
     }
-    const brief = buildTaskBrief(goal.value), container = get('[data-brief]'); container.replaceChildren();
-    name.placeholder = goal.value.trim() ? brief.title : 'Named automatically';
-    for (const [heading, items] of [['Build', brief.approach], ['Quality', brief.quality], ['Defaults — your request comes first', brief.defaults]] as const) {
-      const h = document.createElement('h3'); h.textContent = heading; container.append(h);
-      const ul = document.createElement('ul'); for (const item of items) { const li = document.createElement('li'); li.textContent = item; ul.append(li); } container.append(ul);
+
+    submitButton.textContent = 'Start task';
+    if (modeSelect.value === 'local') {
+      disclosure.textContent = 'Uses your configured local models. Commands still need your approval.';
+    } else {
+      disclosure.textContent =
+        'Start shares this task and its project results with ChatGPT. Commands still need your approval.';
     }
+  }
+
+  function updateCompletionFields() {
+    const completionFields = [
+      {
+        field: pathField,
+        control: pathInput,
+        visible: ['exists', 'contains'].includes(ruleSelect.value),
+      },
+      {
+        field: textField,
+        control: expectedTextInput,
+        visible: ruleSelect.value === 'contains',
+      },
+      {
+        field: profileField,
+        control: profileSelect,
+        visible: ruleSelect.value === 'command',
+      },
+    ];
+
+    for (const { field, control, visible } of completionFields) {
+      field.hidden = !visible;
+      control.disabled = !visible;
+      control.required = visible;
+    }
+  }
+
+  function renderBriefPreview() {
+    const brief = buildTaskBrief(goalInput.value);
+    briefContainer.replaceChildren();
+    if (goalInput.value.trim()) {
+      nameInput.placeholder = brief.title;
+    } else {
+      nameInput.placeholder = 'Named automatically';
+    }
+
+    const sections = [
+      { heading: 'Build', items: brief.approach },
+      { heading: 'Quality', items: brief.quality },
+      { heading: 'Defaults — your request comes first', items: brief.defaults },
+    ];
+    for (const { heading, items } of sections) {
+      const title = document.createElement('h3');
+      title.textContent = heading;
+      briefContainer.append(title);
+
+      const list = document.createElement('ul');
+      for (const item of items) {
+        const entry = document.createElement('li');
+        entry.textContent = item;
+        list.append(entry);
+      }
+      briefContainer.append(list);
+    }
+  }
+
+  function refreshForm() {
+    renderSubmissionDetails();
+    updateCompletionFields();
+    renderBriefPreview();
     selects?.refresh();
   }
-  profiles(); update();
+
+  function completionChecks(): Check[] {
+    switch (ruleSelect.value) {
+      case 'human':
+        return [];
+      case 'command':
+        return [{ type: 'command', profileId: profileSelect.value }];
+      case 'exists':
+        return [{ type: 'exists', path: pathInput.value }];
+      default:
+        return [
+          {
+            type: 'contains',
+            path: pathInput.value,
+            text: expectedTextInput.value,
+          },
+        ];
+    }
+  }
+
+  updateCommandProfiles();
+  refreshForm();
   selects = enhanceSelects(root);
-  const rewrite=mountDraftRewrite(get('[data-task-rewrite]'),goal,{rewrite:deps.rewrite,busyChanged:rewriting=>{submit.disabled=busy||rewriting;}});
-  project.addEventListener('change', () => { profiles(); selects?.refresh(); }); goal.addEventListener('input', update);
-  rule.addEventListener('change', update); mode.addEventListener('change', update); startNow.addEventListener('change', update);
-  get('[data-cancel]').addEventListener('click', () => deps.close());
-  form.addEventListener('submit', async event => {
-    event.preventDefault(); if (busy || rewrite.busy || !form.reportValidity()) return;
-    const cleanGoal = goal.value.replace(/^The goal:\s*/i, '').trim();
-    if (!cleanGoal) { goal.setCustomValidity('Describe the result you need.'); goal.reportValidity(); goal.setCustomValidity(''); return; }
-    const selectedMode = mode.value as 'handoff'|'local', shouldStart = startNow.checked;
-    const checks: Check[] = rule.value === 'human' ? [] : rule.value === 'command' ? [{type:'command',profileId:get<HTMLSelectElement>('[data-profile]').value}]
-      : rule.value === 'exists' ? [{type:'exists',path:get<HTMLInputElement>('[data-path]').value}]
-      : [{type:'contains',path:get<HTMLInputElement>('[data-path]').value,text:get<HTMLInputElement>('[data-text]').value}];
-    const params = {workspaceMode:get<HTMLSelectElement>('[data-workspace]').value,name:name.value.trim() || suggestedTaskName(cleanGoal), goal:cleanGoal, projectId:selectedProject(), checks, mode:selectedMode,maxIterations:15,maxMinutes:30};
-    busy = true; rewrite.setDisabled(true); submit.disabled = true; submit.textContent = shouldStart ? 'Starting…' : 'Creating…'; error.hidden = true;
+
+  const rewriteOptions: DraftRewriteOptions = {
+    busyChanged: (rewriting) => {
+      submitButton.disabled = busy || rewriting;
+    },
+  };
+  const rewrite = deps.rewrite;
+  if (rewrite !== undefined) {
+    rewriteOptions.rewrite = rewrite;
+  }
+  const draftRewrite = mountDraftRewrite(
+    requiredElement(root, '[data-task-rewrite]', HTMLElement),
+    goalInput,
+    rewriteOptions,
+  );
+
+  async function stopCreatedTask(taskId: string, mode: 'handoff' | 'local'): Promise<void> {
+    const stopped = await deps.stop(taskId, mode);
+    if (mode === 'local') {
+      parseRpcResult(coreRpcRegistry, 'worker.pause', stopped);
+    }
+  }
+
+  async function submitTask(event: SubmitEvent) {
+    event.preventDefault();
+    if (busy || completed || draftRewrite.busy || !form.reportValidity()) {
+      return;
+    }
+
+    const cleanGoal = goalInput.value.replace(/^The goal:\s*/i, '').trim();
+    if (!cleanGoal) {
+      goalInput.setCustomValidity('Describe the result you need.');
+      goalInput.reportValidity();
+      goalInput.setCustomValidity('');
+      return;
+    }
+
+    const selectedMode = modeSelect.value;
+    if (selectedMode !== 'handoff' && selectedMode !== 'local') {
+      modeSelect.setCustomValidity('Choose a coding source.');
+      modeSelect.reportValidity();
+      modeSelect.setCustomValidity('');
+      return;
+    }
+
+    const shouldStart = startNowInput.checked;
+    const params = {
+      workspaceMode: workspaceSelect.value,
+      name: nameInput.value.trim() || suggestedTaskName(cleanGoal),
+      goal: cleanGoal,
+      projectId: selectedProjectId(),
+      checks: completionChecks(),
+      mode: selectedMode,
+      maxIterations: 15,
+      maxMinutes: 30,
+    };
+
+    busy = true;
+    draftRewrite.setDisabled(true);
+    submitButton.disabled = true;
+    if (shouldStart) {
+      submitButton.textContent = 'Starting…';
+    } else {
+      submitButton.textContent = 'Creating…';
+    }
+    errorMessage.hidden = true;
+
     try {
+      parseRpcParams(coreRpcRegistry, 'worker.create', params);
       // Directly from the click/submit event: preserve Chrome's user gesture.
-      if (shouldStart && selectedMode === 'handoff' && !await deps.authorize()) throw new Error('ChatGPT access was not granted. No task was started.');
-      if (!alive) return;
-      const task = await deps.create(params); deps.created(task.id);
-      if (!alive) return; // Closing while creation was pending never starts it.
-      if (shouldStart) {
-        startingId = task.id; startingMode = selectedMode;
-        try { await deps.start(task.id, selectedMode); }
-        catch (e) {
-          // The task already exists. Do not let a retry create a duplicate.
-          completed = true; deps.close(); throw e;
-        }
-        if (!alive) { await deps.stop(task.id, selectedMode).catch(() => {}); return; }
+      if (shouldStart && selectedMode === 'handoff' && !(await deps.authorize())) {
+        throw new Error('ChatGPT access was not granted. No task was started.');
       }
-      completed = true; deps.close();
-    } catch (e) {
-      if (alive) { error.textContent = e instanceof Error ? e.message : String(e); error.hidden = false; }
-    } finally { if (alive) { busy = false; rewrite.setDisabled(false); submit.disabled = rewrite.busy; update(); } }
+      if (!alive) {
+        return;
+      }
+
+      let task: Worker;
+      try {
+        task = parseRpcResult(coreRpcRegistry, 'worker.create', await deps.create(params));
+      } catch (error) {
+        // Creation may already have committed. An invalid or missing receipt
+        // cannot authorize a second creation from this form.
+        if (error instanceof NativeRequestTimeout || error instanceof RpcResultValidationError) {
+          completed = true;
+        }
+        throw error;
+      }
+      const identity = identifierSchema.safeParse(task.id);
+      if (!identity.success) {
+        completed = true;
+        throw new Error(
+          'The host returned an invalid task-creation identity. Check saved tasks before creating another.',
+          { cause: identity.error },
+        );
+      }
+      if (task.projectId !== params.projectId || task.mode !== selectedMode) {
+        completed = true;
+        throw new Error(
+          'The task-creation result belongs to another project or coding source. Check saved tasks before creating another.',
+        );
+      }
+      deps.created(task.id);
+      if (!alive) {
+        return;
+      } // Closing while creation was pending never starts it.
+
+      if (shouldStart) {
+        startingTaskId = task.id;
+        startingMode = selectedMode;
+        try {
+          const started = await deps.start(task.id, selectedMode);
+          if (selectedMode === 'local') {
+            parseRpcResult(coreRpcRegistry, 'worker.run', started);
+          }
+        } catch (error) {
+          // The task already exists. Do not let a retry create a duplicate.
+          completed = true;
+          if (alive) {
+            deps.close();
+          }
+          throw error;
+        }
+        if (!alive) {
+          await stopCreatedTask(task.id, selectedMode).catch(() => {});
+          return;
+        }
+      }
+
+      completed = true;
+      deps.close();
+    } catch (error) {
+      if (alive) {
+        if (error instanceof Error) {
+          errorMessage.textContent = error.message;
+        } else {
+          errorMessage.textContent = String(error);
+        }
+        if (completed && error instanceof NativeRequestTimeout) {
+          errorMessage.textContent += ' Check saved tasks before creating another.';
+        }
+        errorMessage.hidden = false;
+      }
+    } finally {
+      if (alive) {
+        busy = false;
+        draftRewrite.setDisabled(completed);
+        submitButton.disabled = completed || draftRewrite.busy;
+        refreshForm();
+      }
+    }
+  }
+
+  projectSelect.addEventListener('change', () => {
+    updateCommandProfiles();
+    selects?.refresh();
   });
-  queueMicrotask(() => { if (alive) goal.focus(); });
-  return () => { alive = false; if (!completed && startingId) void deps.stop(startingId, startingMode).catch(() => {}); rewrite.dispose(); selects?.dispose(); root.replaceChildren(); };
+  goalInput.addEventListener('input', refreshForm);
+  ruleSelect.addEventListener('change', refreshForm);
+  modeSelect.addEventListener('change', refreshForm);
+  startNowInput.addEventListener('change', refreshForm);
+  requiredElement(root, '[data-cancel]', HTMLElement).addEventListener('click', () => deps.close());
+  form.addEventListener('submit', submitTask);
+
+  queueMicrotask(() => {
+    if (alive) {
+      goalInput.focus();
+    }
+  });
+
+  return function disposeTaskSheet() {
+    alive = false;
+    if (!completed && startingTaskId) {
+      void stopCreatedTask(startingTaskId, startingMode).catch(() => {});
+    }
+
+    draftRewrite.dispose();
+    selects?.dispose();
+    root.replaceChildren();
+  };
 }

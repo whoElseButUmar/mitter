@@ -1,140 +1,448 @@
-import os from 'node:os';
 import path from 'node:path';
-import {promises as fs, constants} from 'node:fs';
-import {randomUUID} from 'node:crypto';
-import {loadPtyRuntime} from './pty-runtime.js';
-import type {Snapshot} from '../../../../packages/protocol/src/index.js';
-import {terminalObject,terminalFields,terminalId,dimension,MAX_INPUT,type TerminalInfo,type TerminalRead,type TerminalFrame} from '../../../../packages/terminal/src/protocol.js';
+import { randomUUID } from 'node:crypto';
+import { loadPtyRuntime } from './pty-runtime.js';
+import type { Snapshot } from '../../../../packages/protocol/src/index.js';
+import type { TerminalInfo } from '../../../../packages/terminal/src/protocol.js';
+import { terminalRequestSchema } from './terminal/requests.js';
+import { terminalLaunch } from './terminal/launch.js';
+import { appendTerminalOutput, readTerminalOutput } from './terminal/session-buffer.js';
+import type { TerminalSession } from './terminal/session-buffer.js';
+import type { PtyFactory, PtySubscription } from './terminal/pty-adapter.js';
+import { errorMessage } from './types.js';
 
-export interface PtyProcess {
-  pid:number; write(data:string):void; resize(cols:number,rows:number):void;
-  kill(signal?:string):void; pause():void; resume():void;
-  onData(fn:(data:string)=>void):{dispose():void};
-  onExit(fn:(event:{exitCode:number;signal?:number})=>void):{dispose():void};
+export type { PtyProcess, PtyFactory } from './terminal/pty-adapter.js';
+
+type ManagedTerminalSession = TerminalSession & {
+  cleanupFailures: unknown[];
+  cleanupInProgress: boolean;
+};
+
+function terminalCleanupError(message: string, failures: unknown[]): AggregateError {
+  const causes = [...new Set(failures)];
+  const details = causes.map(errorMessage).join('; ');
+
+  return new AggregateError(causes, message + ': ' + details);
 }
-export interface PtyFactory { spawn(shell:string,args:string[],options:{name:string;cwd:string;env:Record<string,string>;cols:number;rows:number;encoding:'utf8'}):PtyProcess }
-interface Session {
-  info:Omit<TerminalInfo,'owned'|'occupied'>; pty:PtyProcess; owner?:string;
-  frames:TerminalFrame[]; next:number; ack:number; delivered:number; bytes:number;
-  subscriptions:{dispose():void}[]; closed:boolean;
-}
-const HIGH_WATER=512*1024,LOW_WATER=128*1024,HISTORY=128*1024,READ_LIMIT=64*1024;
-/** Real PTYs live only in this host. Buffers are bounded, in memory, never in
- * snapshots, reports, the debug console or SQLite. No model holds this object. */
+
+/** Real PTYs live only in this host. Their bounded buffers never enter worker
+ * snapshots, reports, logs or SQLite. The model has no terminal capability. */
+
 export class TerminalManager {
-  private sessions=new Map<string,Session>();
-  private loading?:Promise<PtyFactory>;private disposed=false;private creating=0;
-  constructor(private snapshot:()=>Snapshot,private load:()=>Promise<PtyFactory>=loadPtyRuntime){}
-  async dispatch(method:string,raw:unknown):Promise<unknown> {
-    if(this.disposed)throw Error('The terminal host is closed.');
-    const p=terminalObject(raw),clientId=terminalId(p.clientId);
-    switch(method){
-      case 'terminal.list':terminalFields(p,['clientId','projectId']);return this.list(clientId,p.projectId===undefined?undefined:terminalId(p.projectId));
-      case 'terminal.create':terminalFields(p,['clientId','projectId','workerId','cols','rows','confirm']);
-        if(p.confirm!==true)throw Error('Starting a real local shell requires your confirmation.');
-        return this.create(clientId,terminalId(p.projectId),p.workerId===undefined?undefined:terminalId(p.workerId),dimension(p.cols,10,500),dimension(p.rows,2,300));
-      case 'terminal.attach':terminalFields(p,['clientId','sessionId']);return this.attach(clientId,terminalId(p.sessionId));
-      case 'terminal.read':terminalFields(p,['clientId','sessionId','after']);return this.read(clientId,terminalId(p.sessionId),dimension(p.after,0,Number.MAX_SAFE_INTEGER));
-      case 'terminal.write':terminalFields(p,['clientId','sessionId','data']);{
-        const s=this.owned(clientId,terminalId(p.sessionId));
-        if(s.info.exited)throw Error('This shell has exited. Open a new terminal.');
-        if(typeof p.data!=='string'||p.data.length>MAX_INPUT)throw Error('Terminal input is too large.');
-        // Raw user input, including control characters, goes to the PTY—not a shell command wrapper.
-        s.pty.write(p.data);return {written:true};
+  private sessions = new Map<string, ManagedTerminalSession>();
+  private loading: Promise<PtyFactory> | undefined = undefined;
+  private disposed = false;
+  private creating = 0;
+
+  constructor(
+    private snapshot: () => Snapshot,
+    private load: () => Promise<PtyFactory> = loadPtyRuntime,
+  ) {}
+
+  async dispatch(method: string, raw: unknown): Promise<unknown> {
+    if (this.disposed) {
+      throw new Error('The terminal host is closed.');
+    }
+
+    const request = terminalRequestSchema.parse({
+      method,
+      params: raw,
+    });
+    const clientId = request.params.clientId;
+
+    switch (request.method) {
+      case 'terminal.list': {
+        return this.list(clientId, request.params.projectId);
       }
-      case 'terminal.resize':terminalFields(p,['clientId','sessionId','cols','rows']);{
-        const s=this.owned(clientId,terminalId(p.sessionId)),cols=dimension(p.cols,10,500),rows=dimension(p.rows,2,300);
-        if(!s.info.exited)s.pty.resize(cols,rows);s.info.cols=cols;s.info.rows=rows;return {resized:true};
+      case 'terminal.create': {
+        const params = request.params;
+
+        return this.create(clientId, params.projectId, params.workerId, params.cols, params.rows);
       }
-      case 'terminal.close':terminalFields(p,['clientId','sessionId','confirm']);{
-        if(p.confirm!==true)throw Error('Closing a shell requires confirmation.');
-        const s=this.owned(clientId,terminalId(p.sessionId));this.closeSession(s);return {closed:true};
+      case 'terminal.attach': {
+        return this.attach(clientId, request.params.sessionId);
       }
-      case 'terminal.release':terminalFields(p,['clientId','sessionId']);{
-        const s=this.owned(clientId,terminalId(p.sessionId));s.owner=undefined;return {released:true};
+      case 'terminal.read': {
+        const session = this.owned(clientId, request.params.sessionId);
+
+        return readTerminalOutput(session, request.params.after);
       }
-      case 'terminal.disconnect':terminalFields(p,['clientId']);for(const s of this.sessions.values())if(s.owner===clientId)s.owner=undefined;return {released:true};
-      default:throw Error('Unsupported terminal operation.');
+      case 'terminal.write': {
+        const session = this.owned(clientId, request.params.sessionId);
+
+        if (session.info.exited) {
+          throw new Error('This shell has exited. Open a new terminal.');
+        }
+
+        // Raw human input, including controls, goes directly to the PTY.
+        session.pty.write(request.params.data);
+
+        return {
+          written: true,
+        };
+      }
+      case 'terminal.resize': {
+        const params = request.params;
+        const session = this.owned(clientId, params.sessionId);
+
+        if (!session.info.exited) {
+          session.pty.resize(params.cols, params.rows);
+        }
+        session.info.cols = params.cols;
+        session.info.rows = params.rows;
+
+        return {
+          resized: true,
+        };
+      }
+      case 'terminal.close': {
+        const session = this.owned(clientId, request.params.sessionId);
+        const failures = this.closeSession(session);
+
+        if (failures.length) {
+          throw terminalCleanupError(
+            `Terminal ${session.info.id} (PID ${session.info.pid}) could not close cleanly`,
+            failures,
+          );
+        }
+
+        return {
+          closed: true,
+        };
+      }
+      case 'terminal.release': {
+        this.owned(clientId, request.params.sessionId).owner = undefined;
+
+        return {
+          released: true,
+        };
+      }
+      case 'terminal.disconnect': {
+        for (const session of this.sessions.values()) {
+          if (session.owner === clientId) {
+            session.owner = undefined;
+          }
+        }
+
+        return {
+          released: true,
+        };
+      }
     }
   }
-  private list(clientId:string,projectId?:string):TerminalInfo[]{return [...this.sessions.values()].filter(s=>!projectId||s.info.projectId===projectId).map(s=>({...s.info,owned:s.owner===clientId,occupied:!!s.owner&&s.owner!==clientId}));}
-  private owned(clientId:string,id:string):Session {
-    const s=this.sessions.get(id);if(!s||s.closed)throw Error('This terminal no longer exists.');
-    if(s.owner!==clientId)throw Error('This terminal is attached to another view. Close or release that view first.');return s;
+
+  private list(clientId: string, projectId?: string): TerminalInfo[] {
+    return [...this.sessions.values()]
+      .filter((session) => !session.closed && (!projectId || session.info.projectId === projectId))
+      .map((session) => ({
+        ...session.info,
+        owned: session.owner === clientId,
+        occupied: !!session.owner && session.owner !== clientId,
+      }));
   }
-  private async create(clientId:string,projectId:string,workerId:string|undefined,cols:number,rows:number):Promise<TerminalInfo>{
-    if(this.sessions.size+this.creating>=8)throw Error('Close a terminal before opening another (maximum 8).');
+
+  private owned(clientId: string, id: string): ManagedTerminalSession {
+    const session = this.sessions.get(id);
+
+    if (!session || session.closed) {
+      throw new Error('This terminal no longer exists.');
+    }
+
+    if (session.owner !== clientId) {
+      throw new Error('This terminal is attached to another view. Close or release that view first.');
+    }
+
+    return session;
+  }
+
+  private async create(
+    clientId: string,
+    projectId: string,
+    workerId: string | undefined,
+    cols: number,
+    rows: number,
+  ): Promise<TerminalInfo> {
+    if (this.sessions.size + this.creating >= 8) {
+      throw new Error('Close a terminal before opening another (maximum 8).');
+    }
     this.creating++;
-    try{
-      const snapshot=this.snapshot(),project=snapshot.projects.find(p=>p.id===projectId);
-      if(!project)throw Error('Open a registered project first.');
-      const worker=workerId?snapshot.workers.find(w=>w.id===workerId&&w.projectId===projectId):undefined;
-      if(workerId&&!worker)throw Error('The task does not belong to this project.');
-      const requested=worker?.worktree?.root||project.root,cwd=await fs.realpath(requested);
-      if(cwd!==requested||!(await fs.stat(cwd)).isDirectory())throw Error('The project folder changed. Reopen it before starting a shell.');
-      let shell=process.platform==='win32'?path.join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'):(os.userInfo().shell||process.env.SHELL||(process.platform==='darwin'?'/bin/zsh':'/bin/bash'));
-      if(!path.isAbsolute(shell)||/[\0\r\n]/.test(shell))throw Error('Your login shell path is invalid.');
-      await fs.access(shell,constants.X_OK);
-      const factory=await (this.loading??=this.load().catch(error=>{this.loading=undefined;throw error;}));
-      if(this.disposed)throw Error('The terminal host closed while starting.');
-      // Normal user environment is intentional for a human-operated shell. It is
-      // not returned by any RPC and never forwarded to the coding agent.
-      const env:Record<string,string>={};for(const [key,value] of Object.entries(process.env))if(value!==undefined)env[key]=value;
-      delete env.NODE_OPTIONS;delete env.ELECTRON_RUN_AS_NODE;
-      env.TERM='xterm-256color';env.COLORTERM='truecolor';env.TERM_PROGRAM='Miter';
-      const pty=factory.spawn(shell,process.platform==='win32'?['-NoLogo']:['-l'],{name:'xterm-256color',cwd,env,cols,rows,encoding:'utf8'});
-      const id=randomUUID(),s:Session={info:{id,projectId,workerId,title:path.basename(shell),cwd,shell,pid:pty.pid,cols,rows,createdAt:Date.now(),exited:false,paused:false},pty,owner:clientId,frames:[],next:0,ack:0,delivered:0,bytes:0,subscriptions:[],closed:false};
-      this.sessions.set(id,s);
-      s.subscriptions.push(pty.onData(data=>this.output(s,data)),pty.onExit(e=>{if(s.closed)return;s.info.exited=true;s.info.exitCode=e.exitCode;s.info.paused=false;}));
-      return {...s.info,owned:true,occupied:false};
-    }finally{this.creating--;}
+
+    try {
+      const launch = await terminalLaunch(this.snapshot(), projectId, workerId, cols, rows);
+      const factory = await (this.loading ??= this.load().catch((error) => {
+        this.loading = undefined;
+
+        throw error;
+      }));
+
+      if (this.disposed) {
+        throw new Error('The terminal host closed while starting.');
+      }
+
+      const pty = factory.spawn(launch.shell, launch.args, launch.options);
+      const id = randomUUID();
+      const session: ManagedTerminalSession = {
+        info: {
+          id,
+          projectId,
+          workerId,
+          title: path.basename(launch.shell),
+          cwd: launch.options.cwd,
+          shell: launch.shell,
+          pid: pty.pid,
+          cols,
+          rows,
+          createdAt: Date.now(),
+          exited: false,
+          paused: false,
+        },
+        pty,
+        owner: clientId,
+        frames: [],
+        next: 0,
+        ack: 0,
+        delivered: 0,
+        bytes: 0,
+        subscriptions: [],
+        cleanupFailures: [],
+        cleanupInProgress: false,
+        outputStopped: false,
+        closed: false,
+      };
+      this.sessions.set(id, session);
+
+      try {
+        session.subscriptions.push(pty.onData((data) => appendTerminalOutput(session, data)));
+        session.subscriptions.push(
+          pty.onExit((event) => {
+            session.info.exited = true;
+            session.info.exitCode = event.exitCode;
+            session.info.paused = false;
+
+            // A kill/dispose call may emit exit synchronously; its batch owns the subscriptions.
+            if (session.closed && !session.cleanupInProgress) {
+              this.closeSession(session);
+            }
+          }),
+        );
+      } catch (error) {
+        const failures: unknown[] = [error];
+        session.closed = true;
+        session.cleanupInProgress = true;
+
+        try {
+          failures.push(...this.disposeSubscriptions(session));
+          failures.push(...this.closeSession(session));
+        } finally {
+          session.cleanupInProgress = false;
+        }
+
+        throw terminalCleanupError(
+          `Terminal event setup failed (PID ${session.info.pid}). No shell was retried`,
+          failures,
+        );
+      }
+
+      return {
+        ...session.info,
+        owned: true,
+        occupied: false,
+      };
+    } finally {
+      this.creating--;
+    }
   }
-  private output(s:Session,data:string){
-    if(s.closed||!data)return;
-    // node-pty decodes UTF-8. Split without tearing UTF-16 surrogate pairs.
-    for(let offset=0;offset<data.length;){let end=Math.min(offset+8192,data.length);if(end<data.length&&/[\uD800-\uDBFF]/.test(data[end-1]!))end--;const text=data.slice(offset,end);offset=end;s.frames.push({seq:++s.next,data:text});s.bytes+=text.length*2;}
-    const unack=s.frames.reduce((n,f)=>n+(f.seq>s.ack?f.data.length*2:0),0);
-    if(unack>=HIGH_WATER&&!s.info.paused&&!s.info.exited){s.pty.pause();s.info.paused=true;}
-    // A native producer ignoring pause is terminated, never allowed unbounded memory.
-    if(s.bytes>HIGH_WATER*4){s.info.exited=true;s.info.exitCode=-1;try{s.pty.kill();}catch{}s.frames=s.frames.slice(-32);s.bytes=s.frames.reduce((n,f)=>n+f.data.length*2,0);}
-    this.trim(s);
+
+  private attach(clientId: string, id: string): TerminalInfo {
+    const session = this.sessions.get(id);
+
+    if (!session || session.closed) {
+      throw new Error('This terminal no longer exists.');
+    }
+
+    if (session.owner && session.owner !== clientId) {
+      throw new Error(
+        'This terminal is open in another Miter view. Close its view first, or ' + 'open another shell.',
+      );
+    }
+    session.owner = clientId;
+    session.delivered = session.ack;
+
+    return {
+      ...session.info,
+      owned: true,
+      occupied: false,
+    };
   }
-  private trim(s:Session){while(s.bytes>HISTORY&&s.frames.length>1&&s.frames[0]!.seq<=s.ack){s.bytes-=s.frames.shift()!.data.length*2;}}
-  private attach(clientId:string,id:string):TerminalInfo {
-    const s=this.sessions.get(id);if(!s||s.closed)throw Error('This terminal no longer exists.');
-    if(s.owner&&s.owner!==clientId)throw Error('This terminal is open in another Miter view. Close its view first, or open another shell.');
-    s.owner=clientId;s.delivered=s.ack;return {...s.info,owned:true,occupied:false};
+
+  private disposeSubscriptions(session: ManagedTerminalSession): unknown[] {
+    const failures: unknown[] = [];
+    const retained: PtySubscription[] = [];
+
+    for (const subscription of session.subscriptions) {
+      try {
+        subscription.dispose();
+      } catch (error) {
+        failures.push(error);
+        retained.push(subscription);
+      }
+    }
+    session.subscriptions = retained;
+    session.cleanupFailures = failures;
+
+    return failures;
   }
-  private read(clientId:string,id:string,after:number):TerminalRead {
-    const s=this.owned(clientId,id);
-    if(after>s.delivered)throw Error('Terminal acknowledgement is ahead of delivered output.');
-    if(after>s.ack){s.ack=after;this.trim(s);}
-    const first=s.frames[0]?.seq??s.next+1,reset=after<first-1;
-    const frames:TerminalFrame[]=[];let bytes=0;
-    for(const frame of s.frames){if(frame.seq<=after)continue;if(bytes&&bytes+frame.data.length*2>READ_LIMIT)break;frames.push(frame);bytes+=frame.data.length*2;}
-    if(frames.length)s.delivered=Math.max(s.delivered,frames.at(-1)!.seq);
-    const unack=s.frames.reduce((n,f)=>n+(f.seq>s.ack?f.data.length*2:0),0);
-    if(s.info.paused&&unack<LOW_WATER&&!s.info.exited){s.info.paused=false;s.pty.resume();}
-    return {frames,exited:s.info.exited&&(frames.at(-1)?.seq??after)>=s.next,exitCode:s.info.exitCode,reset,paused:s.info.paused};
+
+  private closeSession(session: ManagedTerminalSession, requestKill = true): unknown[] {
+    const wasCleaning = session.cleanupInProgress;
+    session.cleanupInProgress = true;
+    session.closed = true;
+    session.frames = [];
+    session.bytes = 0;
+
+    try {
+      const failures: unknown[] = [];
+
+      if (requestKill && !session.info.exited) {
+        try {
+          session.pty.kill();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+
+      if (session.info.exited) {
+        failures.push(...this.disposeSubscriptions(session));
+
+        if (!session.subscriptions.length) {
+          this.sessions.delete(session.info.id);
+        }
+      } else {
+        // Keep the exit listener and failed resources until termination is confirmed.
+        failures.push(...session.cleanupFailures);
+      }
+
+      return failures;
+    } finally {
+      session.cleanupInProgress = wasCleaning;
+    }
   }
-  private closeSession(s:Session){s.closed=true;this.sessions.delete(s.info.id);for(const d of s.subscriptions)d.dispose();s.frames=[];s.bytes=0;try{if(!s.info.exited)s.pty.kill();}catch{}}
-  async reset():Promise<void>{
-    this.disposed=true;
-    const failures:string[]=[];
-    await Promise.all([...this.sessions.values()].map(async s=>{
-      if(s.info.exited){this.closeSession(s);return;}
-      try{
-        await new Promise<void>((resolve,reject)=>{
-          let done=false;let sub:{dispose():void}|undefined;
-          const finish=(error?:Error)=>{if(done)return;done=true;clearTimeout(timer);sub?.dispose();error?reject(error):resolve();};
-          const timer=setTimeout(()=>finish(Error('Shell did not confirm exit')),5000);
-          sub=s.pty.onExit(()=>{s.info.exited=true;finish();});
-          try{s.pty.kill('SIGKILL');}catch(e){finish(e instanceof Error?e:Error(String(e)));}
-        });
-        this.closeSession(s);
-      }catch(e){failures.push(`Terminal ${s.info.id} (PID ${s.info.pid}): ${String(e)}`);}
-    }));
-    if(failures.length)throw Error(failures.join('\n'));
+
+  async reset(): Promise<void> {
+    this.disposed = true;
+    const failures: unknown[] = [];
+    await Promise.all(
+      [...this.sessions.values()].map(async (session) => {
+        const errors: unknown[] = [];
+        const wasCleaning = session.cleanupInProgress;
+        let failedSubscription: PtySubscription | undefined;
+        let subscriptionFailure: unknown;
+        session.cleanupInProgress = true;
+        session.closed = true;
+        session.frames = [];
+        session.bytes = 0;
+
+        try {
+          if (!session.info.exited) {
+            try {
+              await new Promise<void>((resolve, reject) => {
+                let done = false;
+                let starting = true;
+                let subscription: PtySubscription | undefined;
+                const finish = (causes: unknown[] = []) => {
+                  if (done) {
+                    return;
+                  }
+                  done = true;
+                  clearTimeout(timer);
+
+                  try {
+                    subscription?.dispose();
+                  } catch (error) {
+                    failedSubscription = subscription;
+                    subscriptionFailure = error;
+                    causes.push(
+                      new Error('Shell exit listener cleanup failed: ' + errorMessage(error), {
+                        cause: error,
+                      }),
+                    );
+                  }
+
+                  if (causes.length) {
+                    reject(terminalCleanupError('Shell stop failed', causes));
+                  } else {
+                    resolve();
+                  }
+                };
+                const timer = setTimeout(() => finish([new Error('Shell did not confirm exit')]), 5000);
+                const startupFailures: unknown[] = [];
+
+                try {
+                  subscription = session.pty.onExit(() => {
+                    session.info.exited = true;
+
+                    if (!starting) {
+                      finish();
+                    }
+                  });
+                } catch (error) {
+                  startupFailures.push(error);
+                }
+
+                if (!session.info.exited) {
+                  try {
+                    session.pty.kill('SIGKILL');
+                  } catch (error) {
+                    startupFailures.push(error);
+                  }
+                }
+                starting = false;
+
+                if (startupFailures.length || session.info.exited) {
+                  finish(startupFailures);
+                }
+              });
+            } catch (error) {
+              errors.push(error);
+            }
+          }
+          errors.push(...this.closeSession(session, false));
+        } finally {
+          if (failedSubscription !== undefined) {
+            // Retain the failed waiter without retrying it twice in this reset attempt.
+            session.subscriptions.push(failedSubscription);
+            session.cleanupFailures.push(subscriptionFailure);
+            this.sessions.set(session.info.id, session);
+          }
+          session.cleanupInProgress = wasCleaning;
+        }
+
+        if (errors.length) {
+          failures.push(
+            terminalCleanupError(`Terminal ${session.info.id} (PID ${session.info.pid})`, errors),
+          );
+        }
+      }),
+    );
+
+    if (failures.length) {
+      throw terminalCleanupError('Terminal reset incomplete; reset remains locked', failures);
+    }
   }
-  close(){this.disposed=true;for(const s of [...this.sessions.values()])this.closeSession(s);}
+
+  close(): void {
+    this.disposed = true;
+    const failures: unknown[] = [];
+
+    for (const session of [...this.sessions.values()]) {
+      const errors = this.closeSession(session);
+
+      if (errors.length) {
+        failures.push(terminalCleanupError(`Terminal ${session.info.id} (PID ${session.info.pid})`, errors));
+      }
+    }
+
+    if (failures.length) {
+      throw terminalCleanupError('Terminal shutdown incomplete', failures);
+    }
+  }
 }

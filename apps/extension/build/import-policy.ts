@@ -9,7 +9,9 @@
  */
 export function enforceExplicitImportPolicy(options: unknown): void {
   // Older WXT versions retained false instead of a resolved options object.
-  if (options === false) return;
+  if (options === false) {
+    return;
+  }
   if (!options || typeof options !== 'object' || Array.isArray(options)) {
     throw new Error('Miter build: unsupported WXT import options; explicit imports cannot be verified.');
   }

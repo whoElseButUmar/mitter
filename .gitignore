@@ -8,3 +8,11 @@ dist/
 .DS_Store
 
 apps/extension/public/mitter-page.js
+apps/extension/public/preview-sandbox.js
+
+# Regenerated dependency and build files
+pnpm-lock.yaml
+*.tsbuildinfo
+coverage/
+**/.cache/
+.pnpm-store/

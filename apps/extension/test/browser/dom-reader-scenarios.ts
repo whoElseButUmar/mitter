@@ -1,0 +1,224 @@
+import {
+  messageDigest,
+  outboundReceiptSchema,
+  wrapMessage,
+  type OutboundReceipt,
+} from '../../../../packages/bridge/src/message-wire';
+import { domRequestSchema, type DomRequest } from '../../../../packages/bridge/src/chat-dom';
+import {
+  DOM_READER_URL,
+  DOM_READER_LATER_USER_TEXT,
+  domReaderPlanSchema,
+  domReaderScenarioNameSchema,
+  type DomReaderPlan,
+  type DomReaderScenarioName,
+} from './dom-reader-contracts';
+
+export const READER_WORKER_ID = 'reader_worker';
+export const READER_PROJECT_ID = 'reader_project';
+export const READER_USER_ID = 'reader-user-current';
+export const READER_PRIOR_USER_ID = 'reader-user-prior';
+export const READER_LATER_USER_ID = 'reader-user-later';
+
+const exchangeId = '11111111-1111-4111-8111-111111111111';
+const priorExchangeId = '22222222-2222-4222-8222-222222222222';
+const goal = 'Exercise only synthetic offline reader content.';
+const taskPrefix =
+  'You are collaborating with Mitter, a local project runner.\n' +
+  'GOAL: ' +
+  goal +
+  '\nFor THIS ChatGPT handoff, preserve exact source.\n' +
+  'Task identity: {"workerId":"reader_worker","projectId":"reader_project"}\n';
+
+// Deliberate spaces, CRLF, tabs, escapes, inline markup, and non-BMP text are
+// source authority. Compare these bytes before reporting any passing result.
+export const READER_REPLY_TEXT =
+  ' \r\n{\r\n' +
+  '  "protocol": "mitter/1",\r\n' +
+  '  "id": "reader_reply",\r\n' +
+  '  "workerId": "reader_worker",\r\n' +
+  '  "projectId": "reader_project",\r\n' +
+  '  "replyTo": "' +
+  exchangeId +
+  '",\r\n' +
+  '  "actions": [],\r\n' +
+  '  "note": "  😀 <tag> & \\t \\n \\\"quote\\\" `tick`  "\r\n' +
+  '}\r\n\t ';
+
+export type DomReaderScenario = {
+  name: DomReaderScenarioName;
+  plan: DomReaderPlan;
+  request: DomRequest;
+  receipt: OutboundReceipt;
+  expectedUserText: string;
+  expectedReplyText: string;
+};
+
+function turn(
+  id: string,
+  role: DomReaderPlan['turns'][number]['role'],
+  text: string,
+  fields: Partial<DomReaderPlan['turns'][number]> = {},
+): DomReaderPlan['turns'][number] {
+  return {
+    id,
+    role,
+    conflict: false,
+    text,
+    code: false,
+    copy: false,
+    controls: false,
+    edit: false,
+    ...fields,
+  };
+}
+
+export async function createDomReaderScenario(rawName: unknown): Promise<DomReaderScenario> {
+  const name = domReaderScenarioNameSchema.parse(rawName);
+  const payload = taskPrefix + 'Current turn. Keep  two spaces\nand `literal` source.';
+  const userText = wrapMessage(payload, exchangeId);
+  const priorText = wrapMessage(taskPrefix + 'Prior task turn.', priorExchangeId);
+  const priorReply = '{"protocol":"mitter/1","id":"reader_prior_reply","actions":[]}';
+  const receipt = outboundReceiptSchema.parse({
+    workerId: READER_WORKER_ID,
+    projectId: READER_PROJECT_ID,
+    goalHash: await messageDigest(goal),
+    textHash: await messageDigest(userText),
+    renderedHash: await messageDigest(userText),
+    payloadHash: await messageDigest(payload),
+    acknowledgedHash: await messageDigest(userText),
+    acknowledgedUserId: READER_USER_ID,
+    exchangeId,
+    expectsReplyTo: true,
+    messageId: 'reader_send',
+    priorReplyIds: ['reader_prior_reply'],
+    turn: 2,
+    at: Date.now(),
+  });
+  const priorUser = turn(READER_PRIOR_USER_ID, 'user', priorText);
+  const user = turn(READER_USER_ID, 'user', userText);
+  const response = turn('reader-response', 'unknown', READER_REPLY_TEXT, { code: true, controls: true });
+  const plan: DomReaderPlan = {
+    name,
+    turns: [
+      priorUser,
+      turn('reader-assistant-prior', 'assistant', priorReply, { code: true }),
+      user,
+      response,
+    ],
+    generating: false,
+    padding: 0,
+    frameText: '',
+    draft: '',
+  };
+  let expectedUserText = userText;
+
+  switch (name) {
+    case 'mixed-generating':
+    case 'digest-assistant-progress':
+      response.text = 'Thinking\nStructuring the outline';
+      response.code = false;
+      response.controls = false;
+      plan.generating = true;
+      break;
+    case 'mixed-generating-correlated':
+      response.copy = true;
+      response.controls = false;
+      plan.generating = true;
+      break;
+    case 'complete-roleless-copy-code':
+      response.copy = true;
+      break;
+    case 'copy-only':
+      response.copy = true;
+      response.controls = false;
+      break;
+    case 'later-known-user':
+      expectedUserText = DOM_READER_LATER_USER_TEXT;
+      plan.turns.push(
+        turn(READER_LATER_USER_ID, 'user', expectedUserText),
+        turn('reader-later-thinking', 'unknown', 'Thinking\nStructuring the outline'),
+      );
+      plan.generating = true;
+      break;
+    case 'different-known-user':
+      expectedUserText = 'A different known user turn, with no saved receipt.';
+      user.id = READER_LATER_USER_ID;
+      user.text = expectedUserText;
+      break;
+    case 'receipt-role-conflict':
+      user.conflict = true;
+      break;
+    case 'response-role-conflict':
+      response.conflict = true;
+      break;
+    case 'response-user-edit':
+      response.edit = true;
+      break;
+    case 'duplicate-receipt':
+      plan.turns.splice(3, 0, turn('reader-duplicate', 'unknown', userText));
+      break;
+    case 'mismatched-receipt': {
+      const wrongHash = await messageDigest('A different complete outbound body.');
+      receipt.textHash = wrongHash;
+      receipt.renderedHash = wrongHash;
+      receipt.acknowledgedHash = wrongHash;
+      receipt.payloadHash = wrongHash;
+      break;
+    }
+    case 'edited-receipt':
+      user.text = userText.replace('Current turn.', 'Edited turn.');
+      expectedUserText = user.text;
+      break;
+    case 'multiple-unknown-branches':
+      plan.turns.splice(3, 0, turn('reader-unknown', 'unknown', 'A substantive unknown turn.'));
+      break;
+    case 'unknown-intervening-branch':
+      plan.turns.splice(3, 0, turn('', 'branch', 'Intervening content without turn metadata.'));
+      break;
+    case 'unknown-later-branch':
+      plan.turns.push(turn('reader-unknown-later', 'unknown', 'A later substantive unknown turn.'));
+      break;
+    case 'scan-limit':
+      plan.padding = 24001;
+      break;
+    case 'iframe-only-receipt':
+      plan.frameText = userText;
+      user.text = 'Only an inaccessible iframe contains the saved receipt.';
+      expectedUserText = user.text;
+      break;
+    case 'digest-earlier-user-receipt':
+      priorUser.text = wrapMessage(taskPrefix + 'Earlier nonmatching task turn.', exchangeId);
+      break;
+    case 'digest-later-known-user':
+      expectedUserText = DOM_READER_LATER_USER_TEXT;
+      break;
+    case 'digest-dom-mutation':
+    case 'digest-duplicate-before-user':
+    case 'digest-stop':
+    case 'digest-session-replacement':
+    case 'complete-roleless':
+      break;
+  }
+
+  const request = domRequestSchema.parse({
+    op: 'inspect',
+    token: 'reader-fixture-' + crypto.randomUUID(),
+    url: DOM_READER_URL,
+    workerId: READER_WORKER_ID,
+    projectId: READER_PROJECT_ID,
+    replyTo: exchangeId,
+    receipt,
+    includeHistory: true,
+    expiresAt: Date.now() + 60000,
+  });
+
+  return {
+    name,
+    plan: domReaderPlanSchema.parse(plan),
+    request,
+    receipt,
+    expectedUserText,
+    expectedReplyText: READER_REPLY_TEXT,
+  };
+}

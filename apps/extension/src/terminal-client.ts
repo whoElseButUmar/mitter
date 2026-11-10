@@ -1,16 +1,139 @@
-import {TERMINAL_PORT} from '../../../packages/terminal/src/protocol';
+import { TERMINAL_PORT } from '../../../packages/terminal/src/protocol.js';
+import { rpcResponseSchema } from './schemas/messages.js';
+import { errorMessage } from './schemas/primitives.js';
+import {
+  parseTerminalResult,
+  terminalRequestSchema,
+  type TerminalRpcMethod,
+  type TerminalRpcResult,
+} from './schemas/terminal.js';
+import { PendingRequests } from './transport/pending-requests.js';
+
 export class TerminalClient {
- private port:chrome.runtime.Port|undefined;
- private pending=new Map<string,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
- constructor(private disconnected:()=>void){}
- private connect(){
-   const port=chrome.runtime.connect({name:TERMINAL_PORT});this.port=port;
-   port.onMessage.addListener(m=>{if(this.port!==port)return;const p=this.pending.get(m?.id);if(!p)return;clearTimeout(p.timer);this.pending.delete(m.id);m.ok?p.resolve(m.result):p.reject(Error(m.error||'Terminal request failed.'));});
-   port.onDisconnect.addListener(()=>{if(this.port!==port)return;this.port=undefined;for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(Error('Terminal disconnected. Input was not replayed.'));}this.pending.clear();this.disconnected();});return port;
- }
- request<T=unknown>(method:string,params:Record<string,unknown>={}):Promise<T>{
-   const port=this.port||this.connect(),id=crypto.randomUUID();
-   return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{this.pending.delete(id);reject(Error('Terminal request timed out. Input was not replayed.'));},15000);this.pending.set(id,{resolve,reject,timer});try{port.postMessage({id,method,params});}catch(e){clearTimeout(timer);this.pending.delete(id);reject(e);}});
- }
- close(){const p=this.port;this.port=undefined;p?.disconnect();for(const v of this.pending.values()){clearTimeout(v.timer);v.reject(Error('Terminal view closed.'));}this.pending.clear();}
+  private port: chrome.runtime.Port | undefined;
+  private removePortListeners: (() => void) | undefined;
+  private pending = new PendingRequests();
+  private closed = false;
+
+  constructor(private disconnected: () => void) {}
+
+  private detachPort(): chrome.runtime.Port | undefined {
+    const port = this.port;
+    this.port = undefined;
+    const removeListeners = this.removePortListeners;
+    this.removePortListeners = undefined;
+
+    try {
+      removeListeners?.();
+    } catch {}
+
+    return port;
+  }
+
+  private disconnect(port: chrome.runtime.Port): void {
+    if (this.port !== port) {
+      return;
+    }
+
+    this.detachPort();
+    this.pending.rejectAll(new Error('Terminal disconnected. Input was not replayed.'));
+
+    try {
+      port.disconnect();
+    } catch {}
+
+    this.disconnected();
+  }
+
+  private connect(): chrome.runtime.Port {
+    if (this.closed) {
+      throw new Error('Terminal view closed. No input was sent.');
+    }
+
+    if (this.port) {
+      return this.port;
+    }
+
+    const port = chrome.runtime.connect({ name: TERMINAL_PORT });
+    this.port = port;
+    const onMessage = (raw: unknown): void => {
+      if (this.port !== port || this.closed) {
+        return;
+      }
+
+      const response = rpcResponseSchema.safeParse(raw);
+
+      if (response.success) {
+        this.pending.receive(response.data);
+      }
+    };
+
+    const onDisconnect = (): void => {
+      this.disconnect(port);
+    };
+
+    this.removePortListeners = () => {
+      try {
+        port.onMessage.removeListener(onMessage);
+      } finally {
+        port.onDisconnect.removeListener(onDisconnect);
+      }
+    };
+
+    try {
+      port.onMessage.addListener(onMessage);
+      port.onDisconnect.addListener(onDisconnect);
+    } catch (error) {
+      if (this.port === port) {
+        this.detachPort();
+        this.pending.rejectAll(new Error(errorMessage(error)));
+
+        try {
+          port.disconnect();
+        } catch {}
+      }
+
+      throw error;
+    }
+
+    return port;
+  }
+
+  request<Method extends TerminalRpcMethod>(
+    method: Method,
+    params?: Record<string, unknown>,
+  ): Promise<TerminalRpcResult<Method>>;
+  request(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  async request(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+    const request = terminalRequestSchema.parse({
+      id: crypto.randomUUID(),
+      method,
+      params,
+    });
+    const port = this.connect();
+    const result = await this.pending.send(
+      request.id,
+      15000,
+      () => new Error('Terminal request timed out. Input was not replayed.'),
+      () => {
+        try {
+          port.postMessage(request);
+        } catch {
+          this.disconnect(port);
+        }
+      },
+    );
+
+    return parseTerminalResult(request.method, result);
+  }
+
+  close(): void {
+    this.closed = true;
+    const port = this.detachPort();
+    this.pending.rejectAll(new Error('Terminal view closed.'));
+
+    try {
+      port?.disconnect();
+    } catch {}
+  }
 }

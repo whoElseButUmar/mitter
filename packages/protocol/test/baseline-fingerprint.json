@@ -1,0 +1,81 @@
+{
+  "caseCount": 2377,
+  "groups": {
+    "action": {
+      "count": 862,
+      "sha256": "682d761568174e67a5c150e0944feb1cc9864e4fd2292041ba4dba2bdbf68588"
+    },
+    "proposal": {
+      "count": 865,
+      "sha256": "15c2b04e1f8eeb3ffa88a0e5944982d9304133ad6a36bda55a6a10a0ac0a4aa3"
+    },
+    "request": {
+      "count": 16,
+      "sha256": "76adbdf30958fda91bde4556078a6843c70fc8642b2b59ef66f8b33ee9474ab9"
+    },
+    "settings": {
+      "count": 41,
+      "sha256": "58ef7f1a5b765d4b245cebe5ebbc6946d8f37137b45f7726225d558146a84811"
+    },
+    "selection": {
+      "count": 68,
+      "sha256": "445f2a57a8d4ae358bd2b07ef9fc2e3b18ab64f2a6ff7222e2122ded0e4eccbd"
+    },
+    "followup": {
+      "count": 26,
+      "sha256": "f8eeccc4ffb37cab2fd6cbb8096f84beb3957bcb7058d1306648ca45dc4d4ecc"
+    },
+    "rewrite": {
+      "count": 88,
+      "sha256": "51779bf9777c2f1bf38d1d953823dde8a75d80dd10d1f66527ed7d06a96a7b54"
+    },
+    "reference": {
+      "count": 11,
+      "sha256": "4dcff0a05f8d709be6c05227ce597ef9f92e82051d6c6a75c7aa06e75203c3f4"
+    },
+    "hash": {
+      "count": 6,
+      "sha256": "10c66a64d30b78e1b2f96df18e8bf3a0a05ab57e1051a16514f76cba24aa1fa9"
+    },
+    "base": {
+      "count": 6,
+      "sha256": "178c90445bbb3ce34e2fa866962d236c4bd7e669695ea3baa4c14d7f64fc6bfa"
+    },
+    "check": {
+      "count": 8,
+      "sha256": "99e64920098936c16405bef886c08cd787baca6e6d1078e2dd653bfd7fede8e9"
+    },
+    "checks": {
+      "count": 4,
+      "sha256": "552ceb8b65f6982809859e12e2e99d53e650b5e7acf19f76b5a21fc686530865"
+    },
+    "envelope": {
+      "count": 94,
+      "sha256": "734c890256f0ba5dd6fe060306d52c3036d3a2e837490050c0432c26c7cc889c"
+    },
+    "proposalEnvelope": {
+      "count": 91,
+      "sha256": "93f01a0729255c501de8964a085035c06b48c794d9a5a1ad307a8fb1b7f65f57"
+    },
+    "json": {
+      "count": 67,
+      "sha256": "905fece76171c0100daa33be7cb8f6a362e7ddcf09bc88030b2c4f6637b95262"
+    },
+    "bounds": {
+      "count": 4,
+      "sha256": "e01e4ed15246da3138ee03e35b0133c3e0ac3ee5904332591730d61389b5a854"
+    },
+    "brief": {
+      "count": 44,
+      "sha256": "600fdaecc7e3363406da81a8e1464c88f1b90ea40ce04847988e029dbbe980a2"
+    },
+    "advice": {
+      "count": 7,
+      "sha256": "85b90943d8169ad7f1bbc1cba82a8d0dc26fe19ce84ca0a20872db7370cee810"
+    },
+    "native": {
+      "count": 69,
+      "sha256": "44e82e06ad9b92e9b920f8f17fdb14f2d0bdec1ada6cc61dac5b0987fa0bf3f6"
+    }
+  }
+}

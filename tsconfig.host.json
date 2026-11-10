@@ -8,21 +8,21 @@
     "strict": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "types": [
-      "node"
-    ],
-    "lib": [
-      "ES2023",
-      "DOM"
-    ],
+    "types": ["node"],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "resolveJsonModule": true,
     "noEmitOnError": true
   },
   "include": [
     "apps/host/src/**/*.ts",
     "apps/inference/src/**/*.ts",
-    "packages/bridge/src/page-endpoint.ts",
+    "packages/bridge/src/page-entry.ts",
     "packages/bridge/src/page-transport.ts"
   ]
 }

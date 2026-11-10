@@ -1,71 +1,267 @@
-import { chatDom, clearChatDomState, ASSISTANT_READER_VERSION } from './chat-dom.js';
+import { chatDom, clearChatDomState } from './chat-dom.js';
+import { retireChatDomSession } from './dom/session-state.js';
+import type { ChatView } from './dom/types.js';
+import {
+  PAGE_CHANNEL,
+  PAGE_READER,
+  pageHelloRequestSchema,
+  pageMessageHeaderSchema,
+  pageOperationErrorSchema,
+  pageRequestSchema,
+  pageResetSchema,
+  type PageReply,
+} from './transport/messages.js';
 
-/** Included in the generated, packaged mitter-page.js; not a page MAIN-world script. */
-export function installPageEndpoint(runtime:any):void {
-  const version='mitter-page/4';
-  const scope=globalThis as typeof globalThis & {[key:string]:any};
-  const key='__mitterPageEndpointV4';
-  for(const oldKey of ['__mitterPageEndpointV3',key]){
-    if(scope[oldKey])try{runtime.onMessage.removeListener(scope[oldKey].listener);}catch{}
+export type PageMessageSender = {
+  id?: string;
+  tab?: unknown;
+};
+
+export type PageMessageListener = (
+  message: unknown,
+  sender: PageMessageSender,
+  respond: (reply: unknown) => void,
+) => boolean;
+
+export type PageRuntime = {
+  id: string;
+  onMessage: {
+    addListener(listener: PageMessageListener): void;
+    removeListener(listener: PageMessageListener): void;
+  };
+};
+
+type InstalledEndpoint = {
+  runtimeId: string;
+  version: string;
+  listener: PageMessageListener;
+};
+
+type PendingPageRequest = {
+  body: string;
+  promise: Promise<PageReply>;
+};
+
+declare global {
+  var __mitterPageEndpointV3: InstalledEndpoint | undefined;
+  var __mitterPageEndpointV4: InstalledEndpoint | undefined;
+}
+
+/** Runs in the packaged isolated-world content script, never the page's main world. */
+export function installPageEndpoint(runtime: PageRuntime): void {
+  const previousEndpoints = [globalThis.__mitterPageEndpointV3, globalThis.__mitterPageEndpointV4];
+
+  for (const endpoint of previousEndpoints) {
+    if (!endpoint) {
+      continue;
+    }
+
+    try {
+      runtime.onMessage.removeListener(endpoint.listener);
+    } catch {
+      // The old extension context may already have been retired.
+    }
   }
-  const previous=scope.__mitterSessionV4;
-  if(previous){
-    // Retire in-flight work by object identity without turning a lost listener
-    // into a user Stop. Preserve the token and committed-send ledger so reads
-    // can reconnect and a retried commit cannot click Send twice. An actual
-    // user/page Stop stays stopped; reinjection never resumes it.
-    const stopped=previous.stopped===true;
-    previous.stopped=true;
-    scope.__mitterSessionV4={...previous,stopped};
-  }
-  if(scope.__mitterSessionV3)scope.__mitterSessionV3.stopped=true;
-  const instanceId=crypto.randomUUID();
-  const pending=new Map<string,{body:string;promise:Promise<unknown>}>();
-  const inFlight=new Set<Promise<unknown>>();
-  let retired=false;
-  let mutation:Promise<unknown>|undefined;
-  const listener=(message:any,sender:any,respond:(reply:unknown)=>void)=>{
-    if(sender.id!==runtime.id||sender.tab||message?.channel!==version)return false;
-    if(typeof message.id!=='string'||message.id.length>100)return false;
-    const header={channel:version,id:message.id,instanceId};
-    if(message.kind==='reset'&&message.confirmation==='CLEAR'){
-      retired=true;clearChatDomState();
-      void Promise.allSettled([...inFlight]).then(()=>{
-        pending.clear();inFlight.clear();mutation=undefined;clearChatDomState();
-        runtime.onMessage.removeListener(listener);delete scope[key];
-        respond({...header,ok:true,value:{cleared:true}});
-      });return true;
+
+  Reflect.deleteProperty(globalThis, '__mitterPageEndpointV3');
+  retireChatDomSession();
+
+  const instanceId = crypto.randomUUID();
+  const pendingRequests = new Map<string, PendingPageRequest>();
+  const inFlightRequests = new Set<Promise<PageReply>>();
+  let retired = false;
+  let composerMutation: Promise<ChatView> | undefined;
+
+  const listener: PageMessageListener = (message, sender, respond) => {
+    if (sender.id !== runtime.id || sender.tab || globalThis.__mitterPageEndpointV4?.listener !== listener) {
+      return false;
     }
-    if(retired){respond({...header,ok:false,error:{code:'RESET',message:'Miter data was reset.'}});return false;}
-    if(message.kind==='hello'){
-      respond({...header,ok:true,value:{version,reader:ASSISTANT_READER_VERSION,instanceId,url:location.origin+location.pathname,readyState:document.readyState}});return false;
+
+    const parsedHeader = pageMessageHeaderSchema.safeParse(message);
+
+    if (!parsedHeader.success) {
+      return false;
     }
-    const action=message.action;
-    if(message.kind!=='request'||!action||!['control','probe','reply','inspect','prepare','commit','send','stop','interrupt'].includes(action.op)||typeof action.token!=='string'||action.token.length>100||action.composerSession!==undefined&&(typeof action.composerSession!=='string'||! /^[a-zA-Z0-9_-]{1,100}$/.test(action.composerSession))||typeof action.url!=='string'||typeof action.expiresAt!=='number'||!Number.isFinite(action.expiresAt)){
-      respond({...header,ok:false,error:{code:'BAD_REQUEST',message:'Invalid page bridge request.'}});return false;
-    }
-    const body=JSON.stringify(action),found=pending.get(message.id);
-    if(found&&found.body!==body){respond({...header,ok:false,error:{code:'ID_CONFLICT',message:'Request ID reused with a different operation.'}});return false;}
-    const perform=async()=>{
-      try{
-        if(action.op==='prepare'||action.op==='commit'||action.op==='send'){
-          if(mutation)throw Object.assign(new Error('Another task is changing the composer.'),{code:'COMPOSER_BUSY'});
-          const job=chatDom(action);mutation=job;
-          try{return {...header,ok:true,value:await job};}finally{if(mutation===job)mutation=undefined;}
+
+    const header: Pick<PageReply, 'channel' | 'id' | 'instanceId'> = {
+      channel: PAGE_CHANNEL,
+      id: parsedHeader.data.id,
+      instanceId,
+    };
+
+    if (pageResetSchema.safeParse(message).success) {
+      retired = true;
+
+      const finishReset = async (): Promise<void> => {
+        try {
+          clearChatDomState();
+        } finally {
+          await Promise.allSettled([...inFlightRequests]);
+          pendingRequests.clear();
+          inFlightRequests.clear();
+          composerMutation = undefined;
+          try {
+            runtime.onMessage.removeListener(listener);
+          } finally {
+            // Reinjection may replace this endpoint while its old requests drain.
+            if (globalThis.__mitterPageEndpointV4?.listener === listener) {
+              try {
+                clearChatDomState();
+              } finally {
+                Reflect.deleteProperty(globalThis, '__mitterPageEndpointV4');
+              }
+            }
+          }
         }
-        return {...header,ok:true,value:await chatDom(action)};
-      }catch(error){
-        const e=error as {code?:unknown;message?:unknown};
-        return {...header,ok:false,error:{code:typeof e?.code==='string'?e.code:'PAGE_OPERATION_FAILED',message:typeof e?.message==='string'?e.message:'The page operation failed.'}};
+        respond({ ...header, ok: true, value: { cleared: true } });
+      };
+
+      void finishReset().catch((error) => {
+        const failure = pageOperationErrorSchema.safeParse(error);
+        let explanation = 'The page reset could not finish.';
+        if (failure.success) {
+          explanation = failure.data.message ?? explanation;
+        }
+        try {
+          respond({ ...header, ok: false, error: { code: 'RESET_FAILED', message: explanation } });
+        } catch {
+          // The response channel may have closed while cleanup was draining.
+        }
+      });
+      return true;
+    }
+
+    if (retired) {
+      respond({
+        ...header,
+        ok: false,
+        error: { code: 'RESET', message: 'Miter data was reset.' },
+      });
+      return false;
+    }
+
+    if (pageHelloRequestSchema.safeParse(message).success) {
+      respond({
+        ...header,
+        ok: true,
+        value: {
+          version: PAGE_CHANNEL,
+          reader: PAGE_READER,
+          instanceId,
+          url: location.origin + location.pathname,
+          readyState: document.readyState,
+        },
+      });
+      return false;
+    }
+
+    const parsedRequest = pageRequestSchema.safeParse(message);
+
+    if (!parsedRequest.success) {
+      respond({
+        ...header,
+        ok: false,
+        error: { code: 'BAD_REQUEST', message: 'Invalid page bridge request.' },
+      });
+      return false;
+    }
+
+    const action = parsedRequest.data.action;
+    const requestBody = JSON.stringify(action);
+    const existingRequest = pendingRequests.get(header.id);
+
+    if (existingRequest && existingRequest.body !== requestBody) {
+      respond({
+        ...header,
+        ok: false,
+        error: {
+          code: 'ID_CONFLICT',
+          message: 'Request ID reused with a different operation.',
+        },
+      });
+      return false;
+    }
+
+    const perform = async (): Promise<PageReply> => {
+      try {
+        const changesComposer = action.op === 'prepare' || action.op === 'commit' || action.op === 'send';
+
+        if (changesComposer) {
+          if (composerMutation) {
+            return {
+              ...header,
+              ok: false,
+              error: {
+                code: 'COMPOSER_BUSY',
+                message: 'Another task is changing the composer.',
+              },
+            };
+          }
+
+          const operation = chatDom(action);
+          composerMutation = operation;
+
+          try {
+            return { ...header, ok: true, value: await operation };
+          } finally {
+            if (composerMutation === operation) {
+              composerMutation = undefined;
+            }
+          }
+        }
+
+        return { ...header, ok: true, value: await chatDom(action) };
+      } catch (error) {
+        const failure = pageOperationErrorSchema.safeParse(error);
+        let code = 'PAGE_OPERATION_FAILED';
+        let explanation = 'The page operation failed.';
+
+        if (failure.success) {
+          code = failure.data.code ?? code;
+          explanation = failure.data.message ?? explanation;
+        }
+
+        return { ...header, ok: false, error: { code, message: explanation } };
       }
     };
-    const promise=found?.promise||perform();
-    if(!found){inFlight.add(promise);void promise.finally(()=>inFlight.delete(promise)).catch(()=>{});pending.set(message.id,{body,promise});while(pending.size>24)pending.delete(pending.keys().next().value!);}
-    void promise.then(respond).catch(()=>{});
-    // Always use sendResponse + literal true. Works on Chrome versions where
-    // async onMessage listeners do not forward their returned Promise.
+
+    let reply: Promise<PageReply>;
+
+    if (existingRequest) {
+      reply = existingRequest.promise;
+    } else {
+      reply = perform();
+      pendingRequests.set(header.id, { body: requestBody, promise: reply });
+      inFlightRequests.add(reply);
+
+      void reply
+        .finally(() => {
+          inFlightRequests.delete(reply);
+        })
+        .catch(() => {});
+
+      while (pendingRequests.size > 24) {
+        const oldestId = pendingRequests.keys().next().value;
+
+        if (oldestId === undefined) {
+          break;
+        }
+
+        pendingRequests.delete(oldestId);
+      }
+    }
+
+    void reply.then(respond).catch(() => {});
+
+    // Chrome versions differ in support for promise-returning message listeners.
+    // A literal true keeps sendResponse open on every supported version.
     return true;
   };
+
   runtime.onMessage.addListener(listener);
-  scope[key]={runtimeId:runtime.id,version,listener};
+  globalThis.__mitterPageEndpointV4 = {
+    runtimeId: runtime.id,
+    version: PAGE_CHANNEL,
+    listener,
+  };
 }

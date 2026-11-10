@@ -1,25 +1,128 @@
-import type { PreviewRPC } from '../../../packages/ui/src/preview';
+import { assetRequestSchema, validateAssetChunk, type AssetChunk } from './schemas/preview.js';
+import { rpcResponseSchema } from './schemas/messages.js';
+import { errorMessage } from './schemas/primitives.js';
+import { PendingRequests } from './transport/pending-requests.js';
+
 /** One lightweight read-only connection. Reconnection never triggers execution. */
 export class FilePreviewClient {
- private port?:chrome.runtime.Port;
- private closed=false;
- private pending=new Map<string,{resolve:(v:any)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
- private fail(error:Error){for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(error);}this.pending.clear();}
- private connect(){
-  if(this.closed)throw new Error('File window closed.');
-  if(this.port)return this.port;
-  const port=chrome.runtime.connect({name:'miter-file-preview'});this.port=port;
-  port.onMessage.addListener(message=>{if(this.port!==port)return;const p=this.pending.get(message?.id);if(!p)return;this.pending.delete(message.id);clearTimeout(p.timer);message.ok?p.resolve(message.result):p.reject(new Error(message.error||'Could not read this file.'));});
-  port.onDisconnect.addListener(()=>{if(this.port!==port)return;this.port=undefined;this.fail(new Error(chrome.runtime.lastError?.message||'File connection closed. Reload to reconnect.'));});
-  return port;
- }
- request:PreviewRPC=<T>(method:string,params:Record<string,unknown>):Promise<T>=>{
-  if(method!=='worker.asset')return Promise.reject(new Error('Read-only file window.'));
-  return new Promise<T>((resolve,reject)=>{
-   const id=crypto.randomUUID(),timer=setTimeout(()=>{this.pending.delete(id);reject(new Error('File read timed out. Reload to try again.'));},35000);
-   this.pending.set(id,{resolve,reject,timer});
-   try{this.connect().postMessage({id,method,params});}catch(e){this.pending.delete(id);clearTimeout(timer);reject(e);}
-  });
- };
- close(){this.closed=true;const port=this.port;this.port=undefined;this.fail(new Error('File window closed.'));port?.disconnect();}
+  private port: chrome.runtime.Port | undefined;
+  private removePortListeners: (() => void) | undefined;
+  private closed = false;
+  private pending = new PendingRequests();
+
+  private detachPort(): chrome.runtime.Port | undefined {
+    const port = this.port;
+    this.port = undefined;
+    const removeListeners = this.removePortListeners;
+    this.removePortListeners = undefined;
+
+    try {
+      removeListeners?.();
+    } catch {}
+
+    return port;
+  }
+
+  private disconnected(port: chrome.runtime.Port, detail: string): void {
+    if (this.port !== port) {
+      return;
+    }
+
+    this.detachPort();
+    this.pending.rejectAll(new Error(detail));
+
+    try {
+      port.disconnect();
+    } catch {}
+  }
+
+  private connect(): chrome.runtime.Port {
+    if (this.closed) {
+      throw new Error('File window closed.');
+    }
+
+    if (this.port) {
+      return this.port;
+    }
+
+    const port = chrome.runtime.connect({ name: 'miter-file-preview' });
+    this.port = port;
+    const onMessage = (raw: unknown): void => {
+      if (this.port !== port || this.closed) {
+        return;
+      }
+
+      const response = rpcResponseSchema.safeParse(raw);
+
+      if (response.success) {
+        this.pending.receive(response.data);
+      }
+    };
+
+    const onDisconnect = (): void => {
+      this.disconnected(
+        port,
+        chrome.runtime.lastError?.message || 'File connection closed. Reload to reconnect.',
+      );
+    };
+
+    this.removePortListeners = () => {
+      try {
+        port.onMessage.removeListener(onMessage);
+      } finally {
+        port.onDisconnect.removeListener(onDisconnect);
+      }
+    };
+
+    try {
+      port.onMessage.addListener(onMessage);
+      port.onDisconnect.addListener(onDisconnect);
+    } catch (error) {
+      if (this.port === port) {
+        this.detachPort();
+        this.pending.rejectAll(new Error(errorMessage(error)));
+
+        try {
+          port.disconnect();
+        } catch {}
+      }
+
+      throw error;
+    }
+
+    return port;
+  }
+
+  request = async (method: string, params: Record<string, unknown>): Promise<AssetChunk> => {
+    const request = assetRequestSchema.parse({
+      id: crypto.randomUUID(),
+      method,
+      params,
+    });
+    const port = this.connect();
+    const result = await this.pending.send(
+      request.id,
+      35000,
+      () => new Error('File read timed out. Reload to try again.'),
+      () => {
+        try {
+          port.postMessage({ ...request, params });
+        } catch {
+          this.disconnected(port, 'File connection closed. Reload to reconnect.');
+        }
+      },
+    );
+
+    return validateAssetChunk(result, request.params);
+  };
+
+  close(): void {
+    this.closed = true;
+    const port = this.detachPort();
+    this.pending.rejectAll(new Error('File window closed.'));
+
+    try {
+      port?.disconnect();
+    } catch {}
+  }
 }
