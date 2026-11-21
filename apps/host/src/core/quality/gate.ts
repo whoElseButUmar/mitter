@@ -339,9 +339,10 @@ export async function verifyProjectQuality(
     let browser;
     if (framework && frameworkFingerprint) {
       assetsHash = frameworkFingerprint;
+      hasBackend = paths.includes('miter.backend.json');
       browser = await browserRunner({
         ...browserInputs,
-        devProject: { root, framework, fingerprint: frameworkFingerprint },
+        devProject: { root, framework, fingerprint: frameworkFingerprint, hasBackend },
       });
     } else {
       const snapshot = await snapshotApp(root, signal, manifest.entry);

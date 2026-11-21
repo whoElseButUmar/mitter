@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import {
   previewStartResultSchema,
@@ -11,6 +12,7 @@ import { detectDevProject, devProjectFingerprint, startDevServer } from '../dev-
 import { serveDevPreview } from './dev-proxy.js';
 import { Locks } from '../locks.js';
 import { errorMessage } from '../types.js';
+import { ensurePrivateDirectory } from '../private-directory.js';
 import { AppRuns, type AppRun } from './app-runs.js';
 
 const IDLE_TIMEOUT_MS = 1_800_000;
@@ -183,11 +185,17 @@ export class PreviewSessions {
     let bytes: number;
     let captured: string | undefined;
     let detail: string;
+    const projectStore = path.join('preview-data', createHash('sha256').update(root).digest('hex'));
     if (framework) {
       if (options.staticFingerprint) {
         throw new Error('The verified static app has changed. Choose Run to start the current project.');
       }
-      const runtime = await startDevServer(root, signal, 'development', log);
+      let projectDataDir: string | undefined;
+      if (this.dataRoot) {
+        projectDataDir = path.join(await fs.realpath(this.dataRoot), projectStore);
+        await ensurePrivateDirectory(path.dirname(projectDataDir));
+      }
+      const runtime = await startDevServer(root, signal, 'development', log, projectDataDir);
       try {
         signal.throwIfAborted();
         assertCurrent();
@@ -197,12 +205,14 @@ export class PreviewSessions {
         server = await serveDevPreview(runtime, hostname, previewId, async (stop) => {
           const lifetime = AbortSignal.any([this.signal, stop]);
           log('The dev server exited. Restarting it once.\n');
-          const retry = await startDevServer(root, lifetime, 'development', log).catch((error: unknown) => {
-            if (!lifetime.aborted) {
-              log('Restart failed: ' + errorMessage(error) + '\n');
-            }
-            throw error;
-          });
+          const retry = await startDevServer(root, lifetime, 'development', log, projectDataDir).catch(
+            (error: unknown) => {
+              if (!lifetime.aborted) {
+                log('Restart failed: ' + errorMessage(error) + '\n');
+              }
+              throw error;
+            },
+          );
           try {
             assertCurrent();
             lifetime.throwIfAborted();
@@ -253,8 +263,7 @@ export class PreviewSessions {
       assertCurrent();
       let backendOptions;
       if (snapshot.backend && this.dataRoot) {
-        const key = createHash('sha256').update(root).digest('hex');
-        backendOptions = { dataDir: path.join(this.dataRoot, 'preview-data', key) };
+        backendOptions = { dataDir: path.join(this.dataRoot, projectStore) };
       }
       if (snapshot.backend) {
         log('Starting the project’s Node backend.\n');

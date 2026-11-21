@@ -10,7 +10,7 @@ import puppeteer from 'puppeteer-core';
 import '../../../../../packages/bridge/src/runner/test-source-loader.mjs';
 const { BackendActivity } = await import('./backend-journey.ts');
 const { serveSnapshot } = await import('../preview/server.ts');
-const { runBrowserJourneys } = await import('./browser-journeys.ts');
+const { matchesJourneyExpectation, runBrowserJourneys } = await import('./browser-journeys.ts');
 const { inspectInterfaceCopy } = await import('./interface-copy.ts');
 
 const executable = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -94,7 +94,9 @@ test(
   async (context) => {
     const options = await fixture(
       context,
-      '<label for="title">Title</label><input id="title"><button id="save">Save</button><p id="saved" role="status"></p>',
+      `<section hidden><input class="title" aria-label="Title"><button class="save">Save</button></section>
+      <label for="title">Title</label><input id="title" class="title"><button id="save" class="save">Save</button>
+      <section class="detail">Customer directory</section><section class="detail" id="saved" role="status"></section>`,
       `const saved=document.querySelector('#saved'); saved.textContent=localStorage.getItem('record') || 'Empty';
     document.querySelector('#save').addEventListener('click',()=>{const value=document.querySelector('#title').value;
     if(!value.trim()){saved.textContent='Enter a title';return;}localStorage.setItem('record',value);saved.textContent=value;});`,
@@ -105,10 +107,10 @@ test(
         {
           name: 'Create and reload',
           steps: [
-            { type: 'fill', selector: '#title', value: 'First record' },
-            { type: 'click', selector: '#save' },
+            { type: 'fill', selector: '.title', value: 'First record' },
+            { type: 'click', selector: '.save' },
             { type: 'reload' },
-            { type: 'expect', selector: '#saved', text: 'First record', visible: true },
+            { type: 'expect', selector: '.detail', text: 'First record', visible: true },
           ],
         },
         {
@@ -129,6 +131,36 @@ test(
       assert.ok((await fs.stat(screenshot)).size > 1000);
     }
     assert.equal(options.browser.browserContexts().length, 1, 'All temporary contexts close.');
+  },
+);
+
+test(
+  'record assertions distinguish unique fields, duplicate content and explicit selector counts',
+  { skip: !available },
+  async (t) => {
+    const { browser, url } = await fixture(
+      t,
+      '<section>Repair due Friday</section><section>Customer Ellis</section>',
+    );
+    const page = await browser.newPage();
+    await page.goto(url);
+    const expect = (fields) =>
+      page.evaluate(matchesJourneyExpectation, { type: 'expect', selector: 'section', ...fields });
+    assert.equal(await expect({ text: 'Friday' }), true);
+    assert.equal(await expect({ count: 1, text: 'Friday' }), false);
+    assert.equal(await expect({ count: 2, text: 'Friday' }), false);
+    assert.equal(await expect({ visible: true }), false);
+    await page.evaluate(() => {
+      document.querySelectorAll('section')[1].textContent = 'Second repair due Friday';
+    });
+    assert.equal(await expect({ text: 'Friday' }), false);
+    assert.equal(await expect({ count: 2, text: 'Friday' }), true);
+    await page.evaluate(() => {
+      document.querySelector('section').hidden = true;
+      document.querySelectorAll('section')[1].textContent = 'Customer Ellis';
+    });
+    assert.equal(await expect({ text: 'Friday' }), false);
+    assert.equal(await expect({ text: 'Friday', visible: false }), true);
   },
 );
 
@@ -700,6 +732,72 @@ test(
       assert.match(report, /Console error: Player startup diagnostic/);
       assert.match(report, /JavaScript error[^\n]*Player startup failed/);
       assert.match(report, /App tab navigation returned HTTP 404/);
+    }
+  },
+);
+
+test(
+  'full-document link journeys inspect the bootstrapped destination and still reject a settled blank page',
+  { skip: !available, timeout: 60000 },
+  async (context) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'miter-navigation-journey-'));
+    const server = createServer((request, response) => {
+      if (request.url === '/project/page.mjs') {
+        response.setHeader('Content-Type', 'text/javascript');
+        setTimeout(
+          () =>
+            response.end(
+              "if (!location.search) document.querySelector('main').innerHTML = '<h1>Dispatch</h1>'",
+            ),
+          300,
+        );
+        return;
+      }
+      response.setHeader('Content-Type', 'text/html');
+      let body = '<main></main><script type="module" src="./page.mjs"></script>';
+      if (request.url === '/project/index.html') {
+        body =
+          '<main><h1>Desk</h1><a id="next" href="dispatch.html">Dispatch</a> <a id="blank" href="dispatch.html?blank">Blank</a></main>';
+      }
+      response.end(
+        '<!doctype html><html lang="en"><head><title>Desk</title><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" href="data:,"></head><body>' +
+          body +
+          '</body></html>',
+      );
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const options = await chromeFixture(context, directory, {
+      url: `http://127.0.0.1:${server.address().port}/project/index.html`,
+      close: () => new Promise((resolve) => server.close(resolve)),
+    });
+    const result = await runBrowserJourneys({
+      ...options,
+      journeys: [
+        {
+          name: 'Open dispatch',
+          steps: [
+            { type: 'click', selector: '#next' },
+            { type: 'expect', selector: 'h1', text: 'Dispatch' },
+          ],
+        },
+        {
+          name: 'Open blank',
+          steps: [
+            { type: 'click', selector: '#blank' },
+            { type: 'expect', selector: 'main', count: 1 },
+          ],
+        },
+      ],
+    });
+    for (const device of ['desktop', 'mobile']) {
+      const healthy = result.findings.filter((item) => item.startsWith(device + ' / Open dispatch'));
+      assert.deepEqual(healthy, []);
+      assert.ok(
+        result.findings.some(
+          (item) => item.includes(device + ' / Open blank') && item.includes('no visible text'),
+        ),
+      );
     }
   },
 );

@@ -13,6 +13,7 @@ export type ProcessOptions = {
   args: string[];
   signal: AbortSignal;
   store?: string;
+  dataDir?: string;
   port?: number;
   production?: boolean;
   forceWasi?: boolean;
@@ -57,6 +58,13 @@ function sandbox(options: ProcessOptions): string[] {
     );
     if (options.port) {
       profile.push('(allow network-inbound network-bind (local tcp "localhost:' + options.port + '"))');
+      if (options.dataDir) {
+        params.set('DATA', options.dataDir);
+        profile.push(
+          '(allow file-read* file-write* (subpath (param "DATA")))',
+          '(deny file-write-unlink (literal (param "DATA")))',
+        );
+      }
     }
     profile.push('(allow network-bind network-inbound network-outbound (subpath (param "SCRATCH")))');
   }
@@ -69,6 +77,9 @@ function sandbox(options: ProcessOptions): string[] {
 
 export function launchProcess(options: ProcessOptions) {
   options.signal.throwIfAborted();
+  if (options.dataDir && (!options.port || options.store)) {
+    throw new Error('Only a running framework server can use its application data directory.');
+  }
   const { scratch } = options;
   const home = path.join(scratch, 'home');
   const env: NodeJS.ProcessEnv = {
@@ -90,6 +101,9 @@ export function launchProcess(options: ProcessOptions) {
   if (options.store) {
     // pnpm coordinates simultaneous installs through per-user XDG runtime locks.
     env.XDG_RUNTIME_DIR = options.store;
+  }
+  if (options.dataDir) {
+    env.MITER_DATA_DIR = options.dataDir;
   }
   if (options.forceWasi) {
     env.NAPI_RS_FORCE_WASI = 'error';

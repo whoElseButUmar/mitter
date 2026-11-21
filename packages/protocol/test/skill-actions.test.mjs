@@ -18,8 +18,12 @@ function envelope(actions) {
 }
 
 test('asset writes canonicalize to the exact ordinary write in both proposal forms', () => {
-  for (const asset of ['components.mjs', 'foundation.css']) {
-    const [{ content }] = readBundledTaskSkill('app-design', asset).assets;
+  for (const [owner, asset] of [
+    ['app-design', 'components.mjs'],
+    ['app-design', 'foundation.css'],
+    ['engineering-quality', 'vite-api.mjs'],
+  ]) {
+    const [{ content }] = readBundledTaskSkill(owner, asset).assets;
     const path = 'web/' + asset;
     for (const version of [
       { base: 'missing' },
@@ -85,6 +89,7 @@ test('the packaged skill names are read-only actions in local and handoff replie
     name,
   }));
   actions.push({ type: 'skill', name: 'app-design', asset: 'components.mjs' });
+  actions.push({ type: 'skill', name: 'engineering-quality', asset: 'vite-api.mjs' });
 
   for (const action of actions) {
     assert.deepEqual(actionSchema.parse(action), action);
@@ -134,6 +139,8 @@ test('skill lookup rejects arbitrary names, paths, URLs and additional authority
       { install: true },
     ].map((extra) => ({ type: 'skill', name: 'app-design', ...extra })),
     { type: 'skill', name: 'caveman', asset: 'components.mjs' },
+    { type: 'skill', name: 'app-design', asset: 'vite-api.mjs' },
+    { type: 'skill', name: 'engineering-quality', asset: 'components.mjs' },
     { type: 'skill', name: 'app-design', asset: '../components.mjs' },
   ];
 

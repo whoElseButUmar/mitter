@@ -2466,7 +2466,7 @@ export class Service {
     switch (action.type) {
       case 'skill': {
         const resource = readBundledTaskSkill(action.name, action.asset);
-        if (action.asset !== 'components.mjs') {
+        if (!action.asset || action.asset === 'foundation.css') {
           this.store.set(`miter.skillRead.${worker.runId}.${action.name}`, true);
         }
         return resource;

@@ -41,7 +41,15 @@ export class BackendActivity {
       return;
     }
     // Match JSON field values. A property name or a pre-existing record is not a saved field.
-    const pending: unknown[] = [JSON.parse(body)];
+    let value: unknown;
+    try {
+      value = JSON.parse(body);
+    } catch {
+      // Framework routes can return a successful status with malformed JSON.
+      // Such a response cannot establish that a record was read from storage.
+      return;
+    }
+    const pending: unknown[] = [value];
     while (pending.length) {
       const data = pending.pop();
       if (data && typeof data === 'object') {

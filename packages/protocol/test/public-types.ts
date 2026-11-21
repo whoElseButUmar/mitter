@@ -64,7 +64,7 @@ type LegacyAction =
 type SkillAction = {
   type: 'skill';
   name: 'caveman' | 'no-ai-slop' | 'ponytail' | 'app-design' | 'engineering-quality';
-  asset?: 'foundation.css' | 'components.mjs' | undefined;
+  asset?: 'foundation.css' | 'components.mjs' | 'vite-api.mjs' | undefined;
 };
 
 type LegacyEnvelope = {

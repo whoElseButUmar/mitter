@@ -4,23 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { managedPnpmExecutable } from '../managed-pnpm.js';
 import { Locks } from '../locks.js';
+import { ensurePrivateDirectory } from '../private-directory.js';
 import { hasErrorCode } from '../types.js';
 import { runStage } from './process.js';
 
 const installs = new Locks();
-
-async function privateDirectory(directory: string) {
-  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  const stat = await fs.lstat(directory);
-  if (
-    !stat.isDirectory() ||
-    stat.uid !== process.getuid?.() ||
-    (stat.mode & 0o077) !== 0 ||
-    (await fs.realpath(directory)) !== directory
-  ) {
-    throw new Error('The Miter package cache must be a private directory owned by this user.');
-  }
-}
 
 async function pinnedLock(filename: string) {
   try {
@@ -44,7 +32,7 @@ export async function installDependencies(
   const cache = path.join(os.homedir(), 'Library', 'Caches', 'Miter');
   const store = path.join(cache, 'pnpm');
   const pins = path.join(cache, 'pnpm-locks');
-  await Promise.all([privateDirectory(store), privateDirectory(pins)]);
+  await Promise.all([ensurePrivateDirectory(store), ensurePrivateDirectory(pins)]);
   const executable = await fs.realpath(managedPnpmExecutable());
   const fingerprint = createHash('sha256').update(manifest).digest('hex');
   const pin = path.join(pins, fingerprint + '.yaml');

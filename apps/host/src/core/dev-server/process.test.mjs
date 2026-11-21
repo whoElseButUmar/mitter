@@ -131,6 +131,48 @@ import { createServer } from 'node:http';
 );
 
 test(
+  'replacement framework processes share project SQLite while other stores and build steps stay isolated',
+  { skip: process.platform !== 'darwin' },
+  async (t) => {
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'miter-sqlite-restart-')));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const projectData = path.join(root, 'project-data');
+    const auditData = path.join(root, 'audit-data');
+    await Promise.all([mkdir(projectData, { mode: 0o700 }), mkdir(auditData, { mode: 0o700 })]);
+    const executable = await realpath(process.execPath);
+    const signal = new AbortController().signal;
+    async function run(dataDir, mode) {
+      const scratch = await mkdtemp(path.join(root, 'launch-'));
+      const args = [
+        '--input-type=module',
+        '-e',
+        `
+        import { DatabaseSync } from 'node:sqlite';
+        import { join } from 'node:path';
+        const db = new DatabaseSync(join(process.env.MITER_DATA_DIR, 'desk.sqlite'));
+        db.exec('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS rentals (item TEXT)');
+        if (process.argv[1] === 'write') db.prepare('INSERT INTO rentals VALUES (?)').run('Camera');
+        console.log(JSON.stringify(db.prepare('SELECT item FROM rentals').all()));
+        db.close();
+      `,
+        mode,
+      ];
+      const child = launchProcess({ cwd: scratch, scratch, executable, signal, args, port: 4242, dataDir });
+      assert.equal(await child.finished, 0, child.detail());
+      await rm(scratch, { recursive: true });
+      return child.detail();
+    }
+    assert.match(await run(projectData, 'write'), /"item":"Camera"/);
+    assert.match(await run(projectData, 'read'), /"item":"Camera"/);
+    assert.match(await run(auditData, 'read'), /\[\]/);
+    assert.throws(
+      () => launchProcess({ cwd: root, scratch: root, executable, signal, args: [], dataDir: projectData }),
+      /Only a running framework server/,
+    );
+  },
+);
+
+test(
   'portable runtime detects and preserves macOS quarantine and skips native addons in framework workers',
   { skip: process.platform !== 'darwin' },
   async (t) => {

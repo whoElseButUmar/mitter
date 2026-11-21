@@ -74,12 +74,55 @@ function validPath(path: string): boolean {
   return /^\/(?!\/)/.test(path) && path.length <= 16384 && !/[\\#\x00-\x1f]/.test(path);
 }
 
+type FrameworkAudit = {
+  freshRuntime: () => Promise<DevServer>;
+  onBackendResponse: (method: string, path: string, status: number, body: string) => void;
+};
+
+// Observe bounded JSON at the real API boundary. Browser-local state and cached
+// responses cannot produce evidence here. Forwarding continues for larger payloads.
+function observeApi(
+  upstream: IncomingMessage,
+  method: string,
+  path: string,
+  record: FrameworkAudit['onBackendResponse'],
+) {
+  const status = upstream.statusCode ?? 502;
+  if (status < 200 || status >= 300) {
+    return;
+  }
+  if (status === 204) {
+    upstream.once('end', () => record(method, path, status, ''));
+    return;
+  }
+  if (
+    upstream.headers['content-type']?.split(';')[0]?.trim().toLowerCase() !== 'application/json' ||
+    (upstream.headers['content-encoding'] && upstream.headers['content-encoding'] !== 'identity')
+  ) {
+    return;
+  }
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  upstream.on('data', (chunk: Buffer) => {
+    bytes += chunk.length;
+    if (bytes <= 1024 * 1024) {
+      chunks.push(chunk);
+    }
+  });
+  upstream.once('end', () => {
+    if (bytes <= 1024 * 1024) {
+      record(method, path, status, Buffer.concat(chunks).toString('utf8'));
+    }
+  });
+}
+
 /** Own the framework child and publish it only through this task's browser capability. */
 export async function serveDevPreview(
   runtime: DevServer,
   hostname: string,
   capability: string,
   restart?: (signal: AbortSignal) => Promise<DevServer>,
+  audit?: FrameworkAudit,
 ): Promise<PreviewServer> {
   if (!/^miter-[a-f0-9]{32}\.localhost$/.test(hostname) || !/^[a-f0-9]{32}$/.test(capability)) {
     await runtime.close();
@@ -156,6 +199,10 @@ export async function serveDevPreview(
     }
     lastRequest = Date.now();
     const headers = requestHeaders(request);
+    const auditApi = audit && path.startsWith('/api/');
+    if (auditApi) {
+      headers['accept-encoding'] = 'identity';
+    }
     if (request.headers.origin) {
       headers.origin = target.origin;
     }
@@ -169,6 +216,13 @@ export async function serveDevPreview(
         headers,
       },
       (upstream) => {
+        if (auditApi && method) {
+          observeApi(upstream, method, path, (verb, route, status, body) => {
+            if (owned.target === target) {
+              audit.onBackendResponse(verb, route, status, body);
+            }
+          });
+        }
         const headers: OutgoingHttpHeaders = {};
         for (const name of [
           'content-type',
@@ -309,10 +363,9 @@ export async function serveDevPreview(
     throw error;
   }
   let closing: Promise<void> | undefined;
-  return {
+  const preview: PreviewServer = {
     url: origin + entry,
     lastRequest: () => lastRequest,
-    exited: owned.exited,
     close() {
       if (!closing) {
         closing = new Promise<void>((resolve, reject) => {
@@ -332,4 +385,28 @@ export async function serveDevPreview(
       return closing;
     },
   };
+  if (audit) {
+    let pristine = true;
+    preview.resetBackend = async () => {
+      if (pristine) {
+        pristine = false;
+        return;
+      }
+      // A fresh process and store also clear module caches and open SQLite handles.
+      await owned.close();
+      const next = await audit.freshRuntime();
+      try {
+        if (closing) {
+          throw new Error('Framework audit closed during reset.');
+        }
+        owned = new FrameworkRuntime(next);
+      } catch (error) {
+        await next.close();
+        throw error;
+      }
+    };
+  } else {
+    preview.exited = owned.exited;
+  }
+  return preview;
 }

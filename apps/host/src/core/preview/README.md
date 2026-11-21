@@ -11,11 +11,15 @@ For a standalone Vite or Next.js project, choose **New task** and enter “Insta
 
 Use a standard `vite` or `next dev` script and dependencies from the public npm registry. Miter owns the port. It runs the app in a private copy with a separate home directory. Install hooks, credentials, external backend connections and shell pipelines are outside this runtime. An existing pnpm lockfile controls dependency resolution. When a project has no pnpm lockfile, Miter keeps the resolved versions in its private cache. Your project's source and existing dependency folders stay intact.
 
-The terminal lists the project’s managed runs alongside its shells. **Run** reselects a running task. Restart its session to pick up source changes, or stop it to release the listener. The helper attempts one recovery after an unexpected server exit. Closing Miter or leaving the preview idle for 30 minutes stops the server. Files the framework writes in its temporary copy last for that session.
+The terminal lists the project’s managed runs alongside its shells. **Run** reselects a running task. Restart its session to pick up source changes, or stop it to release the listener. The helper attempts one recovery after an unexpected server exit. Closing Miter or leaving the preview idle for 30 minutes stops the server.
+
+Keep SQLite databases and other durable server files under `process.env.MITER_DATA_DIR`. Miter assigns a private directory to each project and reuses it across Restart, Stop and Run, and helper restarts. Browser checks use disposable data. The framework's working copy is removed when its server stops.
 
 A framework preview copies up to 2,000 included source and public asset files, 32 MiB per file and 128 MiB total. It includes the public discovery manifest at `public/.well-known/ard.json`. The file count excludes all other hidden paths, installed dependencies, build output, vendor and cache directories, and private configuration. Dependency installation has its own private store. The static preview limits below apply to linked static assets.
 
 ## Add a backend
+
+For Vite, the bundled `vite-api.mjs` asset connects the same request handler to the development and production preview servers. Register `viteApi(handle, isPage)` in the Vite config and declare the handler below so Miter can check real API writes and reads. The page predicate identifies the app’s client routes. Other missing resources return ordinary HTTP errors. Each browser journey has its own disposable backend store.
 
 Put `miter.backend.json` in the project root. List the handler and the project-local Node
 modules it imports. Node built-ins are available. Each source file can contain up to 120 KB.

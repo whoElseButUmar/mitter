@@ -5,7 +5,7 @@ import { inspectInterfaceCopy } from './interface-copy.js';
 import { checkNativeValidation } from './browser-validation.js';
 import { captureScreenshot, failureEvidence } from './browser-evidence.js';
 import axe from 'axe-core';
-import type { Browser, Page } from 'puppeteer-core';
+import type { Browser, HTTPRequest, Page } from 'puppeteer-core';
 import { z } from 'zod';
 import type { BackendActivity } from './backend-journey.js';
 import {
@@ -320,6 +320,74 @@ async function keyboardFindings(page: Page): Promise<string[]> {
   return [...new Set(findings)];
 }
 
+// Responsive layouts can render the same control in both navigation bars.
+// Resolve the actual target on this viewport, retaining ambiguity for two visible matches.
+function visibleControl(selector: string, value?: string) {
+  const matches = Array.from(document.querySelectorAll(selector)).filter(
+    (element) => element.getClientRects().length && element.checkVisibility({ checkVisibilityCSS: true }),
+  );
+  const target = matches[0];
+  if (matches.length !== 1 || !target) {
+    return null;
+  }
+  if (
+    value !== undefined &&
+    !((target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) && target.value === value)
+  ) {
+    return null;
+  }
+  return target;
+}
+
+export function matchesJourneyExpectation(
+  expected: Extract<BrowserJourney['steps'][number], { type: 'expect' }>,
+) {
+  const elements = Array.from(document.querySelectorAll(expected.selector));
+  if (expected.count !== undefined && elements.length !== expected.count) {
+    return false;
+  }
+  const matchByContent =
+    expected.count === undefined && (expected.text !== undefined || expected.value !== undefined);
+  const matches = elements.filter((element) => {
+    const style = getComputedStyle(element);
+    const visible =
+      element.getClientRects().length > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    if (expected.visible !== undefined && visible !== expected.visible) {
+      return false;
+    }
+    let text = element.textContent ?? '';
+    if (matchByContent && elements.length > 1 && expected.visible !== false) {
+      if (!visible || !element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) {
+        return false;
+      }
+      if (element instanceof HTMLElement) {
+        text = element.innerText;
+      }
+    }
+    if (expected.text !== undefined && !text.includes(expected.text)) {
+      return false;
+    }
+    if (
+      expected.value !== undefined &&
+      (!(
+        element instanceof HTMLInputElement ||
+        element instanceof HTMLTextAreaElement ||
+        element instanceof HTMLSelectElement
+      ) ||
+        element.value !== expected.value)
+    ) {
+      return false;
+    }
+    return expected.focused === undefined || (document.activeElement === element) === expected.focused;
+  });
+  // A text or value assertion identifies one record among siblings. An explicit
+  // count applies to the whole selector and every selected element must match.
+  if (matchByContent) {
+    return matches.length === 1;
+  }
+  return matches.length === elements.length && elements.length === (expected.count ?? 1);
+}
+
 async function executeStep(page: Page, step: BrowserJourney['steps'][number]): Promise<void> {
   if (step.type === 'reload') {
     await page.reload({ waitUntil: 'networkidle0', timeout: operationTimeout });
@@ -339,53 +407,15 @@ async function executeStep(page: Page, step: BrowserJourney['steps'][number]): P
     return;
   }
   if (step.type === 'expect') {
-    await page.waitForFunction(
-      (expected) => {
-        const elements = Array.from(document.querySelectorAll(expected.selector));
-        const requiredCount = expected.count ?? 1;
-        if (elements.length !== requiredCount) {
-          return false;
-        }
-        return elements.every((element) => {
-          const style = getComputedStyle(element);
-          const visible =
-            element.getClientRects().length > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-          if (expected.visible !== undefined && visible !== expected.visible) {
-            return false;
-          }
-          if (expected.text !== undefined && !(element.textContent ?? '').includes(expected.text)) {
-            return false;
-          }
-          if (
-            expected.value !== undefined &&
-            (!(
-              element instanceof HTMLInputElement ||
-              element instanceof HTMLTextAreaElement ||
-              element instanceof HTMLSelectElement
-            ) ||
-              element.value !== expected.value)
-          ) {
-            return false;
-          }
-          return expected.focused === undefined || (document.activeElement === element) === expected.focused;
-        });
-      },
-      { timeout: operationTimeout },
-      step,
-    );
+    await page.waitForFunction(matchesJourneyExpectation, { timeout: operationTimeout }, step);
     return;
   }
 
-  await page.waitForFunction(
-    (selector) => document.querySelectorAll(selector).length === 1,
-    { timeout: operationTimeout },
-    step.selector,
-  );
-  const control = await page.$(step.selector);
-  if (!control) {
-    throw new Error('The control disappeared before the interaction: ' + step.selector);
-  }
+  const control = await page.waitForFunction(visibleControl, { timeout: operationTimeout }, step.selector);
   try {
+    if (!('asLocator' in control)) {
+      throw new Error('No visible control matched: ' + step.selector);
+    }
     if (step.type === 'click') {
       await control.click();
       return;
@@ -401,7 +431,7 @@ async function executeStep(page: Page, step: BrowserJourney['steps'][number]): P
     }
     // Keyboard select-all shortcuts vary with headless platform bindings.
     // Locator.fill owns clearing, input events and supported input types.
-    const locator = page.locator(step.selector).setTimeout(operationTimeout);
+    const locator = control.asLocator().setTimeout(operationTimeout);
     if (step.value === '') {
       // The typing path has no keystroke for an empty value. The supported
       // direct path also dispatches input/change when clearing an old value.
@@ -409,21 +439,57 @@ async function executeStep(page: Page, step: BrowserJourney['steps'][number]): P
     } else {
       await locator.fill(step.value);
     }
-    await page.waitForFunction(
-      ({ selector, value }) => {
-        const elements = document.querySelectorAll(selector);
-        const element = elements[0];
+    const filled = await page.waitForFunction(
+      visibleControl,
+      { timeout: operationTimeout },
+      step.selector,
+      step.value,
+    );
+    await filled.dispose();
+  } finally {
+    await control.dispose();
+  }
+}
+
+/** Input can return while the replacement document is still fetching its entry module. */
+async function dispatchPageAction(page: Page, step: BrowserJourney['steps'][number]) {
+  let navigated = false;
+  const observe = (request: HTTPRequest) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      navigated = true;
+    }
+  };
+  page.on('request', observe);
+  const controller = new AbortController();
+  const navigation = page.waitForNavigation({
+    waitUntil: 'domcontentloaded',
+    timeout: operationTimeout,
+    signal: controller.signal,
+  });
+  // Same-document actions cancel this listener after the input has been dispatched.
+  void navigation.catch(() => {});
+  try {
+    await executeStep(page, step);
+    // The renderer round trip also observes a navigation request queued by the
+    // input event. DOMContentLoaded includes deferred and module script execution.
+    const ready = await page.waitForFunction(
+      () => {
+        const timing = performance.getEntriesByType('navigation')[0];
         return (
-          elements.length === 1 &&
-          (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) &&
-          element.value === value
+          document.readyState === 'complete' ||
+          (timing instanceof PerformanceNavigationTiming && timing.domContentLoadedEventEnd > 0)
         );
       },
       { timeout: operationTimeout },
-      step,
     );
+    await ready.dispose();
+    if (navigated) {
+      await navigation;
+    }
+    return navigated;
   } finally {
-    await control.dispose();
+    controller.abort();
+    page.off('request', observe);
   }
 }
 
@@ -526,6 +592,19 @@ export async function runBrowserJourneys(request: JourneyRequest): Promise<Brows
                     origin: allowed.origin,
                     storageTypes: 'all',
                   });
+                  const capability = allowed.pathname.split('/')[1];
+                  if (request.frameworkRoutes && capability && /^[a-f0-9]{32}$/.test(capability)) {
+                    // Framework navigation has left the capability-bearing entry.
+                    // Restore only the host's preview cookie, never app state.
+                    await context.setCookie({
+                      name: 'miter_preview',
+                      value: capability,
+                      domain: allowed.hostname,
+                      path: '/',
+                      httpOnly: true,
+                      sameSite: 'Strict',
+                    });
+                  }
                 } finally {
                   await session.detach();
                 }
@@ -533,13 +612,18 @@ export async function runBrowserJourneys(request: JourneyRequest): Promise<Brows
               if (step.type === 'press') {
                 const baseline = await focusBaseline(page, false);
                 try {
-                  await executeStep(page, step);
-                  for (const finding of await focusedElementFindings(page, baseline)) {
-                    add(label + ' / step ' + (stepIndex + 1), finding);
+                  const navigated = await dispatchPageAction(page, step);
+                  // The pre-keypress element handles belong to the old document.
+                  if (!navigated) {
+                    for (const finding of await focusedElementFindings(page, baseline)) {
+                      add(label + ' / step ' + (stepIndex + 1), finding);
+                    }
                   }
                 } finally {
                   await baseline.dispose();
                 }
+              } else if (step.type === 'click') {
+                await dispatchPageAction(page, step);
               } else {
                 await executeStep(page, step);
               }

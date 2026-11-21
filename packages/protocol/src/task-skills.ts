@@ -2,8 +2,10 @@ import { z } from 'zod';
 import { APP_DESIGN_GUIDANCE, APP_FOUNDATION_CSS } from './task-skills/app-design.js';
 import { APP_COMPONENTS_JS } from './task-skills/app-components.js';
 import { ENGINEERING_GUIDANCE, PONYTAIL_GUIDANCE } from './task-skills/engineering.js';
+import { VITE_API_JS } from './task-skills/vite-api.js';
 import { CAVEMAN_GUIDANCE, NO_AI_SLOP_GUIDANCE } from './task-skills/writing.js';
 import {
+  bundledAssetOwner,
   bundledTaskSkillIdSchema,
   bundledTaskSkillResourceSchema,
   type BundledTaskSkillId,
@@ -82,6 +84,8 @@ export const bundledTaskSkills = z
         'Name icon-only buttons by action. Include a working favicon in the first page; engineering-quality ' +
         'supplies a ready-to-use icon. Preserve existing branding. Set hierarchy and density by task. ' +
         'Omit fake status dots, decorative arrows, generic card layouts and idle storage labels. ' +
+        'Keep main and h1 visible during navigation and startup. During refresh keep records at full opacity ' +
+        'and announce progress with a separate status. ' +
         'Add date ranges or presets only when needed. Read engineering-quality for miter.quality.json. ' +
         'Verify linked controls, isolated tests, Chrome journeys, accessibility and Lighthouse 100 in every ' +
         'scored desktop/mobile category. Fix failures without hiding content or weakening checks. ' +
@@ -95,12 +99,12 @@ export const bundledTaskSkills = z
       scope: 'engineering',
       instructions: ENGINEERING_GUIDANCE,
       promptInstructions:
-        'Use feature modules, shared domain rules, strict types and boundary validation. Preserve authorization, ' +
-        'exact values, user edits and async ownership. Validate on the server, parameterize queries, handle ' +
-        'duplicates and make related writes atomic. Handle errors and recovery, clean up resources and report ' +
-        'observed test results. In new Vite TypeScript apps use ES2022, DOM and DOM.Iterable libs. With ' +
-        'existing DOM-only libs use Array.from for NodeList array operations. Miter runs dependency-free ' +
-        '*.test.mjs in isolation. See engineering-quality for pnpm previews, production audits and Node APIs.',
+        'Share domain rules, validate on the server, parameterize queries and use atomic writes. Preserve ' +
+        'inputs on failure. In new Vite TypeScript apps use ES2022, DOM and DOM.Iterable libs. With ' +
+        'existing DOM-only libs use Array.from for NodeList array operations. For a new Vite ' +
+        'backend, copy the vite-api.mjs write asset, register viteApi(handle, isPage) in vite.config.mjs and ' +
+        'declare miter.backend.json. Store SQLite under the supplied dataDir. Use unique CSS selectors for ' +
+        'journeys on both layouts. Read engineering-quality for exact wiring and isolated tests.',
     },
   ]);
 
@@ -122,9 +126,8 @@ export function writingSkillsText(): string {
 export function taskSkillsText(): string {
   return [
     renderSkills(bundledTaskSkills),
-    'Read detailed built-in instructions with {"type":"skill","name":"app-design"} or another skill ' +
-      'name above. This read-only action returns packaged text and reference assets; it never installs ' +
-      'anything or writes project files. Reuse an already-read reference in this conversation.',
+    'Read a built-in skill with {"type":"skill","name":"app-design"} or another name above. ' +
+      'Reuse references already read. Skill reads do not install or write files.',
     'END MITER BUILT-IN SKILLS',
   ].join('\n\n');
 }
@@ -139,7 +142,14 @@ export function readBundledTaskSkill(
   }
   const assets: BundledTaskSkillResource['assets'] = [];
   let instructions = skill.instructions;
-  if (name === 'app-design') {
+  if (asset !== undefined && bundledAssetOwner[asset] !== name) {
+    throw new Error('Read ' + asset + ' from ' + bundledAssetOwner[asset] + '.');
+  }
+  if (asset === 'vite-api.mjs') {
+    assets.push({ path: asset, content: VITE_API_JS });
+    instructions =
+      'Vite development/preview plugin and Node HTTP API adapter. See engineering-quality for the route and storage contracts.';
+  } else if (name === 'app-design') {
     if (asset === 'components.mjs') {
       assets.push({ path: 'components.mjs', content: APP_COMPONENTS_JS });
       instructions =
@@ -150,8 +160,6 @@ export function readBundledTaskSkill(
     } else {
       assets.push({ path: 'foundation.css', content: APP_FOUNDATION_CSS });
     }
-  } else if (asset !== undefined) {
-    throw new Error('Reference assets belong to the app-design skill.');
   }
   return bundledTaskSkillResourceSchema.parse({
     id: skill.id,

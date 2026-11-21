@@ -56,7 +56,7 @@ test('every foundation color and shape token has a local default', () => {
   assert.doesNotMatch(APP_FOUNDATION_CSS, /forced-color-adjust\s*:\s*none\b/);
 });
 
-test('scrollbar defaults remain visible against the track and modal background', () => {
+function tokenContrast(first, second) {
   const colors = new Map();
 
   for (const match of APP_FOUNDATION_CSS.matchAll(/(--ui-[\w-]+)\s*:\s*(#[0-9a-f]{3,6})\s*;/gi)) {
@@ -83,13 +83,33 @@ test('scrollbar defaults remain visible against the track and modal background',
     return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
   }
 
-  const thumb = luminance(colors.get('--ui-scroll-thumb'));
+  const a = luminance(colors.get(first));
+  const b = luminance(colors.get(second));
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
 
+test('scrollbar defaults remain visible against the track and modal background', () => {
   for (const token of ['--ui-scroll-track', '--ui-bg']) {
-    const surface = luminance(colors.get(token));
-    const ratio = (Math.max(thumb, surface) + 0.05) / (Math.min(thumb, surface) + 0.05);
-    assert.ok(ratio >= 3, 'Scrollbar thumb contrast against ' + token + ' is ' + ratio);
+    assert.ok(tokenContrast('--ui-scroll-thumb', token) >= 3, 'Scrollbar thumb contrast against ' + token);
   }
+});
+
+test('the first-load shell remains readable while the app retrieves records', () => {
+  assert.match(
+    APP_DESIGN_GUIDANCE,
+    /<main><h1>Orders<\/h1><p class="ui-loading" role="status">Loading orders…<\/p><\/main>/,
+  );
+  assert.match(APP_DESIGN_GUIDANCE, /aria-busy="true".+sibling role="status"/);
+  assert.match(APP_DESIGN_GUIDANCE, /Keep text, rows, headers and ancestors at full opacity/);
+  assert.match(
+    APP_FOUNDATION_CSS,
+    /\.ui \.ui-loading \{ color:var\(--ui-text\); background:var\(--ui-bg\); \}/,
+  );
+  assert.doesNotMatch(
+    APP_FOUNDATION_CSS,
+    /(?:\[aria-busy[^\]]*\]|\.ui-loading)[^{}]*\{[^}]*opacity\s*:\s*0?\./,
+  );
+  assert.ok(tokenContrast('--ui-text', '--ui-bg') >= 4.5);
 });
 
 test('design guidance scopes widgets to requested UI and distinguishes CSS from accessible behavior', () => {

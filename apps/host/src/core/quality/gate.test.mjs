@@ -456,6 +456,29 @@ test(
   },
 );
 
+test('a declared Vite backend needs a real API read-back on each device', { skip: !supported }, async (t) => {
+  const { root, request } = await fixture(t);
+  await fs.writeFile(
+    path.join(root, 'package.json'),
+    JSON.stringify({
+      scripts: { dev: 'vite' },
+      devDependencies: { vite: '8.0.0' },
+    }),
+  );
+  await fs.writeFile(path.join(root, 'miter.backend.json'), JSON.stringify({ entry: 'backend.mjs' }));
+  await fs.writeFile(path.join(root, 'backend.mjs'), 'export const handle = () => Response.json([]);');
+  for (const devices of [['desktop'], ['desktop', 'mobile']]) {
+    const results = await verifyProjectQuality(request, async ({ devProject }) => {
+      assert.equal(devProject.hasBackend, true);
+      return {
+        ...passingBrowser(),
+        backend: devices.map((device) => ({ device, journey: journeys[0].name })),
+      };
+    });
+    assert.equal(resultNamed(results, 'browser').ok, devices.length === 2);
+  }
+});
+
 test(
   'cancellation during browser verification propagates to the owner without completion evidence',
   { skip: !supported },

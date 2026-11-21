@@ -8,6 +8,7 @@ import { removeScratch } from '../quality/sandbox.js';
 import { launchProcess, runStage, waitForPage } from './process.js';
 import { snapshotDevProject, type Framework } from './project.js';
 import { runViteTypecheck } from './vite-typecheck.js';
+import { ensurePrivateDirectory } from '../private-directory.js';
 export { detectDevProject, devProjectFingerprint } from './project.js';
 
 export type DevServer = {
@@ -49,6 +50,7 @@ async function launchOnAvailablePort(
   framework: Framework,
   entry: string,
   nextBundler: string[],
+  dataDir: string,
 ) {
   const base: string[] = [entry];
   if (framework === 'vite') {
@@ -69,7 +71,7 @@ async function launchOnAvailablePort(
   // different ephemeral port, keeping the installed dependencies and any production build.
   for (let attempt = 0; ; attempt++) {
     const port = await availablePort();
-    const child = launchProcess({ ...options, args: [...base, '--port', String(port)], port });
+    const child = launchProcess({ ...options, args: [...base, '--port', String(port)], port, dataDir });
     const url = 'http://127.0.0.1:' + port + '/';
     try {
       await waitForPage(url, child, options.signal);
@@ -89,6 +91,7 @@ export async function startDevServer(
   signal: AbortSignal,
   mode: 'development' | 'production' = 'development',
   onOutput?: (text: string) => void,
+  projectDataDir?: string,
 ): Promise<DevServer> {
   if (process.platform !== 'darwin') {
     throw new Error('Managed framework servers require the macOS process sandbox.');
@@ -154,7 +157,9 @@ export async function startDevServer(
       await runStage({ ...options, args: build }, framework + ' build', 180_000);
     }
     onOutput?.('Starting the ' + framework + ' server.\n');
-    const { server, url } = await launchOnAvailablePort(options, framework, entry, bundler);
+    const dataDir = projectDataDir ?? path.join(scratch, 'runtime-data');
+    await ensurePrivateDirectory(dataDir);
+    const { server, url } = await launchOnAvailablePort(options, framework, entry, bundler, dataDir);
     child = server;
     const exited = server.finished.then(async () => {
       await removeScratch(scratch);

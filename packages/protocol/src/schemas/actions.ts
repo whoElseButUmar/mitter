@@ -2,8 +2,9 @@ import { z } from 'zod';
 import { MAX_TEXT } from '../constants.js';
 import { editBaseError } from '../validation.js';
 import { identifierSchema, integerSchema, textSchema } from './primitives.js';
-import { bundledTaskAssetSchema, bundledTaskSkillIdSchema } from './task-skills.js';
+import { bundledAssetOwner, bundledTaskAssetSchema, bundledTaskSkillIdSchema } from './task-skills.js';
 import { APP_COMPONENTS_JS, APP_FOUNDATION_CSS } from '../task-skills/app-design.js';
+import { VITE_API_JS } from '../task-skills/vite-api.js';
 
 const pathSchema = textSchema('path', 1000);
 
@@ -53,10 +54,10 @@ export const skillActionSchema = z
   .strictObject({
     type: z.literal('skill').describe('Read one packaged skill without accessing the project or network.'),
     name: bundledTaskSkillIdSchema.describe('The exact name of a skill bundled with Miter.'),
-    asset: bundledTaskAssetSchema.optional().describe('Optional app-design asset to read separately.'),
+    asset: bundledTaskAssetSchema.optional().describe('Optional bundled asset to read separately.'),
   })
-  .refine((action) => action.asset === undefined || action.name === 'app-design', {
-    message: 'Reference assets belong to the app-design skill.',
+  .refine((action) => action.asset === undefined || action.name === bundledAssetOwner[action.asset], {
+    message: 'Read assets from their owning skill.',
     path: ['asset'],
   })
   .describe('Read-only access to packaged skill instructions and reference assets.');
@@ -234,7 +235,11 @@ export const referencedEditSchema = z
   .union([referencedWriteSchema, referencedReplaceSchema])
   .describe('A non-executable edit using a recorded read reference.');
 
-const bundledSources = { 'components.mjs': APP_COMPONENTS_JS, 'foundation.css': APP_FOUNDATION_CSS };
+const bundledSources = {
+  'components.mjs': APP_COMPONENTS_JS,
+  'foundation.css': APP_FOUNDATION_CSS,
+  'vite-api.mjs': VITE_API_JS,
+};
 
 export const bundledWriteSchema = z
   .union([
@@ -248,7 +253,7 @@ export const bundledWriteSchema = z
     }
     return writeActionSchema.parse(write);
   })
-  .describe('Copy a packaged app-design source into an ordinary, version-checked file write.');
+  .describe('Copy a packaged reference into an ordinary, version-checked file write.');
 
 export const proposalActionSchema = z
   .union([actionSchema, referencedEditSchema, bundledWriteSchema])

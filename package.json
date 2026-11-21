@@ -1,6 +1,6 @@
 {
   "name": "mitter",
-  "version": "1.0.0-rc.62",
+  "version": "1.0.0-rc.64",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@12.11.2",

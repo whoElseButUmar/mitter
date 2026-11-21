@@ -7,10 +7,16 @@ export const bundledTaskSkillIdSchema = z
 export type BundledTaskSkillId = z.infer<typeof bundledTaskSkillIdSchema>;
 
 export const bundledTaskAssetSchema = z
-  .enum(['foundation.css', 'components.mjs'])
-  .describe('An exact, offline app-design reference asset bundled with Miter.');
+  .enum(['foundation.css', 'components.mjs', 'vite-api.mjs'])
+  .describe('An exact, offline reference asset bundled with Miter.');
 
 export type BundledTaskAsset = z.infer<typeof bundledTaskAssetSchema>;
+
+export const bundledAssetOwner: Readonly<Record<BundledTaskAsset, BundledTaskSkillId>> = {
+  'components.mjs': 'app-design',
+  'foundation.css': 'app-design',
+  'vite-api.mjs': 'engineering-quality',
+};
 
 export const bundledTaskSkillResourceSchema = z
   .strictObject({
@@ -35,7 +41,7 @@ export const bundledTaskSkillResourceSchema = z
           .describe('One packaged reference asset returned without file or network access.'),
       )
       .max(1)
-      .describe('One requested app-design reference; other skills have no assets.'),
+      .describe('An optional reference belonging to the requested skill.'),
   })
   .describe('Read-only built-in skill data; no install, execution, or file-edit authority.');
 

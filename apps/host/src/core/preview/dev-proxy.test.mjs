@@ -125,3 +125,58 @@ test('a crashed dev server recovers once at its original preview URL and cleans 
   assert.equal(restarts, 1);
   assert.equal((await get(u, '/', { cookie })).status, 503);
 });
+
+test('framework auditing observes upstream JSON and gives each case a new process on the same origin', async (t) => {
+  let starts = 0;
+  const closed = [];
+  async function start() {
+    const id = ++starts;
+    const exited = Promise.withResolvers();
+    const records = [];
+    const server = createServer((req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'POST') {
+        records.push(id);
+      }
+      res.end(JSON.stringify(records));
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return {
+      url: 'http://127.0.0.1:' + server.address().port + '/',
+      sourceRoot: '/tmp/miter-audit-fixture',
+      exited: exited.promise,
+      async close() {
+        await new Promise((resolve) => server.close(resolve));
+        closed.push(id);
+        exited.resolve();
+      },
+    };
+  }
+  const seen = [];
+  const capability = 'e'.repeat(32);
+  const preview = await serveDevPreview(
+    await start(),
+    'miter-' + 'f'.repeat(32) + '.localhost',
+    capability,
+    undefined,
+    {
+      freshRuntime: start,
+      onBackendResponse: (...args) => seen.push(args),
+    },
+  );
+  t.after(() => preview.close());
+  const url = new URL(preview.url);
+  const headers = { cookie: 'miter_preview=' + capability, origin: url.origin };
+  await preview.resetBackend();
+  await get(url, '/api/records', headers, 'POST');
+  assert.equal((await get(url, '/api/records', headers)).body, '[1]');
+  await preview.resetBackend();
+  assert.deepEqual(closed, [1]);
+  assert.equal((await get(url, '/api/records', headers)).body, '[]');
+  await get(url, '/not-an-api', headers);
+  assert.deepEqual(seen, [
+    ['POST', '/api/records', 200, '[1]'],
+    ['GET', '/api/records', 200, '[1]'],
+    ['GET', '/api/records', 200, '[]'],
+  ]);
+});

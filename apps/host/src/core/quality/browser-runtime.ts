@@ -410,7 +410,12 @@ async function observeLighthouse(
   }
 }
 
-type FrameworkTarget = { root: string; framework: 'vite' | 'next'; fingerprint: string };
+type FrameworkTarget = {
+  root: string;
+  framework: 'vite' | 'next';
+  fingerprint: string;
+  hasBackend?: boolean;
+};
 type BrowserQualityRequest = (
   | {
       snapshot: PreviewSnapshot;
@@ -432,24 +437,35 @@ async function startFrameworkAudit(
   project: FrameworkTarget,
   mode: 'development' | 'production',
   signal: AbortSignal,
+  activity: BackendActivity,
 ): Promise<PreviewServer> {
-  const runtime = await startDevServer(project.root, signal, mode);
-  try {
-    if (runtime.framework !== project.framework || runtime.fingerprint !== project.fingerprint) {
+  const start = async () => {
+    // Omitting the live project data directory gives this process a disposable store.
+    const runtime = await startDevServer(project.root, signal, mode);
+    try {
+      signal.throwIfAborted();
+      if (runtime.framework === project.framework && runtime.fingerprint === project.fingerprint) {
+        return runtime;
+      }
       throw new Error(
         'The framework project changed before its server was ready. Finish again to verify the current project.',
       );
+    } catch (error) {
+      await runtime.close();
+      throw error;
     }
-    signal.throwIfAborted();
-    return await serveDevPreview(
-      runtime,
-      'miter-' + randomBytes(16).toString('hex') + '.localhost',
-      randomBytes(16).toString('hex'),
-    );
-  } catch (error) {
-    await runtime.close();
-    throw error;
+  };
+  let audit;
+  if (project.hasBackend) {
+    audit = { freshRuntime: start, onBackendResponse: activity.response };
   }
+  return serveDevPreview(
+    await start(),
+    'miter-' + randomBytes(16).toString('hex') + '.localhost',
+    randomBytes(16).toString('hex'),
+    undefined,
+    audit,
+  );
 }
 
 function launchAuditBrowser(executablePath: string, temporary: string, url: string) {
@@ -526,7 +542,7 @@ export async function runBrowserQuality(request: BrowserQualityRequest): Promise
     const activity = new BackendActivity();
     let url: string;
     if (request.devProject) {
-      server = await startFrameworkAudit(request.devProject, 'development', signal);
+      server = await startFrameworkAudit(request.devProject, 'development', signal, activity);
       url = server.url;
     } else {
       server = await serveSnapshot(
@@ -574,7 +590,7 @@ export async function runBrowserQuality(request: BrowserQualityRequest): Promise
         await server.close();
         server = undefined;
         signal.throwIfAborted();
-        server = await startFrameworkAudit(request.devProject, 'production', signal);
+        server = await startFrameworkAudit(request.devProject, 'production', signal, activity);
         url = server.url;
         browser = await launchAuditBrowser(executablePath, temporary, url);
       }

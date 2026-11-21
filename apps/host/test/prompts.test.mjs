@@ -38,6 +38,9 @@ function assertDefaultsOnce(prompt) {
   assert.match(prompt, /Append row context after the full label/);
   assert.match(prompt, /new Vite TypeScript apps use ES2022, DOM and DOM\.Iterable libs/);
   assert.match(prompt, /existing DOM-only libs use Array\.from for NodeList array operations/);
+  assert.match(prompt, /copy the vite-api\.mjs write asset, register viteApi\(handle, isPage\)/);
+  assert.match(prompt, /declare miter\.backend\.json/);
+  assert.match(prompt, /During refresh keep records at full opacity/);
   assert.ok(prompt.includes('pin vite to "' + STARTER_VITE_VERSION + '"'));
   assert.match(prompt, /ERR_PNPM_IGNORED_BUILDS/);
   assert.match(prompt, /node_modules are excluded from file actions/);

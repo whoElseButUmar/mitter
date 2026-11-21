@@ -42,11 +42,15 @@ test('a bundled write has one receipt and one journal edit across shorthand and 
   assert.equal(store.writes(worker.runId).length, 1);
 });
 
-test('reading only the component asset does not satisfy the full implementation skill requirement', async (context) => {
+test('reading only a reusable module does not satisfy the full implementation skill requirement', async (context) => {
   const { service, worker, store } = await fixture(context);
-  await importBatch(service, worker, [{ type: 'skill', name: 'app-design', asset: 'components.mjs' }]);
+  await importBatch(service, worker, [
+    { type: 'skill', name: 'app-design', asset: 'components.mjs' },
+    { type: 'skill', name: 'engineering-quality', asset: 'vite-api.mjs' },
+  ]);
   await runToBoundary(service, worker);
   assert.equal(store.get(`miter.skillRead.${worker.runId}.app-design`), undefined);
+  assert.equal(store.get(`miter.skillRead.${worker.runId}.engineering-quality`), undefined);
   await importBatch(service, worker, [{ type: 'skill', name: 'app-design', asset: 'foundation.css' }]);
   await runToBoundary(service, worker);
   assert.equal(store.get(`miter.skillRead.${worker.runId}.app-design`), true);
