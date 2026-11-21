@@ -493,6 +493,43 @@ async function dispatchPageAction(page: Page, step: BrowserJourney['steps'][numb
   }
 }
 
+async function inspectDocument(
+  page: Page,
+  ownsPage: (url: URL) => boolean,
+  instructions: readonly string[] | undefined,
+  initial: boolean,
+) {
+  const read = async () => [
+    ...(await renderFindings(page)),
+    ...(await inspectInterfaceCopy(page, instructions, initial)),
+    ...(await accessibilityFindings(page)),
+  ];
+  const controller = new AbortController();
+  const navigation = page
+    .waitForNavigation({
+      waitUntil: 'domcontentloaded',
+      timeout: operationTimeout,
+      signal: controller.signal,
+    })
+    .catch(() => null);
+  try {
+    return await read();
+  } catch (error) {
+    // A saved form can redirect after its API reply, while axe is still
+    // inspecting the old document. Only repeat reads after a real app navigation.
+    if (!(error instanceof Error) || !error.message.includes('Execution context was destroyed')) {
+      throw error;
+    }
+    const response = await navigation;
+    if (!response?.ok() || !ownsPage(new URL(response.url()))) {
+      throw error;
+    }
+    return await read();
+  } finally {
+    controller.abort();
+  }
+}
+
 function errorText(error: unknown): string {
   if (error instanceof Error) {
     return error.message.slice(0, 1000);
@@ -554,13 +591,15 @@ export async function runBrowserJourneys(request: JourneyRequest): Promise<Brows
         );
         await page.goto(request.url, { waitUntil: 'networkidle0' });
         const inspectedFindings = new Set<string>();
+        const ownsPage = observers.ownsPage;
         const inspect = async (state: string) => {
           request.signal.throwIfAborted();
-          for (const finding of [
-            ...(await renderFindings(page)),
-            ...(await inspectInterfaceCopy(page, request.copyInstructions, state === 'initial')),
-            ...(await accessibilityFindings(page)),
-          ]) {
+          for (const finding of await inspectDocument(
+            page,
+            ownsPage,
+            request.copyInstructions,
+            state === 'initial',
+          )) {
             if (!inspectedFindings.has(finding)) {
               inspectedFindings.add(finding);
               add(label + ' / ' + state, finding);

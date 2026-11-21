@@ -803,6 +803,81 @@ test(
 );
 
 test(
+  'an asynchronous save redirects during inspection without repeating the write or hiding destination defects',
+  { skip: !available, timeout: 60000 },
+  async (context) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'miter-save-navigation-'));
+    let writes = 0;
+    let saved;
+    const server = createServer((request, response) => {
+      if (request.method === 'POST' && request.url === '/project/api/parcels') {
+        writes++;
+        response.setHeader('Content-Type', 'application/json');
+        saved = response;
+        return;
+      }
+      if (request.url === '/project/inspection-started') {
+        setTimeout(() => saved.end(JSON.stringify({ id: 17 })), 30);
+        response.end();
+        return;
+      }
+      response.setHeader('Content-Type', 'text/html');
+      let content =
+        '<h1>Parcel details</h1><section aria-label="Parcel"><h2>Recipient</h2></section><section aria-label="Parcel"><h2>Carrier</h2></section>';
+      if (request.url === '/project/index.html') {
+        content = `<h1>Receive parcel</h1><button id="save">Save parcel</button><ul>${Array.from({ length: 240 }, (_, index) => '<li>Parcel ' + index + '</li>').join('')}</ul><script>
+            document.querySelector('#save').onclick = async () => {
+              // Deliver the pending save once the post-click rendered checks begin.
+              const innerText = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'innerText').get;
+              Object.defineProperty(document.body, 'innerText', { configurable: true, get() {
+                delete this.innerText;
+                fetch('/project/inspection-started');
+                return innerText.call(this);
+              }});
+              const response = await fetch('/project/api/parcels', { method: 'POST' });
+              const parcel = await response.json();
+              location.assign('/project/parcels/' + parcel.id);
+            };
+          </script>`;
+      }
+      response.end(
+        '<!doctype html><html lang="en"><title>Parcels</title><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" href="data:,"><main>' +
+          content +
+          '</main></html>',
+      );
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const options = await chromeFixture(context, directory, {
+      url: `http://127.0.0.1:${server.address().port}/project/index.html`,
+      close: () => new Promise((resolve) => server.close(resolve)),
+    });
+    const result = await runBrowserJourneys({
+      ...options,
+      journeys: [
+        {
+          name: 'Receive parcel',
+          steps: [
+            { type: 'click', selector: '#save' },
+            { type: 'expect', selector: 'h1', text: 'Parcel details' },
+          ],
+        },
+      ],
+    });
+    assert.equal(writes, 2, 'Save should run once per device.');
+    assert.equal(result.journeys, 2, result.findings.join('\n'));
+    for (const device of ['desktop', 'mobile']) {
+      assert.ok(
+        result.findings.some(
+          (item) => item.startsWith(device + ' / Receive parcel') && item.includes('landmark-unique'),
+        ),
+        result.findings.join('\n'),
+      );
+    }
+  },
+);
+
+test(
   'backend journeys require a successful API round trip after clearing browser storage on both devices',
   {
     skip: !available || process.platform !== 'darwin' || Number(process.versions.node.split('.')[0]) < 26,

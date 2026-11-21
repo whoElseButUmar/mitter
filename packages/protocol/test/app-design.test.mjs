@@ -118,6 +118,8 @@ test('design guidance scopes widgets to requested UI and distinguishes CSS from 
   assert.match(APP_DESIGN_GUIDANCE, /CSS classes alone do not provide behavior/);
   assert.match(APP_DESIGN_GUIDANCE, /Text inputs can match :focus-visible after mouse focus too/);
   assert.match(APP_DESIGN_GUIDANCE, /cannot theme every OS popup/);
+  assert.match(APP_DESIGN_GUIDANCE, /aria-labelledby pointing to its visible section heading/);
+  assert.match(APP_DESIGN_GUIDANCE, /pass each heading ID to that instance so its landmark name is unique/);
   assert.match(APP_DESIGN_GUIDANCE, /local-date parsing \(no UTC day shifts\)/);
   assert.match(APP_DESIGN_GUIDANCE, /"asset":"components\.mjs"/);
   assert.match(APP_DESIGN_GUIDANCE, /miter\.quality\.json/);

@@ -149,6 +149,7 @@ export async function observeJourneyPages(
   context.on('console', childConsole);
   context.on('targetcreated', targetCreated);
   return {
+    ownsPage,
     async inspectChildren(inspect: (page: Page) => Promise<void>) {
       const inspected = new Set<Page>();
       while (true) {

@@ -27,7 +27,7 @@ export default defineConfig({
     name: 'Miter — Local project runner',
     description: 'Local project workers with an opt-in automatic chat bridge. No cloud API required.',
     version: '1.0.0',
-    version_name: '1.0.0-rc.64',
+    version_name: '1.0.0-rc.65',
     minimum_chrome_version: '120',
     key: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1CW4JvuJCVngLhbV+Za49ZFsyRMebQOZrDsBM7DnxFhuYKDTV70RPmdCDz0mae+vrQtz+jk01QP/9DwGAnUA/malASejG9BjJNXAiXyTv+wODZ8Mf8Ct5gBM1YK0W0vpSMcFfr+vIYrwg27OnuatKb3HKVLqO0woKaA21Okri73ibwI7/a1D77dr7iDiq0Bid5JVLHcignqkKteffSra3lO/gjQ6QO7ceWBrg3v+2qdTABWeLbR5UBtdnVn2uxrqhhpr+IJbr+Nu0ROs7JTXcjTcNmiYRPpr7ecm/2G1zG9mz1Bs1ElJVyH4ZArXVqHq+zR6RWr9Xs+ZXFBJMdz9CwIDAQAB',
     // Chromium marks fontSettings kFlagCannotBeOptional. Miter only calls
