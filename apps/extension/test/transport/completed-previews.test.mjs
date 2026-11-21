@@ -45,7 +45,7 @@ test('opens the verified framework preview only on a new completion and skips ol
   assert.equal(tabs.length, 1);
 });
 
-test('static completions do not auto-open and a superseded framework run may never open a late browser tab', async () => {
+test('legacy completions without a fingerprint do not auto-open and a superseded framework run may never open a late browser tab', async () => {
   let resolve;
   const result = new Promise((done) => {
     resolve = done;
@@ -122,4 +122,34 @@ test('a refused tab open retains the successful host result and reports a retry 
   preview.update(mark(completed));
   await flush();
   assert.equal(failures.length, 1);
+});
+
+test('opens a verified static app once per observed completion, including a coalesced finish', async () => {
+  const urls = [];
+  const opened = new CompletedPreviews(
+    async (method, params) => {
+      assert.equal(method, 'worker.previewStart');
+      assert.equal(params.mode, 'verified');
+      return { url: 'http://static-preview' };
+    },
+    () => false,
+    (url) => urls.push(url),
+    () => assert.fail('Unexpected failure'),
+  );
+  const finished = {
+    ...completed,
+    completion: {
+      verification: 'passed',
+      evidence: { staticPreview: { entry: 'pages/home.htm', fingerprint: 'a'.repeat(64) } },
+    },
+  };
+  opened.arm(worker);
+  opened.update(mark(finished));
+  opened.update(mark(finished));
+  await flush();
+  assert.deepEqual(urls, ['http://static-preview']);
+  opened.clear();
+  opened.update(mark(finished));
+  await flush();
+  assert.equal(urls.length, 1);
 });

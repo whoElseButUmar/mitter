@@ -4,6 +4,7 @@ import { request } from 'node:http';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fixture, makeWorker } from './test-fixture.mjs';
+import { snapshotApp, staticPreviewFingerprint } from '../preview/snapshot.ts';
 import { RequestQueue } from '../request-queue.ts';
 import {
   appRunListResultSchema,
@@ -26,7 +27,11 @@ function read(url, { method = 'GET', body } = {}) {
         const chunks = [];
         response.on('data', (chunk) => chunks.push(chunk));
         response.on('end', () =>
-          resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString('utf8') }),
+          resolve({
+            status: response.statusCode,
+            body: Buffer.concat(chunks).toString('utf8'),
+            ...(response.headers.location && { redirect: response.headers.location }),
+          }),
         );
       },
     );
@@ -290,4 +295,47 @@ test('a launch-only goal starts the existing framework without claiming an app a
   for (const category of ['source', 'domain', 'browser', 'lighthouse']) {
     assert.equal(worker.completion.evidence[category], 'not-run', category);
   }
+});
+
+test('verified static launch serves the audited entry, shares a concurrent Run, and refuses changed bytes', async (context) => {
+  const { service, root, worker } = await fixture(context, { workers: [makeWorker({ state: 'complete' })] });
+  const entry = 'pages/My app.htm';
+  await fs.mkdir(path.join(root, 'pages'));
+  await fs.writeFile(path.join(root, entry), '<h1>Verified entry</h1>');
+  const fingerprint = staticPreviewFingerprint(await snapshotApp(root, new AbortController().signal, entry));
+  worker.completion = {
+    version: 1,
+    verification: 'passed',
+    summary: 'Done',
+    checked: 7,
+    at: 1,
+    evidence: {
+      source: 'passed',
+      domain: 'passed',
+      browser: 'passed',
+      lighthouse: 'passed',
+      detail: 'Done',
+      staticPreview: { entry, fingerprint },
+    },
+  };
+  const input = { workerId: worker.id, expectedRun: { runId: worker.runId, epoch: 0 } };
+  const run = service.handle('worker.previewStart', { ...input, mode: 'run' });
+  const auto = service.handle('worker.previewStart', { ...input, mode: 'verified' });
+  const [manual, verified] = await Promise.all([run, auto]);
+  assert.equal(verified.previewId, manual.previewId);
+  assert.equal((await service.handle('worker.previewStart', { ...input, mode: 'verified' })).url, manual.url);
+  const launch = await read(verified.url);
+  assert.equal(launch.status, 302);
+  assert.equal(launch.redirect, '/' + verified.previewId + '/pages/My%20app.htm');
+  assert.equal((await read(new URL(launch.redirect, verified.url))).body, '<h1>Verified entry</h1>');
+  await service.handle('worker.previewStop', { ...input, previewId: verified.previewId });
+  await fs.writeFile(path.join(root, entry), '<h1>Edited later</h1>');
+  await assert.rejects(
+    service.handle('worker.previewStart', { ...input, mode: 'verified' }),
+    /changed after verification/,
+  );
+  assert.deepEqual(await service.handle('worker.previewStatus', input), { preview: null });
+  const latest = await service.handle('worker.previewStart', { ...input, mode: 'run' });
+  const current = await read(latest.url);
+  assert.equal((await read(new URL(current.redirect, latest.url))).body, '<h1>Edited later</h1>');
 });

@@ -572,28 +572,31 @@ export class Service {
           }
           this.checkExpectedRun(worker, method, params);
           if (
-            (input.mode === 'run' || input.replacePreviewId) &&
+            (input.mode === 'run' || input.mode === 'verified' || input.replacePreviewId) &&
             (worker.state !== 'complete' || worker.pending)
           ) {
             throw new Error('Complete the task and its pending approvals before running the app.');
           }
         };
         assertCurrent();
-        const fingerprint = worker.completion?.evidence?.devServerFingerprint;
+        const evidence = worker.completion?.evidence;
+        const fingerprint = evidence?.devServerFingerprint;
+        const staticPreview = evidence?.staticPreview;
         if (
           input.mode === 'verified' &&
           (worker.state !== 'complete' ||
             worker.completion?.verification !== 'passed' ||
-            !fingerprint ||
-            !worker.completion.evidence?.devServer)
+            (!(fingerprint && evidence?.devServer) && !staticPreview))
         ) {
-          throw new Error('This task has no verified framework preview to open automatically.');
+          throw new Error('This task has no verified app preview to open automatically.');
         }
         return this.previews.start(worker.id, boundary, project.root, assertCurrent, {
           attach: input.mode === 'run',
           restart: input.mode === 'restart',
           ...(input.replacePreviewId && { replacePreviewId: input.replacePreviewId }),
           ...(input.mode === 'verified' && fingerprint && { fingerprint }),
+          ...(staticPreview && { staticEntry: staticPreview.entry }),
+          ...(input.mode === 'verified' && staticPreview && { staticFingerprint: staticPreview.fingerprint }),
           withProjectLock: (signal, open) => this.locks.using(project.root, signal, open),
         });
       }

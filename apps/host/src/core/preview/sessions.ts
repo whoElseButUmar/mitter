@@ -5,7 +5,7 @@ import {
   type PreviewStartResult,
 } from '../../../../../packages/protocol/src/rpc.js';
 import type { TaskBoundary } from '../../../../../packages/protocol/src/index.js';
-import { snapshotApp } from './snapshot.js';
+import { snapshotApp, staticPreviewFingerprint } from './snapshot.js';
 import { serveSnapshot, type PreviewServer } from './server.js';
 import { detectDevProject, devProjectFingerprint, startDevServer } from '../dev-server/index.js';
 import { serveDevPreview } from './dev-proxy.js';
@@ -21,6 +21,8 @@ type StartOptions = {
   restart?: boolean;
   replacePreviewId?: string;
   fingerprint?: string;
+  staticEntry?: string;
+  staticFingerprint?: string;
   signal?: AbortSignal;
   withProjectLock?: (
     signal: AbortSignal,
@@ -75,16 +77,24 @@ export class PreviewSessions {
     this.signal.throwIfAborted();
     options.signal?.throwIfAborted();
     assertCurrent();
+    const verifiedFingerprint = options.staticFingerprint ?? options.fingerprint;
     const active = this.pending.get(workerId);
     if (active) {
       if (
-        options.attach &&
+        (options.attach || verifiedFingerprint) &&
         !active.controller.signal.aborted &&
         active.run.expectedRun.runId === boundary.runId &&
         active.run.expectedRun.epoch === boundary.epoch
       ) {
         return active.result.then((result) => {
           assertCurrent();
+          const session = this.sessions.get(result.previewId);
+          if (
+            verifiedFingerprint &&
+            (!session || session.closing || session.fingerprint !== verifiedFingerprint)
+          ) {
+            throw new Error('The running app differs from the verified project. Select the current session.');
+          }
           return result;
         });
       }
@@ -151,7 +161,7 @@ export class PreviewSessions {
     const log = (line: string) => this.runs.write(run, line);
     const { fingerprint } = options;
     const previous = this.current(workerId, boundary);
-    if (previous?.result.framework && !previous.closing && !options.restart) {
+    if (!options.staticFingerprint && previous?.result.framework && !previous.closing && !options.restart) {
       const desired = fingerprint ?? (await devProjectFingerprint(root, signal));
       signal.throwIfAborted();
       assertCurrent();
@@ -174,6 +184,9 @@ export class PreviewSessions {
     let captured: string | undefined;
     let detail: string;
     if (framework) {
+      if (options.staticFingerprint) {
+        throw new Error('The verified static app has changed. Choose Run to start the current project.');
+      }
       const runtime = await startDevServer(root, signal, 'development', log);
       try {
         signal.throwIfAborted();
@@ -219,20 +232,42 @@ export class PreviewSessions {
       if (fingerprint) {
         throw new Error('The verified framework project has changed. Open the current project to review it.');
       }
-      const snapshot = await snapshotApp(root, signal);
+      const snapshot = await snapshotApp(root, signal, options.staticEntry);
+      captured = staticPreviewFingerprint(snapshot);
+      if (options.staticFingerprint && options.staticFingerprint !== captured) {
+        throw new Error('The project changed after verification. Choose Run to start the current project.');
+      }
+      if (
+        options.staticFingerprint &&
+        previous &&
+        !previous.closing &&
+        previous.fingerprint === captured &&
+        !previous.result.framework
+      ) {
+        signal.throwIfAborted();
+        assertCurrent();
+        this.runs.discard(run);
+        return previous.result;
+      }
       signal.throwIfAborted();
       assertCurrent();
-      let options;
+      let backendOptions;
       if (snapshot.backend && this.dataRoot) {
         const key = createHash('sha256').update(root).digest('hex');
-        options = { dataDir: path.join(this.dataRoot, 'preview-data', key) };
+        backendOptions = { dataDir: path.join(this.dataRoot, 'preview-data', key) };
       }
       if (snapshot.backend) {
         log('Starting the project’s Node backend.\n');
       }
-      server = await serveSnapshot(snapshot, hostname, previewId, options, (method, resource, status) => {
-        log(method + ' ' + resource + ' ' + status + '\n');
-      });
+      server = await serveSnapshot(
+        snapshot,
+        hostname,
+        previewId,
+        backendOptions,
+        (method, resource, status) => {
+          log(method + ' ' + resource + ' ' + status + '\n');
+        },
+      );
       files = snapshot.assets.size;
       bytes = snapshot.bytes;
       let mode = 'Static assets only.';

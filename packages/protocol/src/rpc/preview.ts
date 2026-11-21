@@ -17,7 +17,7 @@ export const previewIdSchema = z
 
 const previewUrlSchema = z
   .string()
-  .regex(/^http:\/\/miter-[a-f0-9]{32}\.localhost:[1-9][0-9]{0,4}\/[a-f0-9]{32}\/index\.html$/)
+  .regex(/^http:\/\/miter-[a-f0-9]{32}\.localhost:[1-9][0-9]{0,4}\/[a-f0-9]{32}\/(?:index\.html)?$/)
   .refine(
     (value) => URL.canParse(value) && Number(new URL(value).port) <= 65535,
     'Invalid local preview port.',
@@ -33,9 +33,7 @@ export const previewStartParamsSchema = previewStatusParamsSchema
     mode: z
       .enum(['verified', 'restart', 'run'])
       .optional()
-      .describe(
-        'Run a completed app, open an audited framework automatically, or restart with current files.',
-      ),
+      .describe('Run a completed app, open an audited app automatically, or restart with current files.'),
     replacePreviewId: previewIdSchema
       .optional()
       .describe('The exact running session the terminal asked to restart.'),
@@ -77,8 +75,7 @@ export const previewStartResultSchema = z
       .describe('The host description of this preview’s runtime and storage.'),
   })
   .refine(
-    (result) =>
-      URL.canParse(result.url) && new URL(result.url).pathname === '/' + result.previewId + '/index.html',
+    (result) => URL.canParse(result.url) && new URL(result.url).pathname.split('/')[1] === result.previewId,
     {
       message: 'Preview URL does not match its session identifier.',
     },
@@ -135,11 +132,7 @@ export const appRunSessionSchema = z
   })
   .refine((row) => {
     if (row.state === 'running') {
-      return (
-        !!row.url &&
-        URL.canParse(row.url) &&
-        new URL(row.url).pathname === '/' + row.previewId + '/index.html'
-      );
+      return !!row.url && URL.canParse(row.url) && new URL(row.url).pathname.split('/')[1] === row.previewId;
     }
     return row.url === undefined;
   }, 'A running session must have its matching local app URL.')

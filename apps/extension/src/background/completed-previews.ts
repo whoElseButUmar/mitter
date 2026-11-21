@@ -59,8 +59,8 @@ export class CompletedPreviews {
         !previous.complete &&
         next.complete &&
         task.completion?.verification === 'passed' &&
-        task.completion.evidence?.devServerFingerprint &&
-        task.completion.evidence.devServer
+        (task.completion.evidence?.staticPreview ||
+          (task.completion.evidence?.devServerFingerprint && task.completion.evidence.devServer))
       ) {
         void this.launch(task, next);
       }

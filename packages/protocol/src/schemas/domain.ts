@@ -115,6 +115,21 @@ export const completionEvidenceSchema = z
       .describe(
         'Whether every scored Lighthouse category reached 100 on desktop and mobile. Absent on older completions.',
       ),
+    staticPreview: z
+      .strictObject({
+        entry: z
+          .string()
+          .min(1)
+          .max(512)
+          .regex(/\.html?$/i)
+          .describe('The project-relative HTML entry exercised in Chrome.'),
+        fingerprint: z
+          .string()
+          .regex(/^[0-9a-f]{64}$/)
+          .describe('SHA-256 of the linked assets and optional backend files exercised in Chrome.'),
+      })
+      .optional()
+      .describe('The verified static preview, when recorded by the host.'),
     devServer: z.enum(['vite', 'next']).optional().describe('The pnpm framework exercised in Chrome.'),
     devServerFingerprint: z
       .string()

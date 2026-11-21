@@ -3,6 +3,8 @@ import { MAX_BODY_BYTES, openBackend, type AppBackend, type BackendOptions } fro
 import type { PreviewSnapshot } from './snapshot.js';
 import { publicAssetPath } from './snapshot.js';
 
+// Each app runs in its own top-level loopback origin. Keep its opener, frames
+// and network access isolated while allowing modules and origin-bound storage.
 const policy = [
   "default-src 'none'",
   "script-src 'self' 'unsafe-inline'",
@@ -17,7 +19,6 @@ const policy = [
   "frame-ancestors 'none'",
   "base-uri 'none'",
   "form-action 'none'",
-  'sandbox allow-scripts allow-same-origin allow-forms allow-downloads allow-popups',
 ].join('; ');
 
 export type PreviewServer = {
@@ -52,6 +53,7 @@ function headers(response: ServerResponse): void {
   response.setHeader('Content-Security-Policy', policy);
   response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
   response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  response.setHeader('Origin-Agent-Cluster', '?1');
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('Referrer-Policy', 'no-referrer');
   response.setHeader('Cache-Control', 'no-store');
@@ -236,6 +238,12 @@ export async function serveSnapshot(
       response.end();
       return;
     }
+    if (snapshot.entry && snapshot.entry !== 'index.html' && request.url === '/' + capability + '/') {
+      const entryPath = snapshot.entry.split('/').map(encodeURIComponent).join('/');
+      response.writeHead(302, { Location: '/' + capability + '/' + entryPath });
+      response.end();
+      return;
+    }
     const relative = requestPath(request, capability);
     const asset = relative && snapshot.assets.get(relative);
     if (!asset) {
@@ -245,16 +253,6 @@ export async function serveSnapshot(
     lastRequest = Date.now();
     if (onRequest) {
       response.once('finish', () => onRequest(request.method ?? 'GET', '/' + relative, response.statusCode));
-    }
-    if (
-      asset.mime.startsWith('text/html') &&
-      request.headers['sec-fetch-site'] === 'same-origin' &&
-      request.headers['sec-fetch-mode'] === 'navigate' &&
-      request.headers['sec-fetch-dest'] === 'document'
-    ) {
-      // A tab opened by a sandboxed app inherits its sandbox. Chrome rejects that
-      // navigation if the response also requires a cross-origin opener policy.
-      response.removeHeader('Cross-Origin-Opener-Policy');
     }
     if (backend && asset.mime.startsWith('text/html')) {
       response.setHeader(
@@ -305,8 +303,12 @@ export async function serveSnapshot(
   authority = hostname + ':' + address.port;
   origin = 'http://' + authority;
   let closing: Promise<void> | undefined;
+  let launchFile = 'index.html';
+  if (snapshot.entry && snapshot.entry !== 'index.html') {
+    launchFile = '';
+  }
   const preview: PreviewServer = {
-    url: origin + '/' + capability + '/index.html',
+    url: origin + '/' + capability + '/' + launchFile,
     lastRequest: () => lastRequest,
     exited: new Promise<void>((resolve) => {
       server.once('error', () => resolve());

@@ -95,12 +95,12 @@ export const bundledTaskSkills = z
       scope: 'engineering',
       instructions: ENGINEERING_GUIDANCE,
       promptInstructions:
-        'Use readable feature-focused modules, shared domain rules, strict types and validation at data ' +
-        'boundaries. Preserve authorization, exact values, user edits and async ownership. Backend work ' +
-        'requires server-side validation, parameterized queries, deliberate duplicate handling and ' +
-        'atomic related writes. Implement errors and recovery, clean up resources, run meaningful checks ' +
-        'and report actual evidence. For dependency-free Node projects, Miter runs task-written *.test.mjs ' +
-        'suites in isolation. See engineering-quality for pnpm framework previews, production audits and Node APIs.',
+        'Use feature modules, shared domain rules, strict types and boundary validation. Preserve authorization, ' +
+        'exact values, user edits and async ownership. Validate on the server, parameterize queries, handle ' +
+        'duplicates and make related writes atomic. Handle errors and recovery, clean up resources and report ' +
+        'observed test results. In new Vite TypeScript apps use ES2022, DOM and DOM.Iterable libs. With ' +
+        'existing DOM-only libs use Array.from for NodeList array operations. Miter runs dependency-free ' +
+        '*.test.mjs in isolation. See engineering-quality for pnpm previews, production audits and Node APIs.',
     },
   ]);
 

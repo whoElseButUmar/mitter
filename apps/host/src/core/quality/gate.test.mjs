@@ -240,7 +240,11 @@ test(
       results.every((result) => result.ok),
       JSON.stringify(results),
     );
-    assert.deepEqual(JSON.parse(resultNamed(results, 'browser').detail).reports, browserEvidence.reports);
+    const browserDetail = JSON.parse(resultNamed(results, 'browser').detail);
+    assert.deepEqual(browserDetail.reports, browserEvidence.reports);
+    assert.equal(browserDetail.staticPreview.entry, 'index.html');
+    assert.match(browserDetail.staticPreview.fingerprint, /^[0-9a-f]{64}$/);
+    assert.ok(resultNamed(results, 'snapshot').detail.includes(browserDetail.staticPreview.fingerprint));
     assert.deepEqual(JSON.parse(resultNamed(results, 'lighthouse').detail).scores, browserEvidence.scores);
     assert.match(resultNamed(results, 'snapshot').detail, /1 passing tests.*Browser asset SHA-256:/);
   },

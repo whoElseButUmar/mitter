@@ -111,3 +111,14 @@ test('only successful host-owned framework checks authorize automatic launch of 
   assert.equal(ready.lighthouse, 'not-run');
   assert.equal(run([{ ...quality('dev-server'), detail: 'not JSON' }]).devServer, undefined);
 });
+
+test('static preview evidence requires passing browser, Lighthouse and unchanged snapshot checks', () => {
+  const staticPreview = { entry: 'sub/app.html', fingerprint: '9'.repeat(64) };
+  const checked = { ...quality('browser'), detail: JSON.stringify({ staticPreview }) };
+  const run = (results) =>
+    buildCompletion(makeWorker(), 'passed', 'Done', results.length, 1, results).evidence;
+  assert.deepEqual(run([checked, quality('lighthouse'), quality('snapshot')]).staticPreview, staticPreview);
+  assert.equal(run([checked, quality('snapshot')]).staticPreview, undefined);
+  assert.equal(run([checked, quality('lighthouse'), quality('snapshot', false)]).staticPreview, undefined);
+  assert.equal(run([quality('dev-server'), quality('snapshot')]).staticPreview, undefined);
+});

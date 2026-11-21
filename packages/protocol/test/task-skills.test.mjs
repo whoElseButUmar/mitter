@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   bundledTaskSkillSchema,
   bundledTaskSkills,
@@ -78,9 +83,35 @@ test('the web starter supplies a portable favicon with visible SVG artwork', asy
 
 test('the engineering reference covers strict TypeScript apps using the bundled JavaScript controls', () => {
   const { instructions } = readBundledTaskSkill('engineering-quality');
-  assert.match(instructions, /"strict": true, "allowJs": true, "checkJs": false and "noEmit": true/);
+  assert.match(instructions, /"allowJs": true and "checkJs": false/);
   assert.match(instructions, /components.d.mts beside components.mjs/);
   assert.match(instructions, /checked element to mount\(root: HTMLElement\)/);
+});
+
+test('the Vite browser starter type-checks iterated DOM rows and their typed buttons', async (t) => {
+  const { instructions } = readBundledTaskSkill('engineering-quality');
+  const sample = instructions.match(/start compilerOptions with (\{[^}]+\})/);
+  assert.ok(sample, 'A new app should be able to copy these browser compiler options.');
+  const compilerOptions = JSON.parse(sample[1]);
+  assert.equal(compilerOptions.strict, true);
+  assert.equal(compilerOptions.noEmit, true);
+  assert.ok(compilerOptions.lib.includes('DOM.Iterable'), 'TypeScript 5 needs iterable DOM declarations.');
+  assert.match(instructions, /Array\.from\(rows\)\.find/);
+
+  const directory = await mkdtemp(join(tmpdir(), 'miter-vite-dom-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(join(directory, 'tsconfig.json'), JSON.stringify({ compilerOptions, files: ['rows.ts'] }));
+  await writeFile(
+    join(directory, 'rows.ts'),
+    `const rows = document.querySelectorAll<HTMLLIElement>('li');
+const selected = [...rows].find(row => row.dataset.id === 'selected');
+selected?.querySelector<HTMLButtonElement>('button')?.focus();
+const arrayLikeRows: ArrayLike<HTMLLIElement> = rows;
+const fallback = Array.from(arrayLikeRows).find(row => row.dataset.id === 'selected');
+fallback?.querySelector<HTMLButtonElement>('button')?.focus();`,
+  );
+  const tsc = fileURLToPath(new URL('bin/tsc', import.meta.resolve('typescript/package.json')));
+  execFileSync(process.execPath, [tsc, '-p', directory], { timeout: 30_000 });
 });
 
 test('rewrite defaults carry the writing rules without introducing implementation work', () => {

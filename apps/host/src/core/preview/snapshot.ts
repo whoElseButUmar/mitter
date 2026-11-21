@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -34,10 +35,26 @@ const mimeTypes: Readonly<Record<string, string>> = {
 export type PreviewAsset = { bytes: Buffer; mime: string };
 export type BackendSnapshot = { entry: string; files: ReadonlyMap<string, string> };
 export type PreviewSnapshot = {
+  entry?: string;
   assets: ReadonlyMap<string, PreviewAsset>;
   bytes: number;
   backend?: BackendSnapshot;
 };
+
+export function staticPreviewFingerprint(snapshot: PreviewSnapshot): string {
+  const hash = createHash('sha256');
+  hash.update(JSON.stringify(['html-entry', snapshot.entry ?? 'index.html']));
+  for (const [name, asset] of [...snapshot.assets].sort(([a], [b]) => a.localeCompare(b))) {
+    hash.update(JSON.stringify([name, createHash('sha256').update(asset.bytes).digest('hex')]));
+  }
+  if (snapshot.backend) {
+    hash.update(JSON.stringify(['backend-entry', snapshot.backend.entry]));
+    for (const [name, source] of [...snapshot.backend.files].sort(([a], [b]) => a.localeCompare(b))) {
+      hash.update(JSON.stringify(['backend-file', name, createHash('sha256').update(source).digest('hex')]));
+    }
+  }
+  return hash.digest('hex');
+}
 
 const modulePath = z
   .string()
@@ -324,7 +341,7 @@ export async function snapshotApp(
     }
   }
   if (backend) {
-    return { assets, bytes, backend };
+    return { entry, assets, bytes, backend };
   }
-  return { assets, bytes };
+  return { entry, assets, bytes };
 }

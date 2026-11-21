@@ -76,6 +76,15 @@ export async function checkStaticPreview(executable, directory, log, signal) {
       'document.querySelector("#count")?.textContent === "0"',
       'separate preview storage',
     );
+    const diagnostics = chrome.events
+      .filter((event) => event.method === 'Log.entryAdded')
+      .map((event) => event.params.entry)
+      .filter((entry) => entry.level === 'warning' || entry.level === 'error');
+    assert.deepEqual(
+      diagnostics.map((entry) => entry.text),
+      [],
+      'A working static preview must load and reload without Chrome warnings or errors.',
+    );
     const excluded = await page(chrome, first.url.replace('/index.html', '/private.html'));
     assert.match(
       await evaluate(chrome, excluded.session, 'document.body.textContent'),

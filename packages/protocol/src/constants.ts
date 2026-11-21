@@ -1,5 +1,5 @@
 /** Protocol identity and transport limits. */
-export const APP_VERSION = '1.0.0-rc.61';
+export const APP_VERSION = '1.0.0-rc.62';
 export const VERSION = 'mitter/1' as const;
 export const MAX_FRAME = 800_000;
 export const MAX_TEXT = 120_000;

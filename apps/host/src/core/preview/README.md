@@ -7,7 +7,7 @@ across preview sessions. The browser checks use the same request handler with di
 
 ## Framework projects
 
-For a standalone Vite or Next.js project, choose **New task** and enter “Install dependencies with pnpm, start the dev server, and open the app preview.” Miter handles this launch locally. It reads the framework from `package.json`, runs its bundled pnpm, waits for the project's HTTP listener, and opens the app in Chrome. A coding task that changes a supported framework app opens its preview after the quality checks pass.
+For a standalone Vite or Next.js project, choose **New task** and enter “Install dependencies with pnpm, start the dev server, and open the app preview.” Miter handles this launch locally. It reads the framework from `package.json`, runs its bundled pnpm, waits for the project's HTTP listener, and opens the app in Chrome. After a coding task passes its quality checks, Miter automatically opens the verified static HTML or framework app. The static preview uses the audited HTML entry and checks its linked assets and backend against the verified snapshot.
 
 Use a standard `vite` or `next dev` script and dependencies from the public npm registry. Miter owns the port. It runs the app in a private copy with a separate home directory. Install hooks, credentials, external backend connections and shell pipelines are outside this runtime. An existing pnpm lockfile controls dependency resolution. When a project has no pnpm lockfile, Miter keeps the resolved versions in its private cache. Your project's source and existing dependency folders stay intact.
 
@@ -73,7 +73,7 @@ The HTTP listener binds to `127.0.0.1` and checks Host and Origin. The capabilit
 relative API routes. Root-relative `/api/…` also works after the entry page issues a host-only
 HttpOnly, SameSite=Strict cookie. Mutations require the preview’s exact origin. Browser CSP
 permits same-origin fetch and blocks external subresource requests, workers, frames and form
-submissions. The browser owns ordinary navigation. Browser storage belongs to each preview
+submissions. The top-level app uses an origin-keyed agent cluster and isolates cross-origin openers on every navigation. The browser owns ordinary navigation. Browser storage belongs to each preview
 origin. Server data belongs to the project under the host’s private data directory.
 
 Opening a preview replaces the task’s previous session. The host retains four sessions and

@@ -5,7 +5,7 @@ import { checkJavaScript } from '../syntax-check.js';
 import type { CheckResult } from '../service/schemas.js';
 import { inspectWebApp, qualityTestPathSchema, webAppQualityManifestSchema } from './inspect.js';
 import { runQualityTests } from './runner.js';
-import { snapshotApp, type PreviewSnapshot } from '../preview/snapshot.js';
+import { snapshotApp, staticPreviewFingerprint } from '../preview/snapshot.js';
 import { detectDevProject, devProjectFingerprint } from '../dev-server/index.js';
 import { browserRepairFindings } from './browser-findings.js';
 import type { runBrowserQuality as BrowserRunner } from './browser-runtime.js';
@@ -179,20 +179,6 @@ async function checkSnapshot(
   return { check: { type: 'quality', name: 'snapshot' }, ok: unchanged, detail };
 }
 
-function assetFingerprint(snapshot: PreviewSnapshot): string {
-  const hash = createHash('sha256');
-  for (const [name, asset] of [...snapshot.assets].sort(([a], [b]) => a.localeCompare(b))) {
-    hash.update(JSON.stringify([name, createHash('sha256').update(asset.bytes).digest('hex')]));
-  }
-  if (snapshot.backend) {
-    hash.update(JSON.stringify(['backend-entry', snapshot.backend.entry]));
-    for (const [name, source] of [...snapshot.backend.files].sort(([a], [b]) => a.localeCompare(b))) {
-      hash.update(JSON.stringify(['backend-file', name, createHash('sha256').update(source).digest('hex')]));
-    }
-  }
-  return hash.digest('hex');
-}
-
 export async function verifyProjectQuality(
   request: QualityRequest,
   browserRunner = runBrowserQuality,
@@ -360,7 +346,7 @@ export async function verifyProjectQuality(
     } else {
       const snapshot = await snapshotApp(root, signal, manifest.entry);
       hasBackend = Boolean(snapshot.backend);
-      assetsHash = assetFingerprint(snapshot);
+      assetsHash = staticPreviewFingerprint(snapshot);
       signal.throwIfAborted();
       browser = await browserRunner({ ...browserInputs, snapshot });
     }
@@ -392,6 +378,8 @@ export async function verifyProjectQuality(
       ...(browserFindings.summary && { finding: browserFindings.summary }),
       detail: JSON.stringify({
         ...(framework && browser.browserOk && { devServer: framework, devServerFingerprint: assetsHash }),
+        ...(!framework &&
+          browser.browserOk && { staticPreview: { entry: manifest.entry, fingerprint: assetsHash } }),
         ...(hasBackend && { backend: browser.backend ?? [] }),
         findings: browserFindings.details,
         reports: browser.reports.slice(0, 12),
@@ -423,7 +411,7 @@ export async function verifyProjectQuality(
     if (framework) {
       currentHash = await devProjectFingerprint(root, signal);
     } else {
-      currentHash = assetFingerprint(await snapshotApp(root, signal, manifest.entry));
+      currentHash = staticPreviewFingerprint(await snapshotApp(root, signal, manifest.entry));
     }
     if (currentHash !== assetsHash) {
       results.push({

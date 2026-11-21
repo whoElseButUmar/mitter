@@ -154,9 +154,7 @@ test('loopback preview serves immutable assets and rejects unauthorized hosts, o
   assert.equal(result.body, html);
   assert.match(result.headers['content-security-policy'], /connect-src 'self'/);
   assert.match(result.headers['content-security-policy'], /worker-src 'none'/);
-  assert.match(result.headers['content-security-policy'], /sandbox [^;]*allow-forms/);
-  assert.match(result.headers['content-security-policy'], /sandbox [^;]*allow-popups(?:;|$)/);
-  assert.doesNotMatch(result.headers['content-security-policy'], /allow-popups-to-escape-sandbox/);
+  assert.match(result.headers['content-security-policy'], /frame-src 'none'/);
   assert.equal((await readPreview(server.url, { path: '/' + capability + '/?player=O' })).body, html);
   const missing = await readPreview(server.url, { path: '/', headers: { 'Sec-Fetch-Dest': 'document' } });
   assert.equal(missing.status, 404);
@@ -167,6 +165,7 @@ test('loopback preview serves immutable assets and rejects unauthorized hosts, o
   assert.match(result.headers['content-security-policy'], /frame-ancestors 'none'/);
   assert.equal(result.headers['cross-origin-resource-policy'], 'same-origin');
   assert.equal(result.headers['cross-origin-opener-policy'], 'same-origin');
+  assert.equal(result.headers['origin-agent-cluster'], '?1');
   const navigationHeaders = { 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate' };
   for (const site of ['none', 'cross-site', 'same-origin']) {
     const navigation = await readPreview(server.url, {
@@ -174,11 +173,7 @@ test('loopback preview serves immutable assets and rejects unauthorized hosts, o
     });
     assert.equal(navigation.status, 200);
     assert.equal(navigation.headers['content-security-policy'], result.headers['content-security-policy']);
-    if (site === 'same-origin') {
-      assert.equal(navigation.headers['cross-origin-opener-policy'], undefined);
-    } else {
-      assert.equal(navigation.headers['cross-origin-opener-policy'], 'same-origin');
-    }
+    assert.equal(navigation.headers['cross-origin-opener-policy'], 'same-origin');
   }
   assert.equal(result.headers['cache-control'], 'no-store');
   assert.equal(result.headers['referrer-policy'], 'no-referrer');

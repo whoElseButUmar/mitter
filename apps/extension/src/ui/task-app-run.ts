@@ -22,8 +22,13 @@ export function createTaskAppRun(options: {
     return JSON.stringify([task.id, task.runId, task.control?.epoch ?? 0]);
   });
   const ready = createMemo(() => options.task().state === 'complete' && !options.task().pending);
-  const framework = createMemo(() => !!options.task().completion?.evidence?.devServer);
-  const knownApp = createMemo(() => framework() || options.task().completion?.evidence?.browser === 'passed');
+  const autoPreview = createMemo(() => {
+    const evidence = options.task().completion?.evidence;
+    return !!(evidence?.devServer || evidence?.staticPreview);
+  });
+  const knownApp = createMemo(
+    () => autoPreview() || options.task().completion?.evidence?.browser === 'passed',
+  );
   const available = () => ready() && (knownApp() || hasEntry());
   let revision = 0;
   let disposed = false;
@@ -61,7 +66,7 @@ export function createTaskAppRun(options: {
         })
         .catch(() => {});
     }
-    if (framework() && options.failures) {
+    if (autoPreview() && options.failures) {
       const run = reviewedTaskBoundary(task);
       let changed = false;
       onCleanup(

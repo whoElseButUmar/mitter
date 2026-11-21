@@ -1,3 +1,4 @@
+import { completionEvidenceSchema } from '../../../../../packages/protocol/src/index.js';
 import type {
   Action,
   CompletionRecord,
@@ -24,7 +25,7 @@ export function summarizeAction(action: Action): Action {
   }
 }
 
-function checkedFramework(results: readonly CheckResult[]) {
+function checkedPreview(results: readonly CheckResult[]) {
   const result = results.find(
     (item) =>
       item.ok &&
@@ -36,6 +37,18 @@ function checkedFramework(results: readonly CheckResult[]) {
   }
   try {
     const detail: unknown = JSON.parse(result.detail);
+    if (
+      detail &&
+      typeof detail === 'object' &&
+      'staticPreview' in detail &&
+      result.check.type === 'quality' &&
+      result.check.name === 'browser'
+    ) {
+      const parsed = completionEvidenceSchema.shape.staticPreview.unwrap().safeParse(detail.staticPreview);
+      if (parsed.success) {
+        return { staticPreview: parsed.data };
+      }
+    }
     if (
       detail &&
       typeof detail === 'object' &&
@@ -143,7 +156,7 @@ export function buildCompletion(
       browser,
       lighthouse,
       detail,
-      ...((verifiedServer || (browser === 'passed' && lighthouse === 'passed')) && checkedFramework(quality)),
+      ...((verifiedServer || (browser === 'passed' && lighthouse === 'passed')) && checkedPreview(quality)),
     };
   }
 
