@@ -14,6 +14,7 @@ test('the reusable component asset is a bounded standalone JavaScript module', a
   assert.ok(APP_COMPONENTS_JS.length <= 20000, 'The separately loaded reference fits one observation.');
   assert.deepEqual(Object.keys(controls).sort(), [
     'confirmAction',
+    'createActionButton',
     'createDatePicker',
     'createDialog',
     'createTimeInput',

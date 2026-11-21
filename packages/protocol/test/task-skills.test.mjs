@@ -59,8 +59,21 @@ test('the Vite starter keeps app routes and missing crawl resources distinct', (
   const { instructions } = readBundledTaskSkill('engineering-quality');
   assert.match(instructions, /without client-side history routes, set appType: "mpa"/);
   assert.match(instructions, /keep its route fallback/);
-  assert.match(instructions, /public\/robots.txt/);
+  assert.match(instructions, /New apps allow crawling by default\. Omit public\/robots\.txt \(return 404\)/);
+  assert.match(instructions, /^User-agent: \*\nAllow: \/$/m);
+  assert.match(instructions, /Preserve existing or user-requested crawl and indexing restrictions/);
   assert.match(instructions, /Missing optional agent manifests should return 404/);
+});
+
+test('the web starter supplies a portable favicon with visible SVG artwork', async () => {
+  const { instructions } = readBundledTaskSkill('engineering-quality');
+  const link = instructions.match(/<link rel="icon" type="image\/svg\+xml" href="([^"]+)">/);
+  assert.ok(link, 'The starter should contain a complete HTML icon link.');
+  const icon = await fetch(link[1]);
+  assert.equal(icon.headers.get('content-type'), 'image/svg+xml');
+  const svg = await icon.text();
+  assert.match(svg, /<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]+viewBox="0 0 32 32"/);
+  assert.match(svg, /<path [^>]*d="[^"]+"/);
 });
 
 test('the engineering reference covers strict TypeScript apps using the bundled JavaScript controls', () => {

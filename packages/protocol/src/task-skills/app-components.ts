@@ -55,9 +55,14 @@ function element(tag, className, text) {
   return node;
 }
 
-function button(text, className = 'ui-button') {
-  const node = element('button', className, text);
+export function createActionButton(label, context = '') {
+  const node = document.createElement('button');
   node.type = 'button';
+  node.className = 'ui-button';
+  node.textContent = label;
+  if (context) {
+    node.append(element('span', 'ui-sr-only', ' ' + context));
+  }
   return node;
 }
 
@@ -239,7 +244,7 @@ export function createDatePicker(input, options = {}) {
   input.inputMode = 'text';
   input.placeholder = 'YYYY-MM-DD';
   input.pattern = '[0-9]{4}-[0-9]{2}-[0-9]{2}';
-  const trigger = button('Choose date');
+  const trigger = createActionButton('Choose date');
   trigger.disabled = input.disabled || input.readOnly;
   trigger.setAttribute('aria-haspopup', 'dialog');
   trigger.setAttribute('aria-controls', id);
@@ -251,16 +256,16 @@ export function createDatePicker(input, options = {}) {
   const header = element('header', 'ui-dialog-header');
   const title = element('h2', '', 'Choose date');
   title.id = id + '-title';
-  const close = button('Close');
+  const close = createActionButton('Close');
   header.append(title, close);
   const body = element('div', 'ui-dialog-body ui-scroll');
   const navigation = element('div', 'ui-calendar-nav');
-  const previous = button('Previous');
+  const previous = createActionButton('Previous');
   previous.setAttribute('aria-label', 'Previous month');
   const month = element('div', 'ui-calendar-month');
   month.id = id + '-month';
   month.setAttribute('aria-live', 'polite');
-  const next = button('Next');
+  const next = createActionButton('Next');
   next.setAttribute('aria-label', 'Next month');
   navigation.append(previous, month, next);
   const grid = element('div', 'ui-calendar');
@@ -274,7 +279,7 @@ export function createDatePicker(input, options = {}) {
   hint.id = id + '-hint';
   grid.setAttribute('aria-describedby', hint.id);
   const footer = element('footer', 'ui-dialog-footer');
-  const today = button('Today');
+  const today = createActionButton('Today');
   footer.append(today);
   body.append(navigation, grid, hint);
   dialog.append(header, body, footer);
@@ -338,7 +343,8 @@ export function createDatePicker(input, options = {}) {
       for (let index = 0; index < 7; index++) {
         const date = new Date(first);
         date.setDate(first.getDate() + week * 7 + index);
-        const cell = button(String(date.getDate()), 'ui-day');
+        const cell = createActionButton(String(date.getDate()));
+        cell.className = 'ui-day';
         cell.setAttribute('role', 'gridcell');
         cell.tabIndex = -1;
         const dateYear = date.getFullYear();
@@ -524,8 +530,8 @@ export function confirmAction(options) {
   dialog.setAttribute('aria-describedby', message.id);
   body.append(message);
   const footer = element('footer', 'ui-dialog-footer');
-  const cancel = button('Cancel');
-  const confirm = button(options.confirmLabel || 'Confirm');
+  const cancel = createActionButton('Cancel');
+  const confirm = createActionButton(options.confirmLabel || 'Confirm');
   confirm.dataset.variant = 'primary';
   footer.append(cancel, confirm);
   dialog.append(header, body, footer);

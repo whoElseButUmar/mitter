@@ -33,6 +33,9 @@ function assertDefaultsOnce(prompt) {
     }
   }
   assert.match(prompt, /Verify installation from the exit status, project manifest and lockfile/);
+  assert.match(prompt, /Include a working favicon in the first page/);
+  assert.match(prompt, /Use the visible button text as its accessible name/);
+  assert.match(prompt, /Append row context after the full label/);
   assert.ok(prompt.includes('pin vite to "' + STARTER_VITE_VERSION + '"'));
   assert.match(prompt, /ERR_PNPM_IGNORED_BUILDS/);
   assert.match(prompt, /node_modules are excluded from file actions/);

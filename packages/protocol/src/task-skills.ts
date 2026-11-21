@@ -75,17 +75,17 @@ export const bundledTaskSkills = z
       scope: 'web-ui',
       instructions: APP_DESIGN_GUIDANCE,
       promptInstructions:
-        'For UI work, read the bundled app-design skill before implementing controls. Use one shared, ' +
-        'app-specific theme and reusable styled components, including their open menus, calendars and ' +
-        'scroll areas. Preserve semantic behavior, accessible labels, keyboard navigation and focus return. ' +
-        'Use CSS :focus-visible, not JavaScript modality tracking. Inset select indicators. Remove fake ' +
-        'status dots, decorative arrows, generic card layouts and idle local-storage labels. ' +
-        'Choose hierarchy and density from the actual user task, not a generic theme. Date ranges and presets ' +
-        'belong only where needed. Completion requires linked styled components, isolated tests, Chrome ' +
-        'journeys, automated accessibility checks and Lighthouse 100 in every scored desktop/mobile category. ' +
-        'Repair reported failures without hiding content, weakening tests or disabling audits. ' +
-        'Read engineering-quality for the required miter.quality.json manifest. Keep the existing stack; ' +
-        'do not add UI work to backend tasks.',
+        'For UI work, read app-design before implementing controls. Keep the existing stack. Use shared ' +
+        'theme tokens and styled controls, including menus, calendars and scroll areas. Keep native semantics, ' +
+        'keyboard navigation, focus return, CSS :focus-visible and inset select indicators. ' +
+        'Use the visible button text as its accessible name. Append row context after the full label when needed. ' +
+        'Name icon-only buttons by action. Include a working favicon in the first page; engineering-quality ' +
+        'supplies a ready-to-use icon. Preserve existing branding. Set hierarchy and density by task. ' +
+        'Omit fake status dots, decorative arrows, generic card layouts and idle storage labels. ' +
+        'Add date ranges or presets only when needed. Read engineering-quality for miter.quality.json. ' +
+        'Verify linked controls, isolated tests, Chrome journeys, accessibility and Lighthouse 100 in every ' +
+        'scored desktop/mobile category. Fix failures without hiding content or weakening checks. ' +
+        'Keep backend-only tasks scoped to the backend.',
     },
     {
       id: 'engineering-quality',

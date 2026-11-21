@@ -29,7 +29,9 @@ Fourth line</textarea>
 <section class="ui-dialog-body ui-scroll" tabindex="0" aria-label="Details"><p>Scrollable details</p><div class="filler"></div><p>Last detail</p></section>
 <footer class="ui-dialog-footer"><button id="save" class="ui-button" type="button">Save reservation</button></footer>
 </dialog><div class="filler" aria-hidden="true"></div></main><script type="module">
-import { createDatePicker, createTimeInput, createDialog, confirmAction } from './components.mjs';
+import { createActionButton, createDatePicker, createTimeInput, createDialog, confirmAction } from './components.mjs';
+const rowAction = createActionButton('Mark ready', 'Oak sample');
+document.querySelector('main').append(rowAction);
 const date = createDatePicker(document.querySelector('#date'), { min:'2026-11-01',max:'2026-12-31' });
 const rangeDates = ['date-from','date-through'].map((id) => createDatePicker(document.getElementById(id)));
 const time = createTimeInput(document.querySelector('#time'));
@@ -220,6 +222,11 @@ export async function checkAppComponents(chrome, directory, extensionId) {
     const session = target.session;
     await chrome.request('Page.bringToFront', {}, session);
     await waitFor(chrome, session, 'window.componentFixture?.ready === true', 'working components mounted');
+    const { nodes } = await chrome.request('Accessibility.getFullAXTree', {}, session);
+    assert.ok(
+      nodes.some((node) => node.role?.value === 'button' && node.name?.value === 'Mark ready Oak sample'),
+      'A row action keeps its full visible label before the record name.',
+    );
     const scrollbars = await inspectScrollbars(chrome, session);
 
     for (const scrollbar of scrollbars) {
