@@ -41,6 +41,8 @@ function assertDefaultsOnce(prompt) {
   assert.match(prompt, /copy the vite-api\.mjs write asset, register viteApi\(handle, isPage\)/);
   assert.match(prompt, /declare miter\.backend\.json/);
   assert.match(prompt, /During refresh keep records at full opacity/);
+  assert.match(prompt, /Use a system font stack or bundled local font files/);
+  assert.match(prompt, /Google Fonts links and CSS @imports, are blocked/);
   assert.ok(prompt.includes('pin vite to "' + STARTER_VITE_VERSION + '"'));
   assert.match(prompt, /ERR_PNPM_IGNORED_BUILDS/);
   assert.match(prompt, /node_modules are excluded from file actions/);
