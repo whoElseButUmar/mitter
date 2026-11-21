@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { nonNegativeIntegerSchema } from './schemas/primitives.js';
 import { PageBridgeError } from './page-transport.js';
+import { isProviderOrigin } from './connections/providers.js';
 
 export const TAB_LEASE_KEY = 'miter.chatTabLeases.v1';
 
@@ -35,13 +36,7 @@ type LeaseStorage = {
 };
 
 function hasSupportedOrigin(tab: TabState): boolean {
-  try {
-    return ['https://chatgpt.com', 'https://chat.openai.com'].includes(
-      new URL(tab.url || tab.pendingUrl || '').origin,
-    );
-  } catch {
-    return false;
-  }
+  return isProviderOrigin('chatgpt', tab.url || tab.pendingUrl || '');
 }
 
 const savedTabLeaseSchema = z

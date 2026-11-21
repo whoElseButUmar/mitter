@@ -12,11 +12,13 @@ const elementConstructors = {
   HTMLElement: TestHTMLElement,
   HTMLButtonElement: class extends TestHTMLElement {},
   HTMLSelectElement: class extends TestHTMLElement {},
+  HTMLOptionElement: class extends TestHTMLElement {},
   HTMLParagraphElement: class extends TestHTMLElement {},
   HTMLFormElement: class extends TestHTMLElement {},
   HTMLTextAreaElement: class extends TestHTMLElement {},
   HTMLInputElement: class extends TestHTMLElement {},
   HTMLDivElement: class extends TestHTMLElement {},
+  HTMLDetailsElement: class extends TestHTMLElement {},
   HTMLUListElement: class extends TestHTMLElement {},
 };
 
@@ -38,6 +40,8 @@ const selectorConstructors = new Map([
     elementConstructors.HTMLButtonElement,
   ]),
   ['[data-task-form]', elementConstructors.HTMLFormElement],
+  ['[data-advanced]', elementConstructors.HTMLDetailsElement],
+  ['[data-command-check]', elementConstructors.HTMLOptionElement],
   ['[data-goal]', elementConstructors.HTMLTextAreaElement],
   ['textarea', elementConstructors.HTMLTextAreaElement],
   ['[data-error]', elementConstructors.HTMLParagraphElement],
@@ -64,6 +68,7 @@ function element(properties = {}, elementConstructor = elementConstructors.HTMLE
     disabled: false,
     required: false,
     checked: false,
+    open: false,
     children,
     options: children,
     classList: { toggle: mock.fn() },
@@ -73,10 +78,16 @@ function element(properties = {}, elementConstructor = elementConstructors.HTMLE
     addEventListener(type, listener) {
       listeners.set(type, listener);
     },
-    emit(type) {
-      const listener = listeners.get(type) || this[`on${type}`];
-      return listener?.({ preventDefault() {} });
+    removeEventListener(type, listener) {
+      if (listeners.get(type) === listener) {
+        listeners.delete(type);
+      }
     },
+    emit(type, event = {}) {
+      const listener = listeners.get(type) || this[`on${type}`];
+      return listener?.({ preventDefault() {}, ...event });
+    },
+    contains: (child) => children.includes(child),
     replaceChildren(...items) {
       children.splice(0, children.length, ...items);
     },
@@ -105,6 +116,7 @@ async function sheetHarness(name) {
     '[data-goal]': { value: 'Build a small app' },
     '[data-start-now]': { checked: true },
     '[data-error]': { hidden: true },
+    '[data-project-context]': { hidden: true },
   };
   const nodes = new Map();
   function node(selector) {
@@ -125,6 +137,7 @@ async function sheetHarness(name) {
   const clock = { now: () => 1000 };
   const dependencies = {
     '../../ui/src/select.js': { enhanceSelects: () => selects },
+    '../../ui/src/icons.js': { addDisclosureMarkers: mock.fn() },
     '../../ui/src/draft-rewrite.js': { mountDraftRewrite },
     './native-request.js': { NativeRequestTimeout },
   };
@@ -317,6 +330,123 @@ test('start permission is requested synchronously from the click, never on mount
   dispose();
 });
 
+test('start captures the chat and limits before permission and locks choices while pending', async () => {
+  const permission = deferred();
+  const chat = {
+    providerId: 'chatgpt',
+    id: 42,
+    title: 'Task discussion',
+    url: 'https://chatgpt.com/c/task-discussion',
+  };
+  const deps = startDependencies({
+    authorize: mock.fn(() => permission.promise),
+    lastChat: async () => chat,
+  });
+  const sheet = await sheetHarness('start');
+  const dispose = sheet.mount(deps);
+  await setImmediate();
+  sheet.node('[data-turns]').value = '8';
+  sheet.node('[data-minutes]').value = '15';
+  const starting = sheet.node('[data-start]').emit('click');
+  for (const field of ['chat', 'turns', 'minutes', 'find', 'start']) {
+    assert.equal(sheet.node(`[data-${field}]`).disabled, true);
+  }
+  sheet.node('[data-chat]').value = 'new';
+  sheet.node('[data-turns]').value = '20';
+  sheet.node('[data-minutes]').value = '60';
+  permission.resolve(true);
+  await starting;
+  assert.deepEqual(deps.start.mock.calls[0].arguments, [
+    { consent: true, newChat: false, tabId: 42, maxTurns: 8, maxMinutes: 15 },
+  ]);
+  await sheet.node('[data-start]').emit('click');
+  assert.equal(deps.start.mock.callCount(), 1);
+  dispose();
+});
+
+test('denied start permission leaves the unsent request editable and retryable', async () => {
+  let allowed = false;
+  const deps = startDependencies({ authorize: mock.fn(async () => allowed) });
+  const sheet = await sheetHarness('start');
+  const dispose = sheet.mount(deps);
+  await sheet.node('[data-start]').emit('click');
+  assert.equal(deps.start.mock.callCount(), 0);
+  assert.match(sheet.node('[data-error]').textContent, /Nothing was sent/);
+  assert.doesNotMatch(sheet.node('[data-error]').textContent, /could not be confirmed/);
+  for (const field of ['chat', 'turns', 'minutes', 'find', 'start']) {
+    assert.equal(sheet.node(`[data-${field}]`).disabled, false);
+  }
+  assert.equal(sheet.node('[data-start]').hidden, false);
+  allowed = true;
+  await sheet.node('[data-start]').emit('click');
+  assert.equal(deps.start.mock.callCount(), 1);
+  assert.equal(deps.started.mock.callCount(), 1);
+  dispose();
+});
+
+test('a rejected start offers task-state recovery without another send or assumed cleanup', async (context) => {
+  for (const failure of [
+    new NativeRequestTimeout('bridge.start'),
+    new Error('Miter could not read the response to bridge.start.'),
+    new Error('The chat connection was interrupted.'),
+  ]) {
+    await context.test(failure.message, async () => {
+      const deps = startDependencies({
+        start: mock.fn(async () => {
+          throw failure;
+        }),
+      });
+      const sheet = await sheetHarness('start');
+      const dispose = sheet.mount(deps);
+      await sheet.node('[data-start]').emit('click');
+      assert.match(sheet.node('[data-error]').textContent, /Go back to the task to check its status/);
+      assert.ok(sheet.node('[data-error]').textContent.startsWith(failure.message));
+      assert.equal(sheet.node('[data-start]').hidden, true);
+      assert.equal(sheet.node('[data-cancel]').textContent, 'Back to task');
+      assert.equal(sheet.node('[data-cancel]').focus.mock.callCount(), 1);
+      await sheet.node('[data-start]').emit('click');
+      await sheet.node('[data-find]').emit('click');
+      assert.equal(deps.authorize.mock.callCount(), 1);
+      assert.equal(deps.start.mock.callCount(), 1);
+      assert.equal(deps.loadChats.mock.callCount(), 0);
+      assert.equal(deps.stop.mock.callCount(), 0);
+      assert.equal(deps.started.mock.callCount(), 0);
+      await sheet.node('[data-cancel]').emit('click');
+      assert.equal(deps.close.mock.callCount(), 1);
+      dispose();
+    });
+  }
+});
+
+test('disposed start sheets cannot request permission or submit again', async () => {
+  const deps = startDependencies();
+  const sheet = await sheetHarness('start');
+  const dispose = sheet.mount(deps);
+  dispose();
+  await sheet.node('[data-start]').emit('click');
+  await sheet.node('[data-find]').emit('click');
+  assert.equal(deps.authorize.mock.callCount(), 0);
+  assert.equal(deps.start.mock.callCount(), 0);
+  assert.equal(deps.loadChats.mock.callCount(), 0);
+});
+
+test('a late start rejection cannot announce errors or move focus after disposal', async () => {
+  const started = deferred();
+  const deps = startDependencies({ start: mock.fn(() => started.promise) });
+  const sheet = await sheetHarness('start');
+  const dispose = sheet.mount(deps);
+  const pending = sheet.node('[data-start]').emit('click');
+  await setImmediate();
+  dispose();
+  started.reject(new Error('Start response lost.'));
+  await pending;
+  assert.equal(sheet.node('[data-error]').hidden, true);
+  assert.equal(sheet.node('[data-cancel]').focus.mock.callCount(), 0);
+  assert.equal(deps.started.mock.callCount(), 0);
+  assert.equal(deps.close.mock.callCount(), 0);
+  assert.equal(deps.stop.mock.callCount(), 0);
+});
+
 test('start permission continuations do nothing after disposal', async (t) => {
   for (const button of ['[data-start]', '[data-find]']) {
     await t.test(button, async () => {
@@ -359,6 +489,7 @@ test('a remembered chat never overrides a user selection', async () => {
   const dispose = sheet.mount(startDependencies({ lastChat: () => remembered.promise }));
   sheet.node('[data-chat]').emit('change');
   remembered.resolve({
+    providerId: 'chatgpt',
     id: 42,
     title: 'Last chat',
     url: 'https://chatgpt.com/c/123456789',
@@ -371,6 +502,7 @@ test('a remembered chat never overrides a user selection', async () => {
 
 test('refreshing chats preserves an available tab and falls back when it disappears', async () => {
   const chat = {
+    providerId: 'chatgpt',
     id: 42,
     title: '<b>Last chat</b>',
     url: 'https://chatgpt.com/c/123456789',
@@ -390,6 +522,42 @@ test('refreshing chats preserves an available tab and falls back when it disappe
   await sheet.node('[data-find]').emit('click');
   assert.equal(sheet.node('[data-chat]').value, 'new');
   assert.equal(sheet.node('[data-error]').hidden, false);
+  dispose();
+});
+
+test('chat choices use readable titles and distinguish duplicates without exposing internal IDs', async () => {
+  const deps = startDependencies({
+    loadChats: async () =>
+      [
+        { id: 41, title: 'Planning' },
+        { id: 42, title: '<b>Same title</b>' },
+        { id: 43, title: '<b>Same title</b>' },
+        { id: 44, title: '' },
+      ].map((chat) => ({
+        ...chat,
+        providerId: 'chatgpt',
+        url: 'https://chatgpt.com/c/conversation-' + chat.id,
+      })),
+  });
+  const sheet = await sheetHarness('start');
+  const dispose = sheet.mount(deps);
+  await sheet.node('[data-find]').emit('click');
+  assert.deepEqual(
+    sheet
+      .node('[data-chat]')
+      .options.slice(1)
+      .map((option) => [option.value, option.textContent]),
+    [
+      ['41', 'Planning'],
+      ['42', '<b>Same title</b> (chat 1)'],
+      ['43', '<b>Same title</b> (chat 2)'],
+      ['44', 'Untitled chat'],
+    ],
+  );
+  assert.doesNotMatch(sheet.root.innerHTML, /destination-dot/);
+  sheet.node('[data-chat]').value = '43';
+  await sheet.node('[data-start]').emit('click');
+  assert.equal(deps.start.mock.calls[0].arguments[0].tabId, 43);
   dispose();
 });
 
@@ -417,6 +585,93 @@ test('task rewrite options omit absent callbacks and preserve provided callbacks
       dispose();
     });
   }
+});
+
+test('a scoped task starts with the current folder and default checks without opening advanced options', async () => {
+  const sheet = await sheetHarness('task');
+  const deps = taskDependencies({ scopedProjectId: 'project-a' });
+  const dispose = sheet.mount(deps);
+  assert.match(
+    sheet.root.innerHTML,
+    /<details class="form-advanced" data-advanced><summary>Advanced options/,
+  );
+  assert.equal(sheet.node('[data-project-field]').hidden, true);
+  assert.equal(sheet.node('[data-project-context]').hidden, false);
+  assert.equal(sheet.node('[data-project-context]').textContent, 'Project: Project A');
+  assert.equal(sheet.node('[data-advanced]').open, false);
+  assert.equal(sheet.node('[data-start-now]').checked, true);
+  assert.equal(sheet.node('[data-create]').textContent, 'Start task');
+  assert.match(sheet.node('[data-disclosure]').textContent, /ChatGPT.*approval/);
+  await sheet.node('[data-task-form]').emit('submit');
+  assert.equal(deps.authorize.mock.callCount(), 1);
+  assert.equal(deps.create.mock.callCount(), 1);
+  assert.equal(deps.start.mock.callCount(), 1);
+  const params = deps.create.mock.calls[0].arguments[0];
+  assert.equal(params.projectId, 'project-a');
+  assert.equal(params.workspaceMode, 'shared');
+  assert.equal(params.mode, 'handoff');
+  assert.deepEqual(params.checks, []);
+  dispose();
+});
+
+test('typing preserves advanced options state and saving without starting keeps permission untouched', async () => {
+  const sheet = await sheetHarness('task');
+  const deps = taskDependencies();
+  const dispose = sheet.mount(deps);
+  const advanced = sheet.node('[data-advanced]');
+  assert.equal(sheet.node('[data-project-context]').hidden, true);
+  assert.equal(sheet.node('[data-project-field]').hidden, false);
+  for (const open of [true, false]) {
+    advanced.open = open;
+    sheet.node('[data-goal]').value = 'Build a reading journal';
+    await sheet.node('[data-goal]').emit('input');
+    assert.equal(advanced.open, open);
+  }
+  sheet.node('[data-start-now]').checked = false;
+  await sheet.node('[data-start-now]').emit('change');
+  assert.equal(sheet.node('[data-create]').textContent, 'Create task');
+  assert.equal(sheet.node('[data-disclosure]').textContent, 'Creates a task without starting it.');
+  assert.equal(advanced.open, false);
+  await sheet.node('[data-task-form]').emit('submit');
+  assert.equal(deps.create.mock.callCount(), 1);
+  assert.equal(deps.authorize.mock.callCount(), 0);
+  assert.equal(deps.start.mock.callCount(), 0);
+  dispose();
+});
+
+test('invalid advanced fields reveal their disclosure before validation blocks submission', async () => {
+  const sheet = await sheetHarness('task');
+  const deps = taskDependencies();
+  const dispose = sheet.mount(deps);
+  const form = sheet.node('[data-task-form]');
+  const advanced = sheet.node('[data-advanced]');
+  await form.emit('invalid', { target: sheet.node('[data-goal]') });
+  assert.equal(advanced.open, false, 'An invalid main goal does not expose unrelated options');
+  for (const [rule, selector] of [
+    ['exists', '[data-path]'],
+    ['contains', '[data-text]'],
+    ['command', '[data-profile]'],
+  ]) {
+    sheet.node('[data-rule]').value = rule;
+    await sheet.node('[data-rule]').emit('change');
+    const input = sheet.node(selector);
+    advanced.append(input);
+    advanced.open = false;
+    assert.equal(input.required, true);
+    assert.equal(input.disabled, false);
+    form.reportValidity = () => {
+      form.emit('invalid', { target: input });
+      return false;
+    };
+    await form.emit('submit');
+    assert.equal(advanced.open, true);
+    assert.equal(deps.authorize.mock.callCount(), 0);
+    assert.equal(deps.create.mock.callCount(), 0);
+  }
+  dispose();
+  advanced.open = false;
+  await form.emit('invalid', { target: sheet.node('[data-path]') });
+  assert.equal(advanced.open, false, 'Disposal releases the invalid-field listener');
 });
 
 test('task submission captures its scoped project and form data before permission resolves', async () => {
@@ -502,6 +757,25 @@ test('a failed start closes the created task sheet rather than permitting duplic
   assert.equal(deps.stop.mock.callCount(), 0);
 });
 
+test('a launch-only prompt starts locally while a request to change the app keeps its coding source', async () => {
+  for (const [goal, mode] of [
+    ['Install dependencies with pnpm, start the dev server, and open the app preview.', 'local'],
+    ['Start the app and add search to the catalog.', 'handoff'],
+  ]) {
+    const deps = taskDependencies();
+    const sheet = await sheetHarness('task');
+    const dispose = sheet.mount(deps);
+    sheet.node('[data-goal]').value = goal;
+    sheet.node('[data-mode]').value = 'handoff';
+    sheet.node('[data-start-now]').checked = true;
+    await sheet.node('[data-task-form]').emit('submit');
+    assert.equal(deps.create.mock.calls[0].arguments[0].mode, mode);
+    assert.equal(deps.start.mock.calls[0].arguments[1], mode);
+    assert.equal(deps.authorize.mock.callCount(), Number(mode === 'handoff'));
+    dispose();
+  }
+});
+
 test('local starts and create-only submissions do not request ChatGPT permission', async (t) => {
   for (const [mode, startNow] of [
     ['local', true],
@@ -542,6 +816,46 @@ test('completion fields retain native visibility, disabled and required states',
       assert.equal(sheet.node(`[data-${input}]`).required, visible);
     }
   }
+  dispose();
+});
+
+test('projects without commands cannot strand creation on an empty required command picker', async () => {
+  const sheet = await sheetHarness('task');
+  const deps = taskDependencies({ scopedProjectId: 'project-b' });
+  const dispose = sheet.mount(deps);
+  assert.equal(sheet.node('[data-command-check]').disabled, true);
+  assert.equal(sheet.node('[data-command-check-hint]').hidden, false);
+  assert.equal(sheet.node('[data-rule]').value, 'human');
+  assert.equal(sheet.node('[data-profile]').required, false);
+  await sheet.node('[data-task-form]').emit('submit');
+  assert.deepEqual(deps.create.mock.calls[0].arguments[0].checks, []);
+  assert.equal(deps.create.mock.calls[0].arguments[0].projectId, 'project-b');
+  dispose();
+});
+
+test('changing projects removes unavailable command checks and restores their availability', async () => {
+  const sheet = await sheetHarness('task');
+  const dispose = sheet.mount(taskDependencies());
+  assert.equal(sheet.node('[data-command-check]').disabled, false);
+  assert.equal(sheet.node('[data-command-check-hint]').hidden, true);
+  sheet.node('[data-rule]').value = 'command';
+  sheet.node('[data-rule]').emit('change');
+  assert.equal(sheet.node('[data-profile]').required, true);
+  sheet.node('[data-project]').value = 'project-b';
+  sheet.node('[data-project]').emit('change');
+  assert.equal(sheet.node('[data-command-check]').disabled, true);
+  assert.equal(sheet.node('[data-rule]').value, 'human');
+  assert.equal(sheet.node('[data-profile-field]').hidden, true);
+  assert.equal(sheet.node('[data-profile]').required, false);
+  assert.equal(sheet.node('[data-profile]').disabled, true);
+  sheet.node('[data-project]').value = 'project-a';
+  sheet.node('[data-project]').emit('change');
+  assert.equal(sheet.node('[data-command-check]').disabled, false);
+  assert.equal(sheet.node('[data-command-check-hint]').hidden, true);
+  assert.deepEqual(
+    sheet.node('[data-profile]').options.map((option) => option.value),
+    ['', 'test'],
+  );
   dispose();
 });
 
@@ -625,7 +939,9 @@ test('malformed or foreign reply previews never enable Apply or grant a ticket',
 
 test('malformed chat inventories do not populate or replace the selected destination', async () => {
   const deps = startDependencies({
-    loadChats: mock.fn(async () => [{ id: '7', title: 'Chat', url: 'https://chatgpt.com/c/chat' }]),
+    loadChats: mock.fn(async () => [
+      { providerId: 'chatgpt', id: '7', title: 'Chat', url: 'https://chatgpt.com/c/chat' },
+    ]),
   });
   const sheet = await sheetHarness('start');
   const dispose = sheet.mount(deps);

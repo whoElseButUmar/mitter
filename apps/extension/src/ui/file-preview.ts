@@ -32,6 +32,7 @@ export function createFilePreview(props: { workerId: string; path: string; rpc: 
   const [reload, setReload] = createSignal(0);
 
   let generation = 0;
+  let fileIdentity = '';
   let controller: AbortController | undefined;
   let objectURL = '';
   function revoke() {
@@ -44,6 +45,7 @@ export function createFilePreview(props: { workerId: string; path: string; rpc: 
   createEffect(() => {
     const id = props.workerId;
     const path = props.path;
+    const identity = JSON.stringify([id, path]);
     reload();
     const current = ++generation;
     controller?.abort();
@@ -51,7 +53,10 @@ export function createFilePreview(props: { workerId: string; path: string; rpc: 
     const signal = controller.signal;
     revoke();
     setAsset(undefined);
-    setError('');
+    if (identity !== fileIdentity) {
+      fileIdentity = identity;
+      setError('');
+    }
     setLoading(true);
     setHTML('');
     setSource('');
@@ -106,6 +111,7 @@ export function createFilePreview(props: { workerId: string; path: string; rpc: 
         } else {
           setMode('preview');
         }
+        setError('');
       } catch (event) {
         if (!signal.aborted && current === generation) {
           setError(errorMessage(event));

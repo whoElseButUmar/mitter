@@ -25,16 +25,22 @@ import {
   nativeTerminalRpcRegistry,
   parseTerminalResult,
 } from '../../src/schemas/terminal.ts';
-import { mockPort } from './chrome-mock.mjs';
+import { mockPort, answerViewHandshake } from './chrome-mock.mjs';
 
 const forwarded = [
   'state',
   'system.health',
+  'system.readiness',
+  'worker.previewStatus',
+  'project.appRuns',
+  'worker.previewStart',
+  'worker.previewStop',
   'system.backups',
   'system.backup',
   'system.verifyBackup',
   'project.context',
   'project.add',
+  'project.create',
   'project.rename',
   'project.pickFolder',
   'project.reveal',
@@ -59,6 +65,7 @@ const forwarded = [
   'worker.pause',
   'worker.cancel',
   'worker.approve',
+  'worker.setupDecision',
   'worker.skip',
   'worker.rollback',
   'worker.accept',
@@ -153,6 +160,7 @@ function clients(context) {
       },
       connect() {
         const port = mockPort('mitter-ui');
+        answerViewHandshake(port);
         viewPorts.push(port);
         return port;
       },
@@ -195,10 +203,12 @@ test('every accepted method has an explicit owner contract without widening view
     ...progress,
     ...terminal,
     'terminal.disconnect',
+    'terminal.claim',
+    'terminal.complete',
     ...reset,
   ]);
-  assert.equal(Object.keys(viewRpcRegistry).length, 71);
-  assert.equal(Object.keys(nativeRpcRegistry).length, 63);
+  assert.equal(Object.keys(viewRpcRegistry).length, 78);
+  assert.equal(Object.keys(nativeRpcRegistry).length, 72);
 
   for (const method of forwarded) {
     assert.equal(forwardedRpcRegistry[method].result, coreRpcRegistry[method].result);

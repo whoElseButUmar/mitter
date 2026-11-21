@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { MAX_TEXT } from '../../../../../packages/protocol/src/index.js';
-import { hasErrorCode } from '../types.js';
+import { hasErrorCode, isRecord } from '../types.js';
 import { digest, staleEdit } from '../edit-plan.js';
 import type { FileVersion } from '../edit-plan.js';
 import { z } from 'zod';
@@ -35,6 +35,9 @@ const denied = new Set([
   '.venv',
   'venv',
 ]);
+
+export class ExcludedPathError extends Error {}
+export class DirectoryReadError extends Error {}
 
 export function validateRelative(input: string, allowRoot = false): string {
   if (input === '.' && allowRoot) {
@@ -74,7 +77,7 @@ export function validateRelative(input: string, allowRoot = false): string {
         /\.(pem|key|p12|pfx)$/i.test(segment),
     )
   ) {
-    throw new Error('Sensitive or excluded path.');
+    throw new ExcludedPathError('Sensitive or excluded path.');
   }
 
   return input;
@@ -163,6 +166,29 @@ export async function safePath(root: string, relative: string, allowRoot = false
   return current;
 }
 
+/** Only absence of the exact requested child is an ordinary task observation.
+ * A failed root, traversal, or disappearing entry during a recursive scan must surface. */
+export async function isMissingProjectPath(root: string, relative: string, error: unknown): Promise<boolean> {
+  if (
+    relative === '.' ||
+    !isRecord(error) ||
+    error.code !== 'ENOENT' ||
+    error.path !== path.join(root, relative)
+  ) {
+    return false;
+  }
+  const target = await safePath(root, relative);
+  try {
+    await fs.lstat(target);
+    return false;
+  } catch (current) {
+    if (hasErrorCode(current, 'ENOENT')) {
+      return true;
+    }
+    throw current;
+  }
+}
+
 export async function fileText(root: string, relative: string): Promise<FileText> {
   const target = await safePath(root, relative);
   // O_NOFOLLOW binds the descriptor to the inode that existed at open time, so
@@ -172,6 +198,10 @@ export async function fileText(root: string, relative: string): Promise<FileText
 
   try {
     const stat = await handle.stat();
+
+    if (stat.isDirectory()) {
+      throw new DirectoryReadError('This path is a directory. Use list to inspect its files.');
+    }
 
     if (!stat.isFile() || stat.nlink > 1 || stat.size > MAX_TEXT) {
       throw new Error('Read limited to ordinary, unlinked UTF-8 files of at most 120 KB.');
@@ -216,11 +246,26 @@ export async function existing(root: string, relative: string): Promise<FileVers
   }
 }
 
-export async function listFiles(root: string, relative = '.', max = 300): Promise<string[]> {
+export async function listFiles(
+  root: string,
+  relative = '.',
+  max = 300,
+  onOmittedPath?: (reason: string) => void,
+  selection?: {
+    visitDirectory: (relative: string) => boolean;
+    includeFile: (relative: string) => boolean;
+    signal: AbortSignal;
+  },
+): Promise<string[]> {
   const start = await safePath(root, relative, true);
   const output: string[] = [];
   async function visit(directory: string, depth: number) {
-    if (depth > 8 || output.length >= max) {
+    selection?.signal.throwIfAborted();
+    if (depth > 8) {
+      onOmittedPath?.('The project exceeds the snapshot depth limit. No partial source copy was tested.');
+      return;
+    }
+    if (output.length >= max) {
       return;
     }
 
@@ -244,17 +289,25 @@ export async function listFiles(root: string, relative = '.', max = 300): Promis
       }
 
       if (entry.isSymbolicLink()) {
+        onOmittedPath?.('A symbolic link cannot be copied into the isolated test snapshot.');
         continue;
       }
 
       if (entry.isDirectory()) {
-        if (['dist', 'build', 'coverage', '.next'].includes(entry.name)) {
+        if (
+          ['dist', 'build', 'coverage', '.next'].includes(entry.name) ||
+          (selection && !selection.visitDirectory(relativePath))
+        ) {
           continue;
         }
 
         await visit(absolute, depth + 1);
       } else if (entry.isFile()) {
-        output.push(relativePath);
+        if (!selection || selection.includeFile(relativePath)) {
+          output.push(relativePath);
+        }
+      } else {
+        onOmittedPath?.('A special file cannot be copied into the isolated test snapshot.');
       }
     }
   }

@@ -6,5 +6,6 @@ allowBuilds:
   esbuild: true
   node-llama-cpp: true
   node-pty: true
+  pnpm: false
 minimumReleaseAge: 1440
 minimumReleaseAgeStrict: true

@@ -36,6 +36,34 @@ export function contentHidden(element: Element): boolean {
   return false;
 }
 
+/** CSS results belong to one synchronous serialization. Never reuse this
+ * reader after an await, when page styles or message ownership can change. */
+export function createVisibilityReader(): (element: Element) => boolean {
+  const styles = new Map<Element, { hiddenLayout: boolean; hiddenVisibility: boolean }>();
+  return (element: Element): boolean => {
+    for (let ancestor: Element | null = element; ancestor; ancestor = parentAcrossShadow(ancestor)) {
+      let style = styles.get(ancestor);
+      if (!style) {
+        const computed = getComputedStyle(ancestor);
+        style = {
+          hiddenLayout:
+            ancestor.hasAttribute('hidden') ||
+            computed.display === 'none' ||
+            computed.contentVisibility === 'hidden',
+          hiddenVisibility: computed.visibility === 'hidden' || computed.visibility === 'collapse',
+        };
+        styles.set(ancestor, style);
+      }
+      // A child may override inherited visibility. Display/content-visibility
+      // hiding on any ancestor still hides the entire subtree.
+      if (style.hiddenLayout || (ancestor === element && style.hiddenVisibility)) {
+        return true;
+      }
+    }
+    return false;
+  };
+}
+
 /** A bounded, read-only composed-tree scan. Open shadow roots are inspectable;
  * closed roots and iframe documents are not bypassed. No page-private state,
  * network requests, clipboard reads, or executable source are involved.
@@ -90,6 +118,9 @@ export function pageElements(): {
 const generationStopSelector =
   'button[data-testid="stop-button"],button[data-testid="composer-stop-button"],button[aria-label="Stop generating" i],button[aria-label="Stop streaming" i],button[aria-label="Stop response" i],button#composer-submit-button[aria-label="Stop" i]';
 
+export const composerSelector =
+  '#prompt-textarea[contenteditable="true"],textarea#prompt-textarea,textarea[data-testid="composer-input"],[contenteditable="true"][data-testid="composer-input"],form [contenteditable="true"][role="textbox"]';
+
 function generationElementVisible(element: HTMLElement): boolean {
   return (
     !contentHidden(element) &&
@@ -97,23 +128,36 @@ function generationElementVisible(element: HTMLElement): boolean {
   );
 }
 
+function activeGenerationStop(element: HTMLElement): boolean {
+  const knownControl = element.matches(generationStopSelector);
+  if (!knownControl && !element.matches('button[aria-label="Stop" i]')) {
+    return false;
+  }
+  if (
+    element.matches(':disabled') ||
+    element.getAttribute('aria-disabled') === 'true' ||
+    !generationElementVisible(element)
+  ) {
+    return false;
+  }
+  if (knownControl) {
+    return true;
+  }
+
+  // New composer layouts retain the accessible Stop label but omit the old ID.
+  // A generic Stop elsewhere in the page must not hold or cancel this reply.
+  const composer = element.closest('form')?.querySelector(composerSelector);
+  return composer instanceof HTMLElement && !contentHidden(composer);
+}
+
 export function generationStopControls(): HTMLElement[] {
-  return pageElements().elements.filter(
-    (element) =>
-      element.matches(generationStopSelector) &&
-      generationElementVisible(element) &&
-      !element.matches(':disabled') &&
-      element.getAttribute('aria-disabled') !== 'true',
-  );
+  return pageElements().elements.filter(activeGenerationStop);
 }
 
 export function generationActive(): boolean {
   return pageElements().elements.some(
     (element) =>
-      generationElementVisible(element) &&
-      (element.matches('[data-is-streaming="true"]') ||
-        (element.matches(generationStopSelector) &&
-          !element.matches(':disabled') &&
-          element.getAttribute('aria-disabled') !== 'true')),
+      (element.matches('[data-is-streaming="true"]') && generationElementVisible(element)) ||
+      activeGenerationStop(element),
   );
 }

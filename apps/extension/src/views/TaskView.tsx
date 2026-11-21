@@ -1,8 +1,7 @@
 import { runningStates as running } from '../ui/task-view';
-import { errorMessage } from '../schemas/primitives';
-import { debugEntrySchema } from '../../../../packages/bridge/src/diagnostics';
-import { callResult } from '../ui/rpc';
 import { TaskEditor } from './TaskEditor';
+import { TaskDiagnostics } from './TaskDiagnostics';
+import { taskStatus } from '../ui/task-status';
 import { TaskRunnerControls } from './TaskRunnerControls';
 import type { WorkspaceController } from '../ui/workspace-controller';
 import type { Worker } from '../../../../packages/protocol/src/index';
@@ -13,20 +12,17 @@ import { Show } from 'solid-js';
 import { createApprovalTrust } from '../ui/approval-trust';
 
 import { displayTaskName } from '../../../../packages/protocol/src/task-brief';
-import { APP_VERSION } from '../../../../packages/protocol/src/index';
-import { taskPresentation } from '../../../../packages/bridge/src/presentation';
-import { Status } from '../components';
+import { TaskAppRunButton } from '../components/TaskAppRunButton';
+import { Icon } from '../icons';
+import { SetupCommandReview, setupReviewKey } from '../components/SetupCommandReview';
 
 export function TaskView(props: { controller: WorkspaceController; task: Worker }) {
   const {
     snapshot,
     connected,
     success,
-    setNotice,
 
     busy,
-    setDebugOpen,
-    useReply,
     bridge,
 
     rpc,
@@ -36,11 +32,12 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
     sendFollowup,
     showFollowups,
     showText,
+    output,
   } = props.controller;
   const trust = createApprovalTrust(() => props.task);
 
   const task = () => props.task;
-  const progress = () => taskPresentation(task(), bridge());
+  const progress = () => taskStatus(task(), bridge());
 
   return (
     <div class="task-layout">
@@ -64,38 +61,81 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
         ]}
       >
         <section class="goal-block">
-          <h1 title={displayTaskName(task())}>{displayTaskName(task())}</h1>
+          <div class="task-heading-row">
+            <h1 title={displayTaskName(task())}>{displayTaskName(task())}</h1>
+          </div>
+          <div classList={{ 'task-handoff': task().state === 'complete' }}>
+            <div
+              class="task-state"
+              data-tone={progress().tone}
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <h2 class="task-status-heading">{progress().heading}</h2>
+              <span class="state-summary">{progress().detail}</span>
+            </div>
+            <Show when={task().state === 'complete' && !task().pending}>
+              <div class="task-handoff-actions" role="group" aria-label="Project files and app">
+                <TaskAppRunButton controller={props.controller} task={task()} />
+                <button
+                  type="button"
+                  disabled={!connected()}
+                  aria-disabled={output.browsing()}
+                  aria-busy={output.browsing()}
+                  onClick={() => void output.browseFiles()}
+                >
+                  <Icon name="folder" />
+                  <Show when={output.browsing()} fallback="Open files">
+                    Opening…
+                  </Show>
+                </button>
+              </div>
+            </Show>
+          </div>
           <details class="task-details">
-            <summary>Task details</summary>
+            <summary>
+              <Icon name="right" />
+              Task details
+            </summary>
             <p>{task().goal.replace(/^(Worker name|The goal):\s*/i, '')}</p>
+            <Show when={task().worktree}>
+              <small class="muted">Isolated worktree · {task().worktree?.branch}</small>
+            </Show>
           </details>
-          <Show when={task().worktree}>
-            <small class="muted">Isolated worktree · {task().worktree?.branch}</small>
-          </Show>
         </section>
       </ContextArea>
-      <div
-        classList={{
-          'task-state': true,
-          success: task().state === 'complete',
-          'bridge-working': !!bridge()?.active || !!bridge()?.receiving,
-        }}
-        role="status"
-        aria-live="polite"
-      >
-        <Status value={progress().status} />
-        <span class="state-summary">{progress().detail}</span>
-      </div>
+      <Show when={task().completion?.evidence}>
+        {(evidence) => (
+          <details class="completion-evidence">
+            <summary>
+              <Icon name="right" />
+              Verification details
+            </summary>
+            <p>{evidence().detail}</p>
+            <Show when={task().completion?.summary}>
+              {(summary) => (
+                <>
+                  <strong>Model summary</strong>
+                  <p>{summary()}</p>
+                </>
+              )}
+            </Show>
+          </details>
+        )}
+      </Show>
       <Show when={task().error && task().error !== progress().detail}>
         <div class="error-banner" role="alert">
           {task().error}
         </div>
       </Show>
-      <Show when={task().pending}>
+      <Show keyed when={setupReviewKey(task())}>
+        {(_identity) => <SetupCommandReview task={task()} controller={props.controller} />}
+      </Show>
+      <Show when={!setupReviewKey(task()) && task().pending}>
         {(pending) => (
           <section class="approval">
-            <strong>Command approval needed</strong>
-            <p>{pending().reason}</p>
+            <h2>Review command</h2>
             <pre>{approvalDescription(pending())}</pre>
             <label class="checkline">
               <input
@@ -110,6 +150,7 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
             </label>
             <div class="button-row end">
               <button
+                disabled={busy() || !connected()}
                 onClick={() =>
                   action('worker.approve', {
                     workerId: task().id,
@@ -123,7 +164,7 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
               </button>
               <button
                 class="primary"
-                disabled={busy()}
+                disabled={busy() || !connected()}
                 onClick={() =>
                   action('worker.approve', {
                     workerId: task().id,
@@ -141,41 +182,12 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
         )}
       </Show>
       <TaskRunnerControls controller={props.controller} task={task()} />
-      <Show when={bridge()?.phase === 'error' || (!!bridge()?.errorCode && !bridge()?.active)}>
-        <div class="bridge-note">
-          <Show when={bridge()?.monitoring && !bridge()?.receiving}>
-            <button class="text-button" onClick={useReply}>
-              Use reply…
-            </button>
-          </Show>
-          <button class="text-button" onClick={() => setDebugOpen(true)}>
-            Show details
-          </button>
-          <button
-            class="text-button"
-            onClick={() => {
-              void callResult(rpc, debugEntrySchema.array(), 'debug.read')
-                .then((entries) =>
-                  copy(
-                    [
-                      'MITER ' + APP_VERSION + ' diagnostics',
-                      ...entries.map(
-                        (event) =>
-                          new Date(event.time).toISOString() + ' [' + event.kind + '] ' + event.message,
-                      ),
-                    ].join('\n'),
-                  ),
-                )
-                .catch((event) => {
-                  setNotice(errorMessage(event));
-                  setDebugOpen(true);
-                });
-            }}
-          >
-            Copy diagnostics
-          </button>
-        </div>
-      </Show>
+      <TaskDiagnostics
+        controller={props.controller}
+        task={task()}
+        visibleDetail={progress().detail}
+        requiresAttention={progress().requiresAttention}
+      />
       <TaskEditor controller={props.controller} task={task()} />
       <Show keyed when={task().id}>
         {(id) => (

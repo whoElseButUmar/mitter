@@ -94,21 +94,47 @@ export function LibraryDialogs(props: { controller: WorkspaceController }) {
         )}
       </Show>
       <Show when={modal() === 'files' && output.fileLibrary()}>
-        {(listing) => <FileBrowser output={output} listing={listing()} close={close} />}
+        {(listing) => (
+          <FileBrowser
+            output={output}
+            listing={listing()}
+            close={close}
+            folderDisabled={!props.controller.connected() || busy()}
+            reveal={(current) => {
+              if (
+                props.controller.connected() &&
+                output.fileLibrary() === current &&
+                props.controller.selected() === current.workerId
+              ) {
+                void props.controller.action('worker.reveal', { workerId: current.workerId });
+              }
+            }}
+          />
+        )}
       </Show>
     </>
   );
 }
 
-function FileBrowser(props: { output: TaskOutput; listing: FileListing; close: () => void }) {
+function FileBrowser(props: {
+  output: TaskOutput;
+  listing: FileListing;
+  close: () => void;
+  folderDisabled: boolean;
+  reveal: (listing: FileListing) => void;
+}) {
   const [query, setQuery] = createSignal('');
+  let filter: HTMLInputElement | undefined;
   createEffect(on(props.output.fileLibrary, () => setQuery('')));
 
   return (
-    <Modal title="Workspace files" close={props.close}>
+    <Modal title="Files" close={props.close}>
       <label class="field">
         <span>Find a file</span>
         <input
+          ref={(element) => {
+            filter = element;
+          }}
           value={query()}
           onInput={(event) => setQuery(event.currentTarget.value)}
           autofocus
@@ -118,7 +144,25 @@ function FileBrowser(props: { output: TaskOutput; listing: FileListing; close: (
       <div class="file-browser">
         <For
           each={props.listing.files.filter((path) => path.toLowerCase().includes(query().toLowerCase()))}
-          fallback={<p class="muted">No matching files.</p>}
+          fallback={
+            <Show
+              when={props.listing.files.length}
+              fallback={<p class="muted">No files in this workspace yet.</p>}
+            >
+              <p class="muted" role="status">
+                No matching files.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setQuery('');
+                  filter?.focus();
+                }}
+              >
+                Clear filter
+              </button>
+            </Show>
+          }
         >
           {(path) => (
             <ContextArea items={props.output.fileMenu(props.listing.workerId, path)}>
@@ -128,12 +172,18 @@ function FileBrowser(props: { output: TaskOutput; listing: FileListing; close: (
                   props.output.previewListedFile(props.listing, path);
                 }}
               >
-                <Icon name="file" size={14} />
+                <Icon name="file" />
                 {path}
               </button>
             </ContextArea>
           )}
         </For>
+      </div>
+      <div class="button-row end file-browser-actions">
+        <button type="button" disabled={props.folderDisabled} onClick={() => props.reveal(props.listing)}>
+          <Icon name="folder" />
+          Open folder
+        </button>
       </div>
     </Modal>
   );

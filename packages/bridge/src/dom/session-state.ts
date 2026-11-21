@@ -1,6 +1,31 @@
 import type { OutboundReceipt } from '../message-wire.js';
 import type { CommittedMessage, PreparedMessage } from './types.js';
 
+let verified: { bubble: HTMLElement; source: string; observer: MutationObserver } | undefined;
+
+export function forgetSentSource(): void {
+  verified?.observer.disconnect();
+  verified = undefined;
+}
+
+/** Valid only for the same, unmodified native bubble. A branch change or
+ * rerender must establish the source again before receipt discovery uses it. */
+export function verifiedSentSource(message: HTMLElement): string | undefined {
+  if (!verified || verified.bubble !== message) {
+    return;
+  }
+  if (!message.isConnected || verified.observer.takeRecords().length) {
+    forgetSentSource();
+    return;
+  }
+  return verified.source;
+}
+
+export function rememberSentSource(bubble: HTMLElement, source: string, observer: MutationObserver): void {
+  forgetSentSource();
+  verified = { bubble, source, observer };
+}
+
 export type MessageReveal = {
   control: HTMLElement;
   attempts: number;

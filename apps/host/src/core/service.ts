@@ -10,6 +10,7 @@ import type {
   Response,
   Settings,
   Snapshot,
+  TaskBoundary,
   Worker,
 } from '../../../../packages/protocol/src/index.js';
 import {
@@ -25,6 +26,7 @@ import {
 } from '../../../../packages/protocol/src/index.js';
 import { parseProposalEnvelope, type ProposalEnvelope } from '../../../../packages/protocol/src/proposal.js';
 import { parseFollowup } from '../../../../packages/protocol/src/requests.js';
+import { readBundledTaskSkill } from '../../../../packages/protocol/src/task-skills.js';
 import { parseRpcParams, parseRpcResult } from '../../../../packages/protocol/src/rpc.js';
 import { serviceRpcRegistry } from './service/rpc.js';
 import { ReplyValidationError } from '../../../../packages/protocol/src/validation.js';
@@ -44,9 +46,9 @@ import { Collaboration } from './collaboration.js';
 import { parseProfile, redact, gitDiff, type CommandResult } from './commands.js';
 import { Store } from './database.js';
 import { pickFolder, revealProject } from './desktop.js';
-import { EditConflict, isFileEdit, digest as editDigest } from './edit-plan.js';
+import { EditConflict, isFileEdit } from './edit-plan.js';
 import { Followups } from './followups.js';
-import { deliveryKey, matchingDelivery, type HandoffDelivery } from './handoff-delivery.js';
+import { deliveryKey, exchangeKey, matchingDelivery, type HandoffDelivery } from './handoff-delivery.js';
 import { inspectHealth } from './health.js';
 import { Locks } from './locks.js';
 import { actionRecord } from './model-observations.js';
@@ -55,11 +57,20 @@ import { ReadSnapshots } from './read-snapshots.js';
 import { parseModelOutput } from '../../../inference/src/protocol.js';
 import { reviewFile } from './review.js';
 import { checkJavaScript } from './syntax-check.js';
+import { isProjectLaunchRequest } from '../../../../packages/protocol/src/task-brief.js';
+import { devProjectFingerprint } from './dev-server/index.js';
+import { requestsWebVerification, verifyProjectQuality } from './quality/gate.js';
+import { inspectReadiness } from './quality/readiness.js';
+import { PreviewSessions } from './preview/sessions.js';
 import { ApprovalNeeded, UserQuestion, errorMessage } from './types.js';
 import type { Models, WorkflowFactory } from './types.js';
 import {
+  DirectoryReadError,
+  ExcludedPathError,
   Workspace,
+  isMissingProjectPath,
   digest,
+  existing,
   fileText,
   listFiles,
   searchFiles,
@@ -68,12 +79,45 @@ import {
 } from './workspace.js';
 import { createWorktree } from './worktrees.js';
 import { CommandJournalStore } from './service/command-journal.js';
+import { managedPnpmExecutable } from './managed-pnpm.js';
+import {
+  type PnpmInstallInputs,
+  forgetPnpmInstall,
+  plainPnpmInstall,
+  pnpmInstallInputs,
+  pnpmInstallIsCurrent,
+  pnpmInstallNote,
+  recordPnpmInstall,
+} from './service/pnpm-install-receipt.js';
+import { newViteInstallIssue } from './service/pnpm-setup.js';
+import {
+  wantsProjectInstall,
+  requestedInstall,
+  requestedInstallId,
+  installDecisionKey,
+  recordInstallDecision,
+} from './service/requested-install.js';
+import type { ManualSetupOptions } from './terminal/manual-setup.js';
+import {
+  finishSetupChoice,
+  manualSetupKey,
+  requireSetupApproval,
+  reviewedSetup,
+  setupProfile,
+  startSetupTerminal,
+} from './service/setup-commands.js';
 import { buildEditRepair, encodeRepairObservation } from './service/edit-repair.js';
 import { TaskRuntime } from './service/task-runtime.js';
 import { ProjectCatalog } from './service/project-catalog.js';
 import { TaskProgressStore, parseProgressUpdate, prepareFollowupProgress } from './service/progress.js';
 import { advanceCounter } from './service/counters.js';
-import { buildCompletion, buildReport, summarizeAction } from './service/reports.js';
+import {
+  buildCompletion,
+  buildReport,
+  completionEventMessage,
+  completionFailureMessage,
+  summarizeAction,
+} from './service/reports.js';
 import {
   parseLocalDraft,
   parseHandoffText,
@@ -97,7 +141,9 @@ import {
   type VerificationResult,
 } from './service/schemas.js';
 import {
+  drainedHandoffRecoveryMessage,
   migrateLegacyCompletion,
+  recoverDrainedHandoff,
   recoverInterruptedWorker,
   recoverStoppedWorker,
   shutdownRecoveryMessage,
@@ -115,6 +161,7 @@ const gatedMethods = new Set([
   'worker.approve',
   'worker.followupActivate',
   'worker.accept',
+  'worker.setupDecision',
 ]);
 const epochMethods = new Set([
   'worker.validateReply',
@@ -125,6 +172,7 @@ const epochMethods = new Set([
 ]);
 
 export class Service {
+  startManualSetup?: (options: ManualSetupOptions) => Promise<string>;
   readonly projects: Map<string, Project>;
   private readonly catalog: ProjectCatalog;
   readonly workers = new Map<string, Worker>();
@@ -132,6 +180,7 @@ export class Service {
   private readonly interruptions = new Set<string>();
   private readonly locks = new Locks();
   private readonly workspace: Workspace;
+  private readonly previews: PreviewSessions;
   private readonly reads: ReadSnapshots;
   private readonly progress: TaskProgressStore;
   private readonly commands: CommandJournalStore;
@@ -151,6 +200,7 @@ export class Service {
     readonly models: ServiceModels,
     readonly workflowName = 'xstate',
   ) {
+    this.previews = new PreviewSessions(dataDir);
     this.workspace = new Workspace(store);
     this.reads = new ReadSnapshots(store);
     this.progress = new TaskProgressStore(store);
@@ -187,6 +237,13 @@ export class Service {
       }
 
       worker = recoverStoppedWorker(worker);
+      const recoveredHandoff = recoverDrainedHandoff(worker);
+
+      if (recoveredHandoff !== worker) {
+        worker = recoveredHandoff;
+        store.event(worker.id, 'recovery', drainedHandoffRecoveryMessage);
+      }
+
       const migratedWorker = migrateLegacyCompletion(worker, Date.now());
 
       if (migratedWorker !== worker) {
@@ -256,6 +313,7 @@ export class Service {
     const bridgeProgress = this.progress.summaries(this.workers.values());
     const workers = [...this.workers.values()].map((worker) => ({
       ...worker,
+      setupWaitMs: this.task(worker.id).setupWaitMs,
       teamPaused: this.team.reason(worker.id) || undefined,
       followups: this.followups.summaries(worker.id),
       observations: [],
@@ -335,6 +393,15 @@ export class Service {
           this.workflowName,
         );
       }
+      case 'system.readiness': {
+        parseRpcParams(serviceRpcRegistry, method, params);
+        return inspectReadiness();
+      }
+      case 'worker.previewStop': {
+        const boundary = this.reviewedBoundary(params);
+        const input = parseRpcParams(serviceRpcRegistry, method, params);
+        return this.previews.stop(input.workerId, input.previewId, boundary);
+      }
       case 'system.backups': {
         parseRpcParams(serviceRpcRegistry, method, params);
         return listStateBackups(this.dataDir);
@@ -352,8 +419,13 @@ export class Service {
         return verifyStateBackup(this.dataDir, input.id);
       }
       case 'project.pickFolder': {
-        parseRpcParams(serviceRpcRegistry, method, params);
-        return pickFolder();
+        const input = parseRpcParams(serviceRpcRegistry, method, params);
+        return pickFolder(undefined, undefined, input.purpose);
+      }
+      case 'project.appRuns': {
+        const input = parseRpcParams(serviceRpcRegistry, method, params);
+        const project = this.catalog.get(input.projectId);
+        return this.previews.runs.list(project.id, (workerId) => this.workers.get(workerId));
       }
       case 'project.reveal': {
         const project = this.catalog.get(params.projectId);
@@ -376,6 +448,9 @@ export class Service {
       }
       case 'project.add': {
         return this.catalog.add(params);
+      }
+      case 'project.create': {
+        return this.catalog.create(params);
       }
       case 'project.profile': {
         const project = this.catalog.get(params.projectId);
@@ -464,6 +539,50 @@ export class Service {
     this.checkRunGate(worker, method, params.epoch);
 
     switch (method) {
+      case 'worker.previewStatus': {
+        parseRpcParams(serviceRpcRegistry, method, params);
+        this.checkExpectedRun(worker, method, params);
+        return this.previews.status(worker.id, { runId: worker.runId, epoch: worker.control?.epoch ?? 0 });
+      }
+      case 'worker.previewStart': {
+        const input = parseRpcParams(serviceRpcRegistry, method, params);
+        task.assertIdle();
+        const boundary = { runId: worker.runId, epoch: worker.control?.epoch ?? 0 };
+        const assertCurrent = () => {
+          if (
+            this.closed ||
+            worker.runId !== boundary.runId ||
+            (worker.control?.epoch ?? 0) !== boundary.epoch
+          ) {
+            throw new Error('The task changed while preparing its app. Run the current task again.');
+          }
+          this.checkExpectedRun(worker, method, params);
+          if (
+            (input.mode === 'run' || input.replacePreviewId) &&
+            (worker.state !== 'complete' || worker.pending)
+          ) {
+            throw new Error('Complete the task and its pending approvals before running the app.');
+          }
+        };
+        assertCurrent();
+        const fingerprint = worker.completion?.evidence?.devServerFingerprint;
+        if (
+          input.mode === 'verified' &&
+          (worker.state !== 'complete' ||
+            worker.completion?.verification !== 'passed' ||
+            !fingerprint ||
+            !worker.completion.evidence?.devServer)
+        ) {
+          throw new Error('This task has no verified framework preview to open automatically.');
+        }
+        return this.previews.start(worker.id, boundary, project.root, assertCurrent, {
+          attach: input.mode === 'run',
+          restart: input.mode === 'restart',
+          ...(input.replacePreviewId && { replacePreviewId: input.replacePreviewId }),
+          ...(input.mode === 'verified' && fingerprint && { fingerprint }),
+          withProjectLock: (signal, open) => this.locks.using(project.root, signal, open),
+        });
+      }
       case 'worker.reveal': {
         parseRpcParams(serviceRpcRegistry, method, params);
         await revealProject(project.root);
@@ -725,8 +844,74 @@ export class Service {
       case 'worker.approve': {
         return this.approve(task, project, params);
       }
+      case 'worker.setupDecision': {
+        const input = parseRpcParams(serviceRpcRegistry, method, params);
+        if (
+          input.decision === 'manual' &&
+          worker.pending?.token === input.token &&
+          worker.pending.manualSessionId &&
+          worker.pending.action.type === 'setupCommand' &&
+          worker.state === 'awaiting_approval'
+        ) {
+          // Reopening a running terminal reads its original receipt without launching a second command.
+          return { accepted: true, sessionId: worker.pending.manualSessionId };
+        }
+        const { action, pending } = reviewedSetup(task, project, input.token);
+        task.assertIdle();
+        if (input.decision === 'manual') {
+          if (!this.startManualSetup) {
+            throw new Error('The project terminal is unavailable. Reconnect Miter to its local helper.');
+          }
+          const sessionId = await startSetupTerminal(
+            task,
+            project,
+            this.store,
+            this.locks,
+            path.join(this.dataDir, 'runtime', worker.id),
+            input.token,
+            this.startManualSetup,
+            () => {
+              if (!this.closed && !this.interruptions.has(worker.id) && worker.control?.mode !== 'stopped') {
+                this.run(worker.id, true);
+              }
+            },
+          );
+          return { accepted: true, sessionId };
+        }
+        if (input.decision === 'run') {
+          worker.approvedFingerprint = pending.fingerprint;
+          worker.pending = undefined;
+          worker.autoCommands = false;
+          task.move('queued');
+          this.run(worker.id, true);
+        } else {
+          let instruction = 'The user declined this command. Continue without repeating it.';
+          if (input.decision === 'instead') {
+            instruction = input.instruction;
+          }
+          finishSetupChoice(
+            task,
+            project,
+            this.store,
+            action,
+            {
+              decision: input.decision,
+              instruction,
+              executed: false,
+            },
+            'waived',
+          );
+          if (worker.mode === 'local') {
+            this.run(worker.id, true);
+          }
+        }
+        return { accepted: true };
+      }
       case 'worker.skip': {
         task.assertIdle();
+        if (worker.pending?.fromTaskRequest) {
+          throw new Error('Answer the setup dialog before skipping a task action.');
+        }
 
         if (params.confirm !== true) {
           throw new Error('Explicit confirmation is required.');
@@ -745,7 +930,7 @@ export class Service {
           const marker: SkippedEdit = {
             workerId: worker.id,
             runId: worker.runId,
-            actionHash: editDigest(JSON.stringify(skipped)),
+            actionHash: digest(JSON.stringify(skipped)),
           };
           this.store.set(`edit-skipped:${batch.id}_${worker.cursor}`, marker);
         }
@@ -860,9 +1045,9 @@ export class Service {
     return this.settings;
   }
 
-  private checkExpectedRun(worker: Worker, method: string, params: Record<string, unknown>): void {
+  private reviewedBoundary(params: Record<string, unknown>): TaskBoundary | undefined {
     if (params.expectedRun === undefined) {
-      return;
+      return undefined;
     }
 
     const parsed = taskBoundarySchema.safeParse(params.expectedRun);
@@ -873,7 +1058,14 @@ export class Service {
       });
     }
 
-    const expected = parsed.data;
+    return parsed.data;
+  }
+
+  private checkExpectedRun(worker: Worker, method: string, params: Record<string, unknown>): void {
+    const expected = this.reviewedBoundary(params);
+    if (!expected) {
+      return;
+    }
     let sameRun = expected.runId === worker.runId;
 
     if (method === 'worker.run' && params.envelopeId !== undefined) {
@@ -980,6 +1172,9 @@ export class Service {
 
     task.assertIdle();
 
+    if (envelope.replyTo && this.store.get(exchangeKey(worker.id, envelope.replyTo)) !== undefined) {
+      throw new Error('This exchange was already answered or replaced. No actions were imported.');
+    }
     if (worker.control) {
       if (envelope.replyTo && worker.control.retiredExchanges.includes(envelope.replyTo)) {
         throw new Error('This reply belongs to a stopped exchange. No actions were imported.');
@@ -998,6 +1193,10 @@ export class Service {
           );
         }
       }
+    }
+
+    if (worker.pending?.action.type === 'setupCommand') {
+      throw new Error('Answer the pending setup request before importing another batch.');
     }
 
     if (worker.queue.length >= 20) {
@@ -1023,6 +1222,12 @@ export class Service {
     this.store.transaction(() => {
       this.store.rememberEnvelope(envelope.id, worker.id);
       this.store.set(deliveryKey(envelope.id), delivery);
+      if (envelope.replyTo) {
+        const pending = parseTaskProgress(this.store.get(progressKey(worker.id)));
+        if (pending?.lastReceipt?.expectsReplyTo && pending.lastReceipt.exchangeId === envelope.replyTo) {
+          this.store.set(exchangeKey(worker.id, envelope.replyTo), 'admitted');
+        }
+      }
 
       if (worker.control) {
         worker.control.mode = 'active';
@@ -1130,6 +1335,9 @@ export class Service {
       throw new Error('Approval expired or does not match this worker.');
     }
 
+    if (worker.pending.action.type === 'setupCommand') {
+      throw new Error('Use the setup command dialog to review this request.');
+    }
     const approve = parseOptionalFlag(params.approve, 'approval choice');
     const trustRun = parseOptionalFlag(params.trustRun, 'command trust');
     parseRpcParams(serviceRpcRegistry, 'worker.approve', params);
@@ -1518,7 +1726,24 @@ export class Service {
       }
 
       if ('path' in action) {
-        validateRelative(action.path, action.type === 'list');
+        try {
+          validateRelative(action.path, action.type === 'list');
+        } catch (error) {
+          if (!(error instanceof ExcludedPathError)) {
+            throw error;
+          }
+          throw new ReplyValidationError({
+            stage: 'precondition',
+            code: 'EXCLUDED_PATH',
+            field: 'path',
+            actionIndex: index,
+            message: error.message,
+          });
+        }
+      }
+
+      if (action.type === 'setupCommand') {
+        setupProfile(action);
       }
 
       if (action.type === 'command' && !project.profiles.some((profile) => profile.id === action.profileId)) {
@@ -1529,7 +1754,7 @@ export class Service {
     return this.reads.resolve(worker, project, envelope);
   }
 
-  run(workerId: string): void {
+  run(workerId: string, resumeSetupBudget = false): void {
     if (this.closed) {
       throw new Error('Host is shutting down.');
     }
@@ -1557,7 +1782,9 @@ export class Service {
 
     task.newRunIfNeeded();
     worker.error = undefined;
-    worker.startedAt = Date.now();
+    if (!resumeSetupBudget) {
+      task.startBudget();
+    }
     let state: Worker['state'] = 'planning';
 
     if (worker.queue.length > 0) {
@@ -1574,10 +1801,18 @@ export class Service {
     await this.tasks.get(workerId)?.wait();
   }
 
-  private async planLocalBatch(task: TaskRuntime, project: Project, signal: AbortSignal): Promise<Envelope> {
+  private async draftLocalActions(task: TaskRuntime, project: Project, signal: AbortSignal) {
     const worker = task.worker;
     if (worker.iteration >= worker.maxIterations) {
       throw new Error('Iteration budget reached. Create a new worker or review the remaining scope.');
+    }
+
+    if (!worker.activeFollowupId && isProjectLaunchRequest(worker.goal)) {
+      task.move('planning');
+      worker.iteration++;
+      task.save();
+      const summary = 'Start the existing project and open its development preview.';
+      return parseLocalDraft({ summary, actions: [{ type: 'finish', summary, openPreview: true }] });
     }
 
     if (!this.settings.coderModelPath) {
@@ -1606,7 +1841,12 @@ export class Service {
     signal.throwIfAborted();
 
     const rawProposal: unknown = JSON.parse(generated);
-    const draft = parseLocalDraft(rawProposal);
+    return parseLocalDraft(rawProposal);
+  }
+
+  private async planLocalBatch(task: TaskRuntime, project: Project, signal: AbortSignal): Promise<Envelope> {
+    const worker = task.worker;
+    const draft = await this.draftLocalActions(task, project, signal);
     const actions = draft.actions;
     const fingerprint = digest(JSON.stringify(actions));
 
@@ -1648,6 +1888,11 @@ export class Service {
   private async loop(task: TaskRuntime, signal: AbortSignal): Promise<void> {
     const worker = task.worker;
     const project = this.catalog.executionProject(worker);
+    let instruction = worker.goal;
+    if (worker.activeFollowupId) {
+      instruction = this.followups.get(worker.activeFollowupId)?.instruction ?? worker.goal;
+    }
+    const installRequested = wantsProjectInstall(instruction);
 
     while (!this.closed) {
       signal.throwIfAborted();
@@ -1657,7 +1902,7 @@ export class Service {
         await new Promise<void>((resolve) => setTimeout(resolve, 100));
       }
 
-      if (Date.now() - worker.startedAt > worker.maxMinutes * 60000) {
+      if (task.remainingMs <= 0) {
         throw new Error('Active run time budget reached. Review progress before continuing.');
       }
 
@@ -1667,24 +1912,41 @@ export class Service {
         if (worker.mode === 'handoff') {
           task.move('review');
           worker.autoCommands = false;
-          task.event(
-            'handoff',
-            'Batch finished. Export the report or import the next handoff. ' +
-              'The goal has not been declared complete.',
-          );
+          task.event('handoff', 'Batch finished. The task needs another step.');
           return;
         }
 
         batch = await this.planLocalBatch(task, project, signal);
       }
 
+      const action = batch.actions[worker.cursor];
+      // Keep the accepted envelope and cursor intact while waiting on a user's
+      // setup decision. This command has its own ID in the execution journal.
+      if (installRequested && (!action || action.type === 'finish')) {
+        const problem = await this.checkRequestedInstall(
+          task,
+          project,
+          batch.id,
+          action?.type === 'finish',
+          signal,
+        );
+        signal.throwIfAborted();
+        if (problem) {
+          this.prepareExecutionRepair(task, batch, problem, worker.cursor);
+          if (worker.mode === 'handoff') {
+            task.move('review');
+            task.save();
+            return;
+          }
+          task.move('planning');
+          continue;
+        }
+      }
       if (worker.cursor >= batch.actions.length) {
         task.discardCompletedBatch(batch);
         task.save();
         continue;
       }
-
-      const action = batch.actions[worker.cursor];
 
       if (!action) {
         throw new Error('Queued action cursor is invalid. Inspect the saved plan before continuing.');
@@ -1693,6 +1955,7 @@ export class Service {
       const actionId = `${batch.id}_${worker.cursor}`;
       task.move('waiting_lock');
       let finished = false;
+      let repairReason: string | undefined;
       // Capture the admitted batch once, rather than asserting its presence in
       // callbacks that yield while Stop waits for this exact execution to settle.
       const executingBatch = batch;
@@ -1726,8 +1989,6 @@ export class Service {
             worker.cursor = plan.end;
           });
 
-          task.discardCompletedBatch(executingBatch);
-          task.save();
           continue;
         }
 
@@ -1752,12 +2013,18 @@ export class Service {
             task.remember(JSON.stringify(result));
 
             if (!result.ok) {
+              const finding = completionFailureMessage(result.results);
               if (worker.mode === 'local') {
-                task.event('verify', 'Verification failed. Returning evidence to the local coder.');
+                if (!worker.activeFollowupId && isProjectLaunchRequest(worker.goal)) {
+                  throw new Error(finding);
+                }
+                task.remember(JSON.stringify({ failedChecks: finding }));
+                task.event('verify', finding);
                 return;
               }
 
-              throw new Error('Goal verification failed. Export the report and fix the failing checks.');
+              repairReason = finding;
+              return;
             }
 
             worker.queue = [];
@@ -1770,45 +2037,48 @@ export class Service {
               action.summary,
               result.results.length,
               Date.now(),
+              result.results,
             );
             this.followups.finish(worker, 'completed');
             this.team.releaseOwner(worker.id);
             task.move('complete');
 
-            let message = 'Finished. No automated checks were configured.';
-
-            if (worker.checks.length > 0) {
-              message = 'Finished. Configured checks passed.';
-            }
-
-            task.event('goal', message);
+            task.event('goal', completionEventMessage(worker.completion));
             finished = true;
             return;
           }
 
           let result: unknown;
-          let commandFailed = false;
+          let failedCommand: CommandResult | undefined;
 
-          if (action.type === 'command') {
+          if (action.type === 'command' || action.type === 'setupCommand') {
             const commandResult = await this.executeCommand(task, project, action, actionId, signal);
             result = commandResult;
-            commandFailed = commandResult.code !== 0;
+            if (action.type === 'setupCommand' && plainPnpmInstall(action.command)) {
+              recordInstallDecision(this.store, worker, project, commandResult.code === 0);
+            }
+            if (commandResult.code !== 0) {
+              failedCommand = commandResult;
+            }
           } else {
             result = await this.execute(task, project, action, actionId, signal);
           }
 
           task.recordAction(action, result);
 
-          if (commandFailed) {
-            // Drop the stale remainder after a failing command. Local workers
-            // replan from the evidence; handoff workers require a fresh reply.
-            worker.cursor = executingBatch.actions.length;
-
+          if (failedCommand) {
             if (worker.mode === 'handoff') {
-              throw new Error(
-                'Command failed. Remaining actions were stopped. Export the report before importing a fix.',
-              );
+              let profileId = 'Project setup';
+              if (action.type === 'command') {
+                profileId = action.profileId;
+              }
+              repairReason = completionFailureMessage([
+                { check: { type: 'command', profileId }, ok: false, detail: failedCommand },
+              ]);
+              return;
             }
+
+            worker.cursor = executingBatch.actions.length;
           }
         });
       } catch (error) {
@@ -1836,7 +2106,15 @@ export class Service {
           }),
         );
 
-        if (worker.mode === 'local') {
+        if (
+          worker.mode === 'local' &&
+          !(
+            action.type === 'finish' &&
+            action.openPreview &&
+            !worker.activeFollowupId &&
+            isProjectLaunchRequest(worker.goal)
+          )
+        ) {
           worker.queue.shift();
           worker.cursor = 0;
           task.move('planning');
@@ -1847,15 +2125,132 @@ export class Service {
         throw error;
       }
 
+      if (repairReason) {
+        // Pause/Stop can arrive while a settled result is being published.
+        // The interruption owns the queue until it has finished archiving it.
+        signal.throwIfAborted();
+        this.prepareExecutionRepair(task, executingBatch, repairReason);
+        task.move('review');
+        task.save();
+        return;
+      }
+
       if (finished) {
         task.save();
         return;
       }
 
       worker.cursor++;
-      task.discardCompletedBatch(executingBatch);
       task.save();
     }
+  }
+
+  private async checkRequestedInstall(
+    task: TaskRuntime,
+    project: Project,
+    batchId: string,
+    finishing: boolean,
+    signal: AbortSignal,
+  ): Promise<string | undefined> {
+    const worker = task.worker;
+    const decision = this.store.get(installDecisionKey(worker, project));
+    // A model-proposed install already waiting in the queue uses its original
+    // approval instead of competing with the user-requested precondition.
+    if (
+      worker.queue
+        .slice(1)
+        .some((batch) =>
+          batch.actions.some((step) => step.type === 'setupCommand' && plainPnpmInstall(step.command)),
+        )
+    ) {
+      return;
+    }
+    if (
+      decision === 'waived' ||
+      decision === 'resolved' ||
+      (decision === undefined && pnpmInstallNote(this.store, worker, project))
+    ) {
+      return;
+    }
+    if (decision === 'failed') {
+      if (finishing) {
+        return 'The requested pnpm install has no successful project-terminal result. Inspect the last setup result, fix its cause and propose pnpm install again.';
+      }
+      return;
+    }
+    task.move('waiting_lock');
+    return this.locks.using(project.root, signal, async () => {
+      task.move('executing');
+      const manifest = await existing(project.root, 'package.json');
+      signal.throwIfAborted();
+      if (manifest.content === null) {
+        if (finishing) {
+          return 'Create the project package.json before finishing so Miter can present the requested pnpm install.';
+        }
+        return;
+      }
+      const result = await this.executeCommand(
+        task,
+        project,
+        requestedInstall,
+        requestedInstallId(batchId),
+        signal,
+      );
+      const ok = result.code === 0;
+      recordInstallDecision(this.store, worker, project, ok);
+      task.recordAction(requestedInstall, result);
+      if (!ok) {
+        return completionFailureMessage([
+          { check: { type: 'command', profileId: 'Project setup' }, ok: false, detail: result },
+        ]);
+      }
+      return;
+    });
+  }
+
+  private prepareExecutionRepair(
+    task: TaskRuntime,
+    batch: Envelope,
+    message: string,
+    cursor = task.worker.cursor + 1,
+  ): void {
+    const worker = task.worker;
+    const archive: RetiredQueue = {
+      workerId: worker.id,
+      runId: worker.runId,
+      queue: worker.queue.slice(),
+      cursor,
+      at: Date.now(),
+    };
+    const skipped = archive.queue.map((queued, index) => {
+      let actions = queued.actions.length;
+
+      if (index === 0) {
+        actions -= archive.cursor;
+      }
+
+      return { batchId: queued.id, actions };
+    });
+
+    this.store.transaction(() => {
+      this.store.set(`miter.retiredQueue.failure.${worker.runId}.${batch.id}`, archive);
+      task.discardPlan();
+      worker.error = message;
+      this.store.saveWorker(worker);
+    });
+
+    task.remember(
+      JSON.stringify({
+        repair: {
+          batchId: batch.id,
+          message,
+          skipped,
+          instructions:
+            'Completed actions remain applied. The queued remainder was discarded. Do not replay completed actions.',
+        },
+      }),
+    );
+    task.event('repair', message);
   }
 
   private async prepareEditRepair(
@@ -1939,6 +2334,7 @@ export class Service {
   ): Promise<CommandResult> {
     const worker = task.worker;
     let outputAt = 0;
+    this.store.set(`miter.qualityCommands.${worker.runId}`, true);
 
     return this.commands.run(worker, project, profile, actionId, this.dataDir, signal, (line) => {
       if (Date.now() - outputAt > 500) {
@@ -1951,31 +2347,110 @@ export class Service {
   private async executeCommand(
     task: TaskRuntime,
     project: Project,
-    action: Extract<Action, { type: 'command' }>,
+    action: Extract<Action, { type: 'command' | 'setupCommand' }>,
     actionId: string,
     signal: AbortSignal,
   ): Promise<CommandResult> {
-    const profile = this.profile(project, action.profileId);
-    const previous = this.commands.finished(actionId);
+    let journalId = actionId;
+    if (action.type === 'setupCommand') {
+      journalId = 'setup:' + actionId;
+      const manual = this.store.get(manualSetupKey(actionId));
+      if (manual !== undefined && manual !== false) {
+        return {
+          code: null,
+          stdout: '',
+          stderr:
+            'The manual setup session was interrupted. Its effects are unknown. Inspect the project before proposing another command.',
+          aborted: true,
+          timedOut: false,
+        };
+      }
+    }
 
+    const previous = this.commands.finished(journalId);
     if (previous) {
       return previous;
     }
 
-    task.requireApproval(project, action, [profile]);
+    if (action.type === 'setupCommand') {
+      await safePath(project.root, '.', true);
+      signal.throwIfAborted();
+      const profile = setupProfile(action);
+      if (
+        plainPnpmInstall(action.command) &&
+        this.store.get(installDecisionKey(task.worker, project)) === 'waived'
+      ) {
+        return {
+          code: null,
+          stdout: '',
+          stderr:
+            'The user declined or redirected this install. Continue according to that choice without repeating the command.',
+          aborted: false,
+          timedOut: false,
+        };
+      }
+      const issue = await newViteInstallIssue(action.command, project.root, task.worker.runId, this.store);
+      signal.throwIfAborted();
+      if (issue) {
+        return { code: null, stdout: '', stderr: issue, aborted: false, timedOut: false };
+      }
+      const scratch = path.join(this.dataDir, 'runtime', task.worker.id);
+      const install = plainPnpmInstall(action.command);
+      let inputs: PnpmInstallInputs | undefined;
+      if (install) {
+        inputs = await pnpmInstallInputs(project.root, scratch);
+        const current = await pnpmInstallIsCurrent(this.store, task.worker, project, inputs);
+        signal.throwIfAborted();
+        if (current) {
+          return {
+            code: 0,
+            stdout:
+              'Already installed. Miter verified the previous successful pnpm install against the current project and installed modules. No command was run.',
+            stderr: '',
+            aborted: false,
+            timedOut: false,
+          };
+        }
+      }
+      requireSetupApproval(task, project, action, actionId);
+      if (
+        profile.program === 'pnpm' &&
+        process.platform === 'darwin' &&
+        ['arm64', 'x64'].includes(process.arch)
+      ) {
+        profile.program = managedPnpmExecutable();
+      }
+      if (install) {
+        forgetPnpmInstall(this.store, task.worker);
+      }
+      const result = await this.command(task, project, profile, journalId, signal);
+      if (install && result.code === 0 && !result.aborted && !result.timedOut) {
+        await recordPnpmInstall(this.store, task.worker, project, scratch, inputs, signal);
+      }
+      return result;
+    }
 
+    const profile = this.profile(project, action.profileId);
+    task.requireApproval(project, action, [profile]);
     return this.command(task, project, profile, actionId, signal);
   }
 
   private async execute(
     task: TaskRuntime,
     project: Project,
-    action: Exclude<Action, { type: 'command' | 'write' | 'replace' | 'ask' | 'finish' }>,
+    action: Exclude<Action, { type: 'command' | 'setupCommand' | 'write' | 'replace' | 'ask' | 'finish' }>,
     actionId: string,
     signal: AbortSignal,
   ): Promise<unknown> {
     const worker = task.worker;
     switch (action.type) {
+      case 'skill': {
+        const resource = readBundledTaskSkill(action.name, action.asset);
+        if (action.asset !== 'components.mjs') {
+          this.store.set(`miter.skillRead.${worker.runId}.${action.name}`, true);
+        }
+        return resource;
+      }
       case 'team_message':
       case 'team_pause':
       case 'team_resume': {
@@ -1984,13 +2459,35 @@ export class Service {
         return result;
       }
       case 'list': {
-        return {
-          files: await listFiles(project.root, action.path),
-          limit: 300,
-        };
+        try {
+          return { files: await listFiles(project.root, action.path), limit: 300 };
+        } catch (error) {
+          signal.throwIfAborted();
+          if (await isMissingProjectPath(project.root, action.path, error)) {
+            signal.throwIfAborted();
+            return { exists: false, files: [], limit: 300 };
+          }
+          throw error;
+        }
       }
       case 'read': {
-        return this.reads.read(worker, project, action, signal);
+        try {
+          return await this.reads.read(worker, project, action, signal);
+        } catch (error) {
+          signal.throwIfAborted();
+          if (error instanceof DirectoryReadError) {
+            return { error: error.message, next: { type: 'list', path: action.path } };
+          }
+          if (await isMissingProjectPath(project.root, action.path, error)) {
+            signal.throwIfAborted();
+            return {
+              exists: false,
+              base: 'missing',
+              message: 'File does not exist. To create it, use a write with base "missing".',
+            };
+          }
+          throw error;
+        }
       }
       case 'search': {
         return searchFiles(project.root, action.query);
@@ -2068,18 +2565,113 @@ export class Service {
           results.push({ check, ok: file.content.includes(check.text) });
         }
       } catch (error) {
+        // A missing checked file is ordinary negative evidence. Confinement,
+        // permissions, invalid file content and unknown I/O failures still block.
+        if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') {
+          throw error;
+        }
+
         results.push({ check, ok: false, detail: errorMessage(error) });
       }
     }
 
-    let verification: VerificationResult['verification'] = 'not-run';
+    if (results.every((result) => result.ok)) {
+      const skillsRead = ['app-design', 'engineering-quality'].filter(
+        (name) => this.store.get(`miter.skillRead.${worker.runId}.${name}`) === true,
+      );
+      const changedPaths = this.store
+        .changedFiles(worker.runId)
+        .filter((file) => file.status === 'applied')
+        .map((file) => file.path);
+      let currentRequest = worker.goal;
+      if (worker.activeFollowupId) {
+        currentRequest = this.followups.get(worker.activeFollowupId)?.instruction ?? worker.goal;
+      }
+      const qualityResults = await verifyProjectQuality({
+        root: project.root,
+        dataDir: this.dataDir,
+        copyInstructions: [
+          project.conventions ?? '',
+          worker.goal,
+          ...this.followups
+            .list(worker.id)
+            .filter(({ status }) => status === 'completed' || status === 'active')
+            .map(({ instruction }) => instruction),
+        ],
+        changedPaths,
+        verifyExistingWebApp: requestsWebVerification(currentRequest, project.name),
+        commandsRan: this.store.get(`miter.qualityCommands.${worker.runId}`) === true,
+        skillsRead,
+        signal,
+        beforeTests: (scope) => {
+          const key = `quality:${actionId}`;
+          if (this.store.get(key) !== undefined) {
+            throw new Error(
+              'This quality attempt already ran or was interrupted. Submit a fresh finish ' +
+                'batch; cached test output is not fresh verification.',
+            );
+          }
+          this.store.set(key, { status: 'started', runId: worker.runId, revision: project.revision });
+          let message = 'Running task-written Node tests in an isolated source copy.';
+          if (scope === 'web') {
+            message = 'Checking this snapshot: domain tests, Chrome journeys, accessibility and Lighthouse.';
+          }
+          task.event('quality', message);
+        },
+      });
+      signal.throwIfAborted();
+      results.push(...qualityResults);
+      if (action.openPreview && changedPaths.length === 0 && qualityResults.length === 0) {
+        const check = { type: 'quality', name: 'dev-server' } as const;
+        try {
+          task.event('preview', 'Installing dependencies with pnpm and starting the development server.');
+          const fingerprint = await devProjectFingerprint(project.root, signal);
+          signal.throwIfAborted();
+          const boundary = { runId: worker.runId, epoch: worker.control?.epoch ?? 0 };
+          const assertCurrent = () => {
+            signal.throwIfAborted();
+            if (worker.runId !== boundary.runId || (worker.control?.epoch ?? 0) !== boundary.epoch) {
+              throw new Error('The task changed before its development server was ready.');
+            }
+          };
+          const preview = await this.previews.start(worker.id, boundary, project.root, assertCurrent, {
+            fingerprint,
+            signal,
+          });
+          assertCurrent();
+          if (!preview.framework) {
+            throw new Error('The project did not start a managed development server.');
+          }
+          results.push({
+            check,
+            ok: true,
+            detail: JSON.stringify({ devServer: preview.framework, devServerFingerprint: fingerprint }),
+          });
+        } catch (error) {
+          signal.throwIfAborted();
+          results.push({ check, ok: false, detail: errorMessage(error) });
+        }
+      }
+    }
 
-    if (worker.checks.length > 0) {
+    if (!results.every((result) => result.ok)) {
+      return {
+        ok: false,
+        results,
+        requiresHumanAcceptance: false,
+        verification: 'failed',
+        summary: action.summary,
+      };
+    }
+
+    let verification: 'passed' | 'not-run' = 'not-run';
+
+    if (results.length > 0) {
       verification = 'passed';
     }
 
     return {
-      ok: results.every((result) => result.ok),
+      ok: true,
       results,
       requiresHumanAcceptance: false,
       verification,
@@ -2088,7 +2680,13 @@ export class Service {
   }
 
   report(worker: Worker, project: Project): string {
-    return buildReport(worker, project, this.followups.prompt(worker), this.store.changedFiles(worker.runId));
+    return buildReport(
+      worker,
+      project,
+      this.followups.prompt(worker),
+      this.store.changedFiles(worker.runId),
+      pnpmInstallNote(this.store, worker, project),
+    );
   }
 
   quiesce(): Promise<void> {
@@ -2113,13 +2711,21 @@ export class Service {
     }
 
     this.models.close();
-    await Promise.all(activeTasks.map((task) => task.wait()));
+    const drained = await Promise.allSettled([
+      this.previews.close(),
+      ...activeTasks.map((task) => task.wait()),
+    ]);
 
     for (const task of this.tasks.values()) {
       task.stopWorkflow();
     }
 
     await this.models.settled?.();
+    const failure = drained.find((result) => result.status === 'rejected');
+
+    if (failure?.status === 'rejected') {
+      throw failure.reason;
+    }
   }
 
   async close(): Promise<void> {

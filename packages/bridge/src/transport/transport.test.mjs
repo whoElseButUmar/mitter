@@ -10,6 +10,7 @@ import { moduleReferences } from '../../../../scripts/module-imports.mjs';
 const { PageTransport, PageBridgeError, PAGE_CHANNEL, PAGE_READER } = await import('../page-transport.ts');
 const { readPageState, pageStateSchema } = await import('./page-state.ts');
 const { installPageEndpoint } = await import('../page-endpoint.ts');
+const { PAGE_READER_REVISION } = await import('../dom/types.ts');
 const { pageReplySchema } = await import('./messages.ts');
 
 const action = {
@@ -125,6 +126,8 @@ test('page state validation rejects incomplete fields and malformed lifecycle re
     { disclosure: { state: 'pending', attempts: 4 } },
     { codeReplyIds: ['bad reply id'] },
     { codeReplyTotal: 66 },
+    { readerRevision: -1 },
+    { readerRevision: 1.5 },
     { codeRead: { characters: 400002, fingerprint: 'a', issue: 'candidate' } },
   ];
 
@@ -163,6 +166,34 @@ test('untrusted page observations cannot supply coordinator-only reply evidence'
   const parsed = readPageState(original, 'inspect');
   assert.equal(Object.hasOwn(parsed, 'replyEvidence'), false);
   assert.equal(original.replyEvidence, 'exchange');
+});
+
+test('revision diagnostics preserve the installed page value and older readers remain compatible', async () => {
+  for (const revision of [undefined, 27]) {
+    const revisionFields = {};
+    if (revision !== undefined) {
+      revisionFields.readerRevision = revision;
+    }
+    const fixture = transportFixture(() => pageView(revisionFields));
+    const send = fixture.api.send;
+    fixture.api.send = async (tabId, message) => {
+      const response = await send(tabId, message);
+      if (message.kind === 'hello') {
+        Object.assign(response.value, revisionFields);
+      }
+      return response;
+    };
+    const view = await fixture.transport.request(7, action);
+    assert.equal(view.readerRevision, revision);
+    assert.equal(Object.hasOwn(view, 'readerRevision'), revision !== undefined);
+    assert.equal(fixture.injections.length, 0);
+    assert.ok(
+      fixture.logs.some(
+        ({ kind, message }) =>
+          kind === 'bridge.ready' && message.includes('revision=' + (revision ?? 'unreported')),
+      ),
+    );
+  }
 });
 
 test('a version-only or malformed hello cannot authorize a page operation', async (context) => {
@@ -280,6 +311,42 @@ test('read operations can reconnect once after a lost response', async () => {
   assert.deepEqual(await fixture.transport.request(7, action), pageView());
   assert.equal(calls, 2);
   assert.equal(fixture.requests.filter((message) => message.kind === 'hello').length, 2);
+});
+
+test('an older user serializer is replaced before any operation and reload invalidates its attachment', async () => {
+  const oldReader = 'logical-pre/5-user-turn/6-discovery/8-code-reply/6-send/3-control/1';
+  assert.notEqual(PAGE_READER, oldReader);
+  let installedReader = oldReader;
+  const fixture = transportFixture(() => pageView());
+  const send = fixture.api.send;
+  fixture.api.send = async (...args) => {
+    const reply = await send(...args);
+    if (args[1].kind === 'hello') {
+      reply.value.reader = installedReader;
+    } else {
+      assert.equal(installedReader, PAGE_READER, 'No task operation reaches an older reader.');
+    }
+    return reply;
+  };
+  const inject = fixture.api.inject;
+  fixture.api.inject = async (tabId) => {
+    await inject(tabId);
+    installedReader = PAGE_READER;
+  };
+  await fixture.transport.request(7, action);
+  assert.deepEqual(
+    fixture.requests.map((message) => message.kind),
+    ['hello', 'hello', 'request'],
+  );
+  assert.deepEqual(fixture.injections, [7]);
+  await fixture.transport.request(7, action);
+  assert.equal(fixture.requests.filter((message) => message.kind === 'hello').length, 2);
+  fixture.transport.forget(7);
+  installedReader = oldReader;
+  await fixture.transport.request(7, action);
+  assert.equal(fixture.requests.filter((message) => message.kind === 'hello').length, 4);
+  assert.deepEqual(fixture.injections, [7, 7]);
+  assert.equal(fixture.requests.filter((message) => message.kind === 'request').length, 3);
 });
 
 test('forget releases transport bookkeeping for closed tabs', async () => {
@@ -406,6 +473,45 @@ test('suspended browser documents do not trigger injection or page requests', as
   assert.equal(fixture.requests.length, 0);
   assert.equal(fixture.injections.length, 0);
 });
+
+for (const boundary of ['availability', 'handshake']) {
+  test(`a mutation ownership guard runs after delayed ${boundary} before dispatch`, async () => {
+    const fixture = transportFixture(() => pageView({ outcome: 'cleared' }));
+    const entered = Promise.withResolvers();
+    const waiting = Promise.withResolvers();
+    let current = true;
+    const block = async () => {
+      entered.resolve();
+      await waiting.promise;
+    };
+    if (boundary === 'availability') {
+      fixture.api.checkAvailable = block;
+    } else {
+      const send = fixture.api.send;
+      fixture.api.send = async (...args) => {
+        if (args[1].kind === 'hello') {
+          await block();
+        }
+        return send(...args);
+      };
+    }
+    const clearing = fixture.transport.request(
+      7,
+      { ...action, op: 'clear_draft', text: 'Exact old draft' },
+      () => {
+        if (!current) {
+          throw new PageBridgeError('DRAFT_CONFLICT', 'The previous task changed. The draft is safe.');
+        }
+      },
+    );
+    const rejected = assert.rejects(clearing, { code: 'DRAFT_CONFLICT' });
+    await entered.promise;
+    current = false;
+    waiting.resolve();
+    await rejected;
+    assert.equal(fixture.requests.filter((message) => message.kind === 'request').length, 0);
+  });
+}
 
 test('endpoint reinjection keeps existing Stop state and the committed-send ledger', (context) => {
   const fixture = endpointFixture();
@@ -751,6 +857,7 @@ test('the real bundled page installs and answers authenticated requests without 
     false,
   );
   assert.equal(answers[0].value.reader, PAGE_READER);
+  assert.equal(answers[0].value.readerRevision, PAGE_READER_REVISION);
 
   const response = new Promise((resolve) => {
     const keptOpen = listener(
@@ -764,5 +871,6 @@ test('the real bundled page installs and answers authenticated requests without 
   const answer = await response;
   assert.equal(answer.ok, true);
   assert.equal(answer.value.ready, false);
+  assert.equal(answer.value.readerRevision, answers[0].value.readerRevision);
   assert.equal(answer.value.url, action.url);
 });

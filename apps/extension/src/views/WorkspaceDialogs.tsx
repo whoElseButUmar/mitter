@@ -1,3 +1,4 @@
+import { reloadWorkspace } from '../workspace-reload';
 import { errorMessage } from '../schemas/primitives';
 import { LibraryDialogs } from './LibraryDialogs';
 import { folderPickSchema } from '../ui/rpc-results';
@@ -9,6 +10,7 @@ import { HealthPanel, ChangeReview } from '../ReleaseTools';
 import { ContextArea } from '../ContextArea';
 import { ReplyRecovery } from '../ReplyRecovery';
 import { For, Show } from 'solid-js';
+import { SetupPanel } from './SetupPanel';
 
 import { Icon } from '../icons';
 import { Modal } from '../components';
@@ -19,12 +21,20 @@ import { AutomationForm } from '../AutomationForm';
 function OpenProjectDialog(props: { controller: WorkspaceController }) {
   const controller = props.controller;
   const navigationRevision = controller.navigation().revision;
+  const initialMode = () => {
+    if (controller.modal() === 'project-create') {
+      return 'create';
+    }
+    return 'open';
+  };
 
   return (
     <ProjectForm
+      initialMode={initialMode()}
       close={() => controller.setModal('')}
-      pick={() => callResult(controller.rpc, folderPickSchema, 'project.pickFolder')}
+      pick={(purpose) => callResult(controller.rpc, folderPickSchema, 'project.pickFolder', { purpose })}
       save={(fields) => callResult(controller.rpc, projectSchema, 'project.add', fields)}
+      create={(fields) => callResult(controller.rpc, projectSchema, 'project.create', fields)}
       opened={(added) => {
         controller.setSnapshot((state) => {
           if (state.projects.some((project) => project.id === added.id)) {
@@ -124,8 +134,8 @@ export function WorkspaceDialogs(props: { controller: WorkspaceController }) {
       <Show when={modal() === 'resend'}>
         <Modal title="Resend the pending prompt" close={() => setModal('')} wide>
           <p class="muted">
-            Miter is still watching for a reply. Resend only if ChatGPT did not answer. This is the exact
-            pending prompt; already-applied actions are not replayed. Another send uses one turn.
+            Miter is still watching for a reply. Resend sends these instructions with a new reply ID and uses
+            one turn.
           </p>
           <textarea
             class="code-input"
@@ -143,7 +153,7 @@ export function WorkspaceDialogs(props: { controller: WorkspaceController }) {
           </div>
         </Modal>
       </Show>
-      <Show when={modal() === 'project'}>
+      <Show when={modal() === 'project' || modal() === 'project-create'}>
         <OpenProjectDialog controller={props.controller} />
       </Show>
       <Show when={modal() === 'worker'}>
@@ -220,8 +230,27 @@ export function WorkspaceDialogs(props: { controller: WorkspaceController }) {
         </Modal>
       </Show>
       <Show when={modal() === 'health'}>
-        <Modal title="Connection & health" close={() => setModal('')} wide>
-          <HealthPanel rpc={rpc} copy={copy} notice={success} />
+        <Modal title="Setup & connection" close={() => setModal('')} wide>
+          <SetupPanel
+            connected={props.controller.connected()}
+            error={props.controller.connectionError()}
+            rpc={rpc}
+            reconnect={() => props.controller.client.reconnect()}
+            reload={reloadWorkspace}
+            openProject={() => setModal('project')}
+            createProject={() => setModal('project-create')}
+            newTask={props.controller.newWorker}
+            projectName={props.controller.project()?.name}
+          />
+          <Show when={props.controller.connected()}>
+            <details class="setup-diagnostics setup-disclosure">
+              <summary>
+                <Icon name="down" />
+                Advanced diagnostics and backups
+              </summary>
+              <HealthPanel rpc={rpc} copy={copy} notice={success} />
+            </details>
+          </Show>
         </Modal>
       </Show>
       <Show when={modal() === 'changes' && selected()}>
@@ -262,7 +291,7 @@ export function WorkspaceDialogs(props: { controller: WorkspaceController }) {
           <div class="button-row end">
             <button onClick={() => setModal('')}>Close</button>
             <button class="primary" onClick={() => copy(textValue())}>
-              <Icon name="copy" size={14} />
+              <Icon name="copy" />
               Copy{' '}
               <Show when={modal() === 'report'} fallback={'prompt'}>
                 {'report'}

@@ -1,6 +1,7 @@
 import { createPopover, uiId, type PopoverHandle } from './popover.js';
 import { requireWindow } from './dom/elements.js';
 import { createTypeahead, navigationIndex } from './native/keyboard.js';
+import { createIcon } from './icons.js';
 
 /** Retain the native select for form values and validity. Labels are always text. */
 export type EnhancedSelect = {
@@ -10,7 +11,10 @@ export type EnhancedSelect = {
   dispose(): void;
 };
 
-export function enhanceSelect(select: HTMLSelectElement): EnhancedSelect {
+export function enhanceSelect(
+  select: HTMLSelectElement,
+  configuration: { nativeTooltip?: boolean } = {},
+): EnhancedSelect {
   const document = select.ownerDocument;
   const window = requireWindow(document);
   const original = {
@@ -35,9 +39,7 @@ export function enhanceSelect(select: HTMLSelectElement): EnhancedSelect {
   trigger.setAttribute('role', 'combobox');
   const value = document.createElement('span');
   value.className = 'select-value';
-  const caret = document.createElement('span');
-  caret.className = 'control-caret';
-  caret.setAttribute('aria-hidden', 'true');
+  const caret = createIcon(document, 'chevronDown', 'control-caret');
   trigger.append(value, caret);
   const error = document.createElement('span');
   error.className = 'select-error';
@@ -190,9 +192,7 @@ export function enhanceSelect(select: HTMLSelectElement): EnhancedSelect {
         row.dataset.value = option.value;
         row.setAttribute('aria-disabled', String(!enabled(index)));
         row.hidden = option.hidden;
-        const check = document.createElement('span');
-        check.className = 'option-check';
-        check.setAttribute('aria-hidden', 'true');
+        const check = createIcon(document, 'check', 'option-check');
         const text = document.createElement('span');
         text.textContent = option.text;
         row.append(check, text);
@@ -217,7 +217,9 @@ export function enhanceSelect(select: HTMLSelectElement): EnhancedSelect {
     }
 
     value.textContent = select.selectedOptions[0]?.text || 'Choose…';
-    trigger.title = value.textContent;
+    if (configuration.nativeTooltip !== false) {
+      trigger.title = value.textContent;
+    }
     trigger.disabled = select.disabled;
     trigger.setAttribute('aria-disabled', String(select.disabled));
     trigger.setAttribute('aria-required', String(select.required));

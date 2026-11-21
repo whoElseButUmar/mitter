@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import '../runner/test-source-loader.mjs';
 import { setImmediate } from 'node:timers/promises';
 import { worker, chatLink } from './fixtures.mjs';
-const { ChatLinkStore, LINK_STORAGE_KEY, linkURL, parseChatLinks } = await import('../chat-links.ts');
+const { ChatLinkStore, LINK_STORAGE_KEY, LEGACY_LINK_STORAGE_KEY, linkURL, parseChatLinks } =
+  await import('../chat-links.ts');
 
 test('chat-link parsing retains URL restrictions, metadata bounds and the first-64 limit', () => {
   assert.equal(
@@ -67,7 +68,7 @@ test('chat-link writes serialize, preserve pre-load changes, clone reads and dra
   store.set(worker.id, chatLink);
   loading.resolve({
     [LINK_STORAGE_KEY]: {
-      version: 2,
+      version: 3,
       links: { [worker.id]: { ...chatLink, title: 'Old title' } },
     },
   });
@@ -92,7 +93,7 @@ test('chat-link writes serialize, preserve pre-load changes, clone reads and dra
 test('link-history migrations retain valid destinations beside malformed records without trusting receipts', async () => {
   const store = new ChatLinkStore({
     get: async () => ({
-      [LINK_STORAGE_KEY]: {
+      [LEGACY_LINK_STORAGE_KEY]: {
         version: 2,
         links: {
           worker_1: {
@@ -153,4 +154,110 @@ test('required link flushes expose storage failures without blocking later seria
   fail = false;
   store.set(worker.id, chatLink);
   await store.flush(true);
+});
+
+test('version-two destinations migrate on write and survive reload with explicit provider identity', async () => {
+  const { providerId, ...oldLink } = chatLink;
+  assert.equal(providerId, 'chatgpt');
+  const data = {
+    [LEGACY_LINK_STORAGE_KEY]: { version: 2, links: { [worker.id]: oldLink } },
+  };
+  const local = {
+    async get(key) {
+      return { [key]: structuredClone(data[key]) };
+    },
+    async set(value) {
+      Object.assign(data, structuredClone(value));
+    },
+  };
+  const store = new ChatLinkStore(local);
+  await store.ready;
+  assert.deepEqual(store.get(worker.id), chatLink);
+  assert.equal(data[LINK_STORAGE_KEY], undefined);
+  store.set(worker.id, { ...store.get(worker.id), title: 'Updated' });
+  await store.flush(true);
+  assert.deepEqual(data[LINK_STORAGE_KEY], {
+    version: 3,
+    links: { [worker.id]: { ...chatLink, title: 'Updated' } },
+  });
+  assert.deepEqual(data[LEGACY_LINK_STORAGE_KEY].links[worker.id], oldLink);
+  await store.quiesce();
+  const reloaded = new ChatLinkStore(local);
+  await reloaded.ready;
+  assert.deepEqual(reloaded.get(worker.id), { ...chatLink, title: 'Updated' });
+  reloaded.delete(worker.id);
+  await reloaded.flush(true);
+  await reloaded.quiesce();
+  const cleared = new ChatLinkStore(local);
+  await cleared.ready;
+  assert.deepEqual(cleared.entries(), []);
+  await cleared.quiesce();
+});
+
+test('unversioned session history gains provider identity but never adopts an explicit foreign provider', async () => {
+  const { providerId, ...oldLink } = chatLink;
+  assert.equal(providerId, 'chatgpt');
+  const store = new ChatLinkStore(
+    { get: async () => ({}), set: async () => {} },
+    {
+      get: async () => ({
+        mitterChatLinks: {
+          [worker.id]: oldLink,
+          foreign: { ...oldLink, providerId: 'gemini' },
+          unknown: { ...oldLink, providerId: 'unrecognized' },
+          wrongOrigin: { ...oldLink, url: 'https://gemini.google.com/app/task' },
+        },
+      }),
+      set: async () => assert.fail('Legacy history is read-only'),
+    },
+  );
+  await store.ready;
+  assert.deepEqual(store.entries(), [[worker.id, chatLink]]);
+  await store.quiesce();
+});
+
+test('unreadable current history is not replaced or bypassed through legacy history', async () => {
+  for (const current of [
+    { version: 4, links: {} },
+    { version: 3, links: { [worker.id]: { ...chatLink, providerId: 'gemini' } } },
+    { version: 3, links: { [worker.id]: { ...chatLink, providerId: undefined } } },
+  ]) {
+    const reads = [];
+    const warnings = [];
+    const store = new ChatLinkStore(
+      {
+        async get(key) {
+          reads.push(key);
+          return { [LINK_STORAGE_KEY]: current };
+        },
+        set: async () => assert.fail('Unreadable history must not be overwritten'),
+      },
+      undefined,
+      (message) => warnings.push(message),
+    );
+    // A write queued before storage returns must also stop on a failed read.
+    store.set('new_worker', chatLink);
+    await assert.rejects(store.flush(true), /Invalid chat-link storage/);
+    assert.deepEqual(reads, [LINK_STORAGE_KEY]);
+    assert.equal(
+      warnings.some((message) => message.includes('could not be read')),
+      true,
+    );
+    assert.equal(store.get(worker.id), undefined);
+    assert.throws(() => store.set(worker.id, chatLink), /history could not be loaded/);
+    await store.quiesce();
+  }
+});
+
+test('storage read rejections block queued writes even without a rejection reason', async () => {
+  for (const failure of [new Error('Storage unavailable'), undefined]) {
+    const store = new ChatLinkStore({
+      get: async () => Promise.reject(failure),
+      set: async () => assert.fail('A failed read must not allow history to be overwritten'),
+    });
+    store.set(worker.id, chatLink);
+    await assert.rejects(store.flush(true), /Resume history could not be read/);
+    assert.throws(() => store.set(worker.id, chatLink), /history could not be loaded/);
+    await store.quiesce();
+  }
 });

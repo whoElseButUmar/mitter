@@ -21,6 +21,13 @@ export function ContextArea(props: {
     return undefined;
   };
 
+  const groupRole = (): 'group' | undefined => {
+    if (props.label) {
+      return 'group';
+    }
+    return undefined;
+  };
+
   onMount(() => {
     const menu = mountMenu(requireElement(root, 'ContextArea root'), props.label || 'Actions', [], {
       trigger: requireElement(root, 'ContextArea root'),
@@ -37,6 +44,7 @@ export function ContextArea(props: {
       class={'context-area ' + (props.class || '')}
       data-miter-context
       tabindex={tabIndex()}
+      role={groupRole()}
       aria-label={props.label}
     >
       {props.children}

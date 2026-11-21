@@ -1,12 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { reloadWorkspace } from '../../src/workspace-reload.ts';
 import { startBackground } from '../../src/background-controller.ts';
 import { chromeEvent, mockPort, deferred, settle } from './chrome-mock.mjs';
+import { APP_VERSION } from '../../../../packages/protocol/src/index.ts';
 
 function runtime(context) {
   context.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
   const events = {
     connections: chromeEvent(),
+    installed: chromeEvent(),
+    startup: chromeEvent(),
     clicks: chromeEvent(),
     commands: chromeEvent(),
     removed: chromeEvent(),
@@ -19,6 +23,8 @@ function runtime(context) {
     runtime: {
       id: 'extension',
       onConnect: events.connections,
+      onInstalled: events.installed,
+      onStartup: events.startup,
       getURL: (page) => 'chrome-extension://extension/' + page,
       getContexts: async () => [],
       connectNative() {
@@ -37,7 +43,37 @@ function runtime(context) {
   return { events, native };
 }
 
-for (const eventName of ['connections', 'clicks', 'commands', 'removed', 'updated', 'notificationClicks']) {
+test('background opens the native terminal relay without a workspace view', async (context) => {
+  const { native } = runtime(context);
+  const background = startBackground();
+  context.after(() => background.dispose());
+  await settle();
+  assert.equal(native.length, 0);
+  context.mock.timers.tick(1000);
+  await settle();
+  assert.equal(native.length, 1);
+  const claim = native[0].messages[0];
+  assert.equal(claim.method, 'terminal.claim');
+  assert.equal(claim.params.version, APP_VERSION);
+  assert.equal(claim.params.available, true);
+  native[0].onMessage.emit({ id: claim.id, ok: true, result: { command: null } });
+  await settle();
+  background.dispose();
+  context.mock.timers.tick(180000);
+  assert.equal(native.length, 1);
+  assert.equal(native[0].messages.length, 1);
+});
+
+for (const eventName of [
+  'connections',
+  'installed',
+  'startup',
+  'clicks',
+  'commands',
+  'removed',
+  'updated',
+  'notificationClicks',
+]) {
   test(`background initialization rolls back partial ${eventName} registration`, async (context) => {
     const { events, native } = runtime(context);
     const event = events[eventName];
@@ -70,6 +106,7 @@ test('one failed background listener removal does not prevent remaining teardown
   await settle();
   const view = mockPort('mitter-ui');
   events.connections.emit(view);
+  view.onMessage.emit({ type: 'hello', id: 'version-check', version: APP_VERSION });
   view.onMessage.emit({ id: 'prompt', method: 'worker.prompt', params: { workerId: 'worker' } });
   await settle();
   const remove = events.clicks.removeListener;
@@ -116,6 +153,7 @@ test('background disposal removes all owned Chrome listeners and liveness timers
   await settle();
   const view = mockPort('mitter-ui');
   events.connections.emit(view);
+  view.onMessage.emit({ type: 'hello', id: 'version-check', version: APP_VERSION });
   view.onMessage.emit({ id: 'prompt', method: 'worker.prompt', params: { workerId: 'worker' } });
   await settle();
   assert.equal(native.length, 1);
@@ -132,4 +170,59 @@ test('background disposal removes all owned Chrome listeners and liveness timers
   assert.equal(native.length, 1);
   assert.equal(native[0].messages.length, 1);
   assert.equal(native[0].disconnects, 1);
+});
+
+test('a requested extension update returns to its window once and reuses a surviving workspace', async (context) => {
+  const { events } = runtime(context);
+  const background = startBackground();
+  context.after(() => background.dispose());
+
+  const windowId = 8;
+  const url = chrome.runtime.getURL('workspace.html');
+  const records = {};
+  const created = [];
+  const activated = [];
+  let contexts = [];
+  let reloads = 0;
+  chrome.windows = { getCurrent: async () => ({ id: windowId }) };
+  chrome.storage.local.get = async (key) => ({ [key]: records[key] });
+  chrome.storage.local.set = async (record) => Object.assign(records, record);
+  chrome.storage.local.remove = async (key) => {
+    delete records[key];
+  };
+  chrome.runtime.reload = () => {
+    reloads++;
+  };
+  chrome.runtime.getContexts = async (filter) => {
+    assert.deepEqual(filter, { windowIds: [windowId] });
+    return contexts;
+  };
+  chrome.tabs.create = async (data) => created.push(data);
+  chrome.tabs.update = async (id, data) => activated.push({ id, data });
+
+  events.installed.emit({ reason: 'update' });
+  await settle();
+  assert.deepEqual(created, []);
+  await reloadWorkspace();
+  assert.equal(reloads, 1);
+  events.installed.emit({ reason: 'update' });
+  await settle();
+  assert.deepEqual(created, [{ windowId, url, active: true }]);
+  events.installed.emit({ reason: 'update' });
+  await settle();
+  assert.equal(created.length, 1);
+
+  contexts = [{ contextType: 'TAB', tabId: 32, documentUrl: url + '?task=test' }];
+  await reloadWorkspace();
+  events.installed.emit({ reason: 'update' });
+  await settle();
+  assert.deepEqual(activated, [{ id: 32, data: { active: true } }]);
+  assert.equal(created.length, 1);
+
+  await reloadWorkspace();
+  Object.values(records)[0].requestedAt -= 60001;
+  events.installed.emit({ reason: 'update' });
+  await settle();
+  assert.deepEqual(records, {});
+  assert.equal(activated.length, 1);
 });

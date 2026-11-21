@@ -4,6 +4,7 @@ import { mountMenu, type MenuItem, type MenuHandle } from './menu.js';
 import { isElement, isNode, requireWindow } from './dom/elements.js';
 import { TabItemSchema } from './native/schemas.js';
 import { navigationIndex } from './native/keyboard.js';
+import { createIcon } from './icons.js';
 
 export { TabItemSchema } from './native/schemas.js';
 export type TabItem = z.infer<typeof TabItemSchema>;
@@ -23,9 +24,7 @@ export type TabRowOptions = {
 };
 
 type TabEntry = {
-  wrap: HTMLDivElement;
   tab: HTMLButtonElement;
-  close: HTMLButtonElement;
   text: HTMLSpanElement;
   dot: HTMLElement;
   menu?: MenuHandle;
@@ -35,7 +34,7 @@ export function tabId(kind: 'project' | 'task', id: string): string {
   return `mitter-${kind}-tab-${encodeURIComponent(id)}`;
 }
 
-/** Keyed tab DOM preserves focus during status changes. Close is a sibling button, not a nested control. */
+/** Only tabs belong to the tablist; row actions and popups stay outside it. */
 export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
   const document = root.ownerDocument;
   const window = requireWindow(document);
@@ -68,9 +67,7 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
   const add = document.createElement('button');
   add.type = 'button';
   add.className = 'add-tab';
-  add.innerHTML =
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" ' +
-    'width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+  add.append(createIcon(document, 'plus'));
   const addClick = () => {
     closeActivePopover(document);
     options.onAdd();
@@ -79,15 +76,25 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
   const all = document.createElement('button');
   all.type = 'button';
   all.className = 'list-tabs';
-  all.innerHTML =
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" ' +
-    'width="16" height="16" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>';
+  let listIcon: 'folders' | 'listTodo' = 'listTodo';
+
+  if (initial.kind === 'project') {
+    listIcon = 'folders';
+  }
+
+  all.append(createIcon(document, listIcon));
   const listClick = () => {
     closeActivePopover(document);
     options.onList?.();
   };
   all.addEventListener('click', listClick);
-  root.append(label, list, add, all);
+  const closeActive = document.createElement('button');
+  closeActive.type = 'button';
+  closeActive.className = 'close-active-tab';
+  closeActive.append(createIcon(document, 'close'));
+  const closeClick = () => close(options.selected);
+  closeActive.addEventListener('click', closeClick);
+  root.append(label, list, empty, closeActive, add, all);
 
   function resetRoving(): void {
     for (const [id, entry] of entries) {
@@ -98,40 +105,28 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
       }
 
       entry.tab.tabIndex = tabIndex;
-      entry.close.tabIndex = tabIndex;
     }
   }
 
   function close(id: string): void {
-    const entry = entries.get(id);
-
-    if (!entry || !options.onClose) {
+    if (!entries.has(id) || !options.onClose) {
       return;
     }
 
-    const focused = entry.wrap.contains(document.activeElement);
     closeActivePopover(document);
     options.onClose(id);
-
-    if (focused) {
-      queueMicrotask(() => {
-        if (!entry.wrap.isConnected) {
-          (entries.get(options.selected)?.tab || add).focus({
-            preventScroll: true,
-          });
-        }
-      });
-    }
   }
 
   function update(next: TabRowOptions): void {
     options = next;
     const hadFocus = list.contains(document.activeElement);
+    const closeHadFocus = document.activeElement === closeActive;
+    const selectionChanged = selectedBefore !== next.selected;
 
     for (const [id, entry] of entries) {
       if (!next.items.some((item) => item.id === id)) {
         entry.menu?.dispose();
-        entry.wrap.remove();
+        entry.tab.remove();
         entries.delete(id);
       }
     }
@@ -140,9 +135,6 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
       let entry = entries.get(item.id);
 
       if (!entry) {
-        const wrap = document.createElement('div');
-        wrap.className = 'tab-wrap';
-        wrap.setAttribute('role', 'presentation');
         const tab = document.createElement('button');
         tab.type = 'button';
         tab.className = `worker-tab ${next.kind}-tab`;
@@ -154,39 +146,28 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
         dot.className = 'state-dot';
         const text = document.createElement('span');
         tab.append(dot, text);
-        const closeButton = document.createElement('button');
-        closeButton.type = 'button';
-        closeButton.className = 'close-tab';
-        closeButton.innerHTML =
-          '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" ' +
-          'stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg>';
         tab.addEventListener('click', () => {
           closeActivePopover(document);
           options.onSelect(item.id);
         });
-        closeButton.addEventListener('click', (event) => {
-          event.stopPropagation();
-          close(item.id);
-        });
-        wrap.addEventListener('auxclick', (event) => {
+        tab.addEventListener('auxclick', (event) => {
           if (event.button === 1) {
             event.preventDefault();
             close(item.id);
           }
         });
-        wrap.addEventListener('mousedown', (event) => {
+        tab.addEventListener('mousedown', (event) => {
           if (event.button === 1) {
             event.preventDefault();
           }
         });
-        wrap.append(tab, closeButton);
-        list.append(wrap);
-        entry = { wrap, tab, close: closeButton, text, dot };
+        list.append(tab);
+        entry = { tab, text, dot };
         entries.set(item.id, entry);
 
         if (next.menuItems) {
           tab.setAttribute('aria-haspopup', 'menu');
-          entry.menu = mountMenu(wrap, item.label, [], {
+          entry.menu = mountMenu(root, item.label, [], {
             trigger: tab,
             items: () => options.menuItems?.(item.id) || [],
           });
@@ -195,15 +176,14 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
 
       const current = list.children[index];
 
-      if (current !== entry.wrap) {
-        list.insertBefore(entry.wrap, current || null);
+      if (current !== entry.tab) {
+        list.insertBefore(entry.tab, current || null);
       }
 
       entry.text.textContent = item.label;
       entry.tab.title = item.title || item.label;
       entry.dot.className = `state-dot dot-${item.status || 'idle'}`;
       entry.tab.classList.toggle('selected', next.selected === item.id);
-      entry.wrap.classList.toggle('selected', next.selected === item.id);
       entry.tab.setAttribute('aria-selected', String(next.selected === item.id));
       let controls = 'mitter-task-view';
 
@@ -212,15 +192,16 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
       }
 
       entry.tab.setAttribute('aria-controls', controls);
-      entry.close.hidden = !next.onClose;
-      entry.close.title = 'Close ' + item.label + ' tab (keeps work saved)';
-      entry.close.setAttribute('aria-label', 'Close ' + item.label + ' tab');
     }
 
-    if (!next.items.length) {
-      list.append(empty);
-    } else {
-      empty.remove();
+    list.hidden = !next.items.length;
+    empty.hidden = next.items.length > 0;
+    const selected = next.items.find((item) => item.id === next.selected);
+    closeActive.hidden = !next.onClose || !selected;
+
+    if (selected) {
+      closeActive.title = 'Close ' + selected.label + ' tab (keeps work saved)';
+      closeActive.setAttribute('aria-label', 'Close ' + selected.label + ' tab');
     }
 
     add.disabled = !!next.addDisabled || !next.canAdd;
@@ -230,16 +211,19 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
     all.title = next.listLabel || 'All ' + next.kind + 's';
     all.setAttribute('aria-label', all.title);
 
-    if (!list.contains(document.activeElement) || selectedBefore !== next.selected) {
+    if (!list.contains(document.activeElement) || selectionChanged) {
       resetRoving();
     }
 
-    if (selectedBefore !== next.selected) {
+    if (selectionChanged) {
       entries.get(next.selected)?.tab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       selectedBefore = next.selected;
     }
 
-    if (hadFocus && !list.contains(document.activeElement)) {
+    if (
+      (hadFocus && !list.contains(document.activeElement)) ||
+      (closeHadFocus && (selectionChanged || closeActive.hidden))
+    ) {
       (entries.get(next.selected)?.tab || add).focus({ preventScroll: true });
     }
   }
@@ -313,6 +297,7 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
 
       add.removeEventListener('click', addClick);
       all.removeEventListener('click', listClick);
+      closeActive.removeEventListener('click', closeClick);
       list.removeEventListener('keydown', key);
       list.removeEventListener('focusout', leave);
       root.replaceChildren();

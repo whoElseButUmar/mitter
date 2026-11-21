@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { MAX_TEXT } from '../constants.js';
 import { editBaseError } from '../validation.js';
 import { identifierSchema, integerSchema, textSchema } from './primitives.js';
+import { bundledTaskAssetSchema, bundledTaskSkillIdSchema } from './task-skills.js';
+import { APP_COMPONENTS_JS, APP_FOUNDATION_CSS } from '../task-skills/app-design.js';
 
 const pathSchema = textSchema('path', 1000);
 
@@ -47,6 +49,18 @@ export const searchActionSchema = z
   })
   .describe('Executable project-search action.');
 
+export const skillActionSchema = z
+  .strictObject({
+    type: z.literal('skill').describe('Read one packaged skill without accessing the project or network.'),
+    name: bundledTaskSkillIdSchema.describe('The exact name of a skill bundled with Miter.'),
+    asset: bundledTaskAssetSchema.optional().describe('Optional app-design asset to read separately.'),
+  })
+  .refine((action) => action.asset === undefined || action.name === 'app-design', {
+    message: 'Reference assets belong to the app-design skill.',
+    path: ['asset'],
+  })
+  .describe('Read-only access to packaged skill instructions and reference assets.');
+
 export const writeActionSchema = z
   .strictObject({
     type: z.literal('write').describe('Write a file with an exact precondition.'),
@@ -72,6 +86,37 @@ export const commandActionSchema = z
     profileId: identifierSchema(),
   })
   .describe('Executable configured-profile action.');
+
+// The command being approved must be visible as one line, including when copied.
+const setupArgument = z
+  .string()
+  .max(4000)
+  .regex(/^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]*$/u, {
+    error: 'Use printable, single-line command arguments.',
+  });
+
+export const setupCommandActionSchema = z
+  .strictObject({
+    type: z.literal('setupCommand').describe('Request permission for one project setup command.'),
+    command: z
+      .array(setupArgument.describe('One literal executable name or argument.'))
+      .min(1)
+      .max(51)
+      .refine((items) => !!items[0]?.trim() && items[0].length <= 1000, {
+        error: 'Start the command with a program name.',
+      })
+      .refine((items) => items.join(' ').length <= 8000, {
+        error: 'Keep each setup command under 8001 characters.',
+      })
+      .describe('The program followed by its exact arguments, run from the task folder.'),
+    purpose: textSchema('command purpose', 500).describe(
+      'What the proposed command does and why the project needs it.',
+    ),
+    effects: textSchema('command effects', 1000).describe(
+      'Expected file, dependency, network and other changes visible to the user.',
+    ),
+  })
+  .describe('A proposed setup command requiring a separate user decision for this occurrence.');
 
 export const diffActionSchema = z
   .strictObject({
@@ -111,6 +156,12 @@ export const finishActionSchema = z
   .strictObject({
     type: z.literal('finish').describe('Request completion subject to host checks.'),
     summary: textSchema('summary', 4000),
+    openPreview: z
+      .literal(true)
+      .optional()
+      .describe(
+        'Install and open an existing supported development project when the user asks to launch it.',
+      ),
   })
   .describe('Executable completion-request action.');
 
@@ -126,9 +177,11 @@ export const actionSchema = z
     listActionSchema,
     readActionSchema,
     searchActionSchema,
+    skillActionSchema,
     writeActionSchema,
     replaceActionSchema,
     commandActionSchema,
+    setupCommandActionSchema,
     diffActionSchema,
     teamMessageActionSchema,
     teamPauseActionSchema,
@@ -181,8 +234,24 @@ export const referencedEditSchema = z
   .union([referencedWriteSchema, referencedReplaceSchema])
   .describe('A non-executable edit using a recorded read reference.');
 
+const bundledSources = { 'components.mjs': APP_COMPONENTS_JS, 'foundation.css': APP_FOUNDATION_CSS };
+
+export const bundledWriteSchema = z
+  .union([
+    writeActionSchema.omit({ content: true }).extend({ asset: bundledTaskAssetSchema }),
+    referencedWriteSchema.omit({ content: true }).extend({ asset: bundledTaskAssetSchema }),
+  ])
+  .transform(({ asset, ...versionedWrite }) => {
+    const write = { ...versionedWrite, content: bundledSources[asset] };
+    if ('base' in write) {
+      return referencedWriteSchema.parse(write);
+    }
+    return writeActionSchema.parse(write);
+  })
+  .describe('Copy a packaged app-design source into an ordinary, version-checked file write.');
+
 export const proposalActionSchema = z
-  .union([actionSchema, referencedEditSchema])
+  .union([actionSchema, referencedEditSchema, bundledWriteSchema])
   .describe('A model proposal action, retaining legacy exact-hash edit support.');
 
 export type Action = z.infer<typeof actionSchema>;

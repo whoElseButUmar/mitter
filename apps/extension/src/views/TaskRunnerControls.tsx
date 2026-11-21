@@ -1,7 +1,8 @@
 import { Match, Show, Switch } from 'solid-js';
 import type { Worker } from '../../../../packages/protocol/src/index';
-import { budgetExhausted, taskPresentation, turnLabel } from '../../../../packages/bridge/src/presentation';
+import { budgetExhausted, taskPresentation } from '../../../../packages/bridge/src/presentation';
 import { chatStartLabel, isFreshContinuation, runningStates } from '../ui/task-view';
+import { taskStatus } from '../ui/task-status';
 import type { WorkspaceController } from '../ui/workspace-controller';
 import { Icon } from '../icons';
 
@@ -19,20 +20,33 @@ type RunnerController = Pick<
 >;
 
 export function TaskRunnerControls(props: { controller: RunnerController; task: Worker }) {
-  const { connected, busy, bridge, preferReply, action, runWithChat, useReply, showResend, continuePending } =
-    props.controller;
+  const { connected, busy, action, runWithChat, useReply, showResend, continuePending } = props.controller;
   const task = () => props.task;
+  const bridge = () => {
+    const status = props.controller.bridge();
+    if (status?.workerId === task().id) {
+      return status;
+    }
+    return undefined;
+  };
+  const preferReply = () => {
+    const status = props.controller.bridge();
+    return (!status || status.workerId === task().id) && props.controller.preferReply();
+  };
   const progress = () => taskPresentation(task(), bridge());
 
   const disabled = () => busy() || !connected();
-
-  const turnCounterTitle = (lowerBound: boolean | undefined) => {
-    if (lowerBound) {
-      return 'Known minimum recovered from older task history. Earlier unrecorded sends cannot be reconstructed exactly. New sends are saved before execution.';
-    }
-
-    return 'Task-wide send attempts. Resume and updates do not reset this count; checking a reply does not use a turn.';
-  };
+  const chatRecovery = () =>
+    task().mode === 'handoff' &&
+    !bridge()?.active &&
+    !bridge()?.monitoring &&
+    !task().pending &&
+    !runningStates.has(task().state) &&
+    !task().queue.length &&
+    !isFreshContinuation(task()) &&
+    !preferReply() &&
+    !budgetExhausted(bridge()) &&
+    ['CHAT_NOT_READY', 'SEND_NOT_READY'].includes(bridge()?.errorCode || '');
 
   const startChat = () => {
     if (isFreshContinuation(task()) || !preferReply()) {
@@ -59,30 +73,44 @@ export function TaskRunnerControls(props: { controller: RunnerController; task: 
         <Switch>
           <Match when={bridge()?.monitoring}>
             <Show when={!bridge()?.receiving}>
-              <button onClick={() => void showResend()}>Resend prompt…</button>
+              <button class="primary" disabled={disabled()} onClick={() => void action('bridge.openChat')}>
+                <Icon name="external" />
+                Open chat
+              </button>
+              <button disabled={disabled()} onClick={useReply}>
+                Use reply…
+              </button>
+              <button disabled={disabled()} onClick={() => void showResend()}>
+                Resend prompt…
+              </button>
             </Show>
-            <span class="muted small">
-              <Show when={bridge()?.receiving} fallback="Watching for reply">
-                Receiving reply…
-              </Show>
-            </span>
           </Match>
           <Match when={bridge()?.active}>
-            <button onClick={() => void action('bridge.pause')} title="Pause; Resume keeps the current plan">
-              <Icon name="pause" size={14} />
+            <Show when={bridge()?.phase === 'connecting'}>
+              <button class="primary" disabled={disabled()} onClick={() => void action('bridge.openChat')}>
+                <Icon name="external" />
+                Open chat
+              </button>
+            </Show>
+            <button
+              disabled={disabled()}
+              onClick={() => void action('bridge.pause')}
+              title="Pause; Resume keeps the current plan"
+            >
+              <Icon name="pause" />
               Pause
             </button>
           </Match>
           <Match when={task().pending}>{null}</Match>
           <Match when={runningStates.has(task().state)}>
-            <button onClick={() => void action('worker.pause')}>
-              <Icon name="pause" size={14} />
+            <button disabled={disabled()} onClick={() => void action('worker.pause')}>
+              <Icon name="pause" />
               Pause
             </button>
           </Match>
           <Match when={task().queue.length}>
             <button class="primary" disabled={disabled()} onClick={() => void continuePending()}>
-              <Icon name="play" size={14} />
+              <Icon name="play" />
               <Show when={task().mode === 'handoff' && bridge()} fallback="Continue local work">
                 Continue task
               </Show>
@@ -102,15 +130,24 @@ export function TaskRunnerControls(props: { controller: RunnerController; task: 
               Continue · +15 turns
             </button>
           </Match>
+          <Match when={chatRecovery()}>
+            <button class="primary" disabled={disabled()} onClick={() => void action('bridge.openChat')}>
+              <Icon name="external" />
+              Open chat
+            </button>
+            <button disabled={disabled()} onClick={startChat}>
+              {chatStartLabel(task(), preferReply(), busy(), progress().start)}
+            </button>
+          </Match>
           <Match when={task().mode === 'handoff'}>
             <button class="primary" onClick={startChat} disabled={disabled()}>
-              <Icon name="play" size={14} />
+              <Icon name="play" />
               {chatStartLabel(task(), preferReply(), busy(), progress().start)}
             </button>
           </Match>
           <Match when={task().mode === 'local'}>
             <button class="primary" disabled={disabled()} onClick={startLocal}>
-              <Icon name="play" size={14} />
+              <Icon name="play" />
               <Show when={isFreshContinuation(task())} fallback="Run locally">
                 Continue fresh
               </Show>
@@ -128,19 +165,22 @@ export function TaskRunnerControls(props: { controller: RunnerController; task: 
             }
             title="Stop running work and retire the pending plan. Completed files are kept."
           >
-            <span class="stop-square" aria-hidden="true" />
+            <Icon name="stop" />
             Stop
           </button>
         </Show>
-        <Show when={bridge()}>
-          {(bridgeStatus) => (
-            <span class="muted small task-turn-counter" title={turnCounterTitle(bridgeStatus().lowerBound)}>
-              {turnLabel(bridgeStatus())}
-            </span>
-          )}
-        </Show>
-        <Show when={bridge()}>
-          <button onClick={() => void action('bridge.openChat')}>Open chat</button>
+        <Show
+          when={
+            bridge() &&
+            !bridge()?.monitoring &&
+            !task().pending &&
+            !chatRecovery() &&
+            taskStatus(task(), bridge()).requiresAttention
+          }
+        >
+          <button disabled={disabled()} onClick={() => void action('bridge.openChat')}>
+            Open chat
+          </button>
         </Show>
       </section>
     </Show>

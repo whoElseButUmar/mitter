@@ -4,6 +4,7 @@ import { parseModelSettings } from '../../protocol/src/model-settings.js';
 import { enhanceSelects } from './select.js';
 import { requireElement, requireWindow } from './dom/elements.js';
 import { modelSettingsTemplate } from './forms/templates.js';
+import { addDisclosureMarkers } from './icons.js';
 
 export const ModelSettingsSaveSchema = z
   .object({ settings: settingsSchema })
@@ -22,6 +23,7 @@ export type ModelSettingsFormOptions = {
 export function mountModelSettingsForm(root: HTMLElement, options: ModelSettingsFormOptions) {
   const window = requireWindow(root.ownerDocument);
   root.innerHTML = modelSettingsTemplate;
+  addDisclosureMarkers(root);
   const form = requireElement(root, 'form', window.HTMLFormElement);
   const fields = requireElement(root, 'fieldset', window.HTMLFieldSetElement);
   const error = requireElement(root, '[role="alert"]', window.HTMLElement);
@@ -41,6 +43,24 @@ export function mountModelSettingsForm(root: HTMLElement, options: ModelSettings
   const selects = enhanceSelects(root);
   let busy = false;
   let disposed = false;
+  const isCurrent = () => !disposed && root.isConnected;
+
+  function reveal(element: HTMLElement): void {
+    if (!isCurrent()) {
+      return;
+    }
+    let disclosure = element.closest('details');
+    while (disclosure && root.contains(disclosure)) {
+      disclosure.setAttribute('open', '');
+      disclosure = disclosure.parentElement?.closest('details') ?? null;
+    }
+  }
+
+  const invalid = (event: Event) => {
+    if (!busy && event.target instanceof window.HTMLElement && form.contains(event.target)) {
+      reveal(event.target);
+    }
+  };
 
   function setBusy(value: boolean): void {
     busy = value;
@@ -66,7 +86,7 @@ export function mountModelSettingsForm(root: HTMLElement, options: ModelSettings
   const submit = async (event: SubmitEvent) => {
     event.preventDefault();
 
-    if (busy || disposed || !form.reportValidity()) {
+    if (busy || !isCurrent() || !form.reportValidity()) {
       return;
     }
 
@@ -83,12 +103,13 @@ export function mountModelSettingsForm(root: HTMLElement, options: ModelSettings
       setBusy(true);
       await options.save({ settings });
 
-      if (!disposed) {
+      if (isCurrent()) {
         setBusy(false);
         options.close();
       }
     } catch (reason) {
-      if (!disposed) {
+      if (isCurrent()) {
+        reveal(error);
         error.textContent = String(reason);
 
         if (reason instanceof Error) {
@@ -98,17 +119,19 @@ export function mountModelSettingsForm(root: HTMLElement, options: ModelSettings
         error.hidden = false;
       }
     } finally {
-      if (!disposed && busy) {
+      if (isCurrent() && busy) {
         setBusy(false);
       }
     }
   };
 
   const reset = () => {
-    if (!busy && !disposed) {
+    if (!busy && isCurrent()) {
       options.reset();
     }
   };
+  // Native invalid events do not bubble; open the disclosure before the browser focuses its input.
+  form.addEventListener('invalid', invalid, true);
   form.addEventListener('submit', submit);
   resetButton.addEventListener('click', reset);
 
@@ -119,6 +142,7 @@ export function mountModelSettingsForm(root: HTMLElement, options: ModelSettings
       }
 
       disposed = true;
+      form.removeEventListener('invalid', invalid, true);
       form.removeEventListener('submit', submit);
       resetButton.removeEventListener('click', reset);
       selects.dispose();

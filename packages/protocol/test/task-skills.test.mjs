@@ -1,0 +1,119 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {
+  bundledTaskSkillSchema,
+  bundledTaskSkills,
+  readBundledTaskSkill,
+  taskSkillsText,
+  writingSkillsText,
+} from '../src/task-skills.ts';
+import { APP_FOUNDATION_CSS } from '../src/task-skills/app-design.ts';
+import { APP_COMPONENTS_JS } from '../src/task-skills/app-components.ts';
+
+test('the immutable default catalog enables the two writing skills and scoped app standards', () => {
+  assert.deepEqual(
+    bundledTaskSkills.map(({ id, enabledByDefault, scope }) => ({ id, enabledByDefault, scope })),
+    [
+      { id: 'caveman', enabledByDefault: true, scope: 'writing' },
+      { id: 'no-ai-slop', enabledByDefault: true, scope: 'writing' },
+      { id: 'ponytail', enabledByDefault: true, scope: 'engineering' },
+      { id: 'app-design', enabledByDefault: true, scope: 'web-ui' },
+      { id: 'engineering-quality', enabledByDefault: true, scope: 'engineering' },
+    ],
+  );
+  assert.ok(Object.isFrozen(bundledTaskSkills));
+  for (const skill of bundledTaskSkills) {
+    assert.ok(Object.isFrozen(skill));
+    assert.deepEqual(bundledTaskSkillSchema.parse(skill), skill);
+  }
+});
+
+test('task instructions contain each enabled skill once without repeating detailed references', () => {
+  const task = taskSkillsText();
+  for (const skill of bundledTaskSkills) {
+    assert.equal(task.split(`SKILL ${skill.id}:`).length - 1, 1);
+    assert.equal(task.split(skill.promptInstructions).length - 1, 1);
+  }
+  assert.ok(!task.includes(APP_FOUNDATION_CSS));
+  assert.ok(Buffer.byteLength(task, 'utf8') < 5_000, 'Keep per-turn defaults bounded in UTF-8 bytes.');
+  assert.equal(taskSkillsText(), task, 'Repeated rendering must preserve exact prompt bytes.');
+});
+
+test('the skill lookup returns full task instructions and exact CSS only when requested', () => {
+  for (const skill of bundledTaskSkills) {
+    const resource = readBundledTaskSkill(skill.id);
+    assert.equal(resource.instructions, skill.instructions);
+    assert.equal(resource.id, skill.id);
+    assert.equal(resource.version, skill.version);
+    if (skill.scope === 'web-ui') {
+      assert.deepEqual(resource.assets, [{ path: 'foundation.css', content: APP_FOUNDATION_CSS }]);
+      resource.assets[0].content = 'changed by caller';
+      assert.equal(readBundledTaskSkill(skill.id).assets[0].content, APP_FOUNDATION_CSS);
+    } else {
+      assert.deepEqual(resource.assets, []);
+    }
+  }
+});
+
+test('the Vite starter keeps app routes and missing crawl resources distinct', () => {
+  const { instructions } = readBundledTaskSkill('engineering-quality');
+  assert.match(instructions, /without client-side history routes, set appType: "mpa"/);
+  assert.match(instructions, /keep its route fallback/);
+  assert.match(instructions, /public\/robots.txt/);
+  assert.match(instructions, /Missing optional agent manifests should return 404/);
+});
+
+test('the engineering reference covers strict TypeScript apps using the bundled JavaScript controls', () => {
+  const { instructions } = readBundledTaskSkill('engineering-quality');
+  assert.match(instructions, /"strict": true, "allowJs": true, "checkJs": false and "noEmit": true/);
+  assert.match(instructions, /components.d.mts beside components.mjs/);
+  assert.match(instructions, /checked element to mount\(root: HTMLElement\)/);
+});
+
+test('rewrite defaults carry the writing rules without introducing implementation work', () => {
+  const writing = writingSkillsText();
+  assert.ok(writing.includes('SKILL caveman:'));
+  assert.ok(writing.includes('SKILL no-ai-slop:'));
+  assert.ok(!writing.includes('SKILL ponytail:'));
+  assert.ok(!writing.includes('SKILL app-design:'));
+  assert.ok(!writing.includes('SKILL engineering-quality:'));
+  assert.ok(!writing.includes(APP_FOUNDATION_CSS));
+  assert.ok(Buffer.byteLength(writing, 'utf8') < 4_000);
+});
+
+test('generation and writing defaults reserve decorative UI copy for explicit requests', () => {
+  for (const prompt of [taskSkillsText(), writingSkillsText()]) {
+    assert.match(
+      prompt,
+      /promotional subtitles, taglines, decorative text above headings or footer slogans only when the user explicitly requests that copy/i,
+    );
+    assert.match(prompt, /A visual theme or tone alone does not request it/);
+    assert.match(prompt, /accessible names, real constraints, errors and useful empty states/);
+    assert.match(prompt, /Skip descriptive subtitles that summarize the screen/);
+  }
+  const design = readBundledTaskSkill('app-design');
+  assert.match(design.instructions, /Audit visible copy before finishing/);
+  assert.match(design.instructions, /promotional or editorial copy only to the extent explicitly requested/);
+});
+
+test('working controls are a separate bounded read so prompt rendering keeps the complete source', () => {
+  const resource = readBundledTaskSkill('app-design', 'components.mjs');
+  assert.deepEqual(resource.assets, [{ path: 'components.mjs', content: APP_COMPONENTS_JS }]);
+  assert.ok(JSON.stringify(resource).length < 23_000);
+  assert.ok(JSON.stringify(readBundledTaskSkill('app-design')).length < 23_000);
+  assert.throws(() => readBundledTaskSkill('caveman', 'components.mjs'), /app-design/);
+});
+
+test('skill metadata rejects unknown fields, disabled defaults and unrecognized scopes', () => {
+  const original = bundledTaskSkills[0];
+  assert.ok(original);
+  for (const patch of [
+    { grantsCommands: true },
+    { enabledByDefault: false },
+    { scope: 'everything' },
+    { instructions: '' },
+    { version: 2 },
+  ]) {
+    assert.equal(bundledTaskSkillSchema.safeParse({ ...original, ...patch }).success, false);
+  }
+});

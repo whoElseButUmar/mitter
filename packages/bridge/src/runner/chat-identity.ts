@@ -1,29 +1,22 @@
 import type { Worker } from '../../../protocol/src/index.js';
 import { messagePayload } from '../message-wire.js';
 import { normalizeMessageText } from '../schemas/primitives.js';
-
-const supportedOrigins = new Set(['https://chatgpt.com', 'https://chat.openai.com']);
+import { chatgptAddress } from '../connections/chatgpt.js';
 
 export function conversationURL(raw: string): string {
-  const url = new URL(raw);
-  const isConversation = /^\/(?:g\/[^/]+\/)?c\/[a-zA-Z0-9-]+\/?$/.test(url.pathname);
-  if (!supportedOrigins.has(url.origin) || !isConversation) {
+  const address = chatgptAddress(raw);
+  if (address === undefined) {
     throw new Error('Choose a ChatGPT conversation, or let Mitter open a new one.');
   }
-  return url.origin + url.pathname.replace(/\/$/, '');
+  return address;
 }
 
 export function chatStartURL(raw: string, allowNewChat = false): string {
-  try {
-    return conversationURL(raw);
-  } catch (error) {
-    const url = new URL(raw);
-    const isNewChat = url.pathname === '/' || url.pathname === '';
-    if (allowNewChat && supportedOrigins.has(url.origin) && isNewChat) {
-      return url.origin;
-    }
-    throw error;
+  const address = chatgptAddress(raw, allowNewChat);
+  if (address === undefined) {
+    throw new Error('Choose a ChatGPT conversation, or let Mitter open a new one.');
   }
+  return address;
 }
 
 export function normalizeMessage(text: string): string {

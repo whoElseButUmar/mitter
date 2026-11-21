@@ -1,4 +1,9 @@
-import { matchesReceipt } from '../../../../packages/bridge/src/message-wire';
+import { checkDisclosureRecovery } from './disclosure.fixture';
+import { inspectEditedSource } from './sent-source.fixture';
+import { inspectLongTranscript } from './long-transcript.fixture';
+import { checkStaleDraftRecovery } from './stale-draft.fixture';
+import { matchesReceipt, wrapMessage, messageDigest } from '../../../../packages/bridge/src/message-wire';
+import { readReplyJSON } from '../../../../packages/protocol/src/reply-json';
 import { PageBridgeError, PageTransport } from '../../../../packages/bridge/src/page-transport';
 import type { ChatView } from '../../../../packages/bridge/src/chat-dom';
 import {
@@ -23,6 +28,7 @@ type HeldRead = z.infer<typeof domReaderReadResultSchema>;
 
 /** Owns only transport requests to the single offline reader-fixture tab. */
 class DomReaderFixture {
+  private testingStaleDraft = false;
   private tabId: number | undefined;
   private scenario: DomReaderScenario | undefined;
   private pendingRead: Promise<HeldRead> | undefined;
@@ -31,7 +37,8 @@ class DomReaderFixture {
     {
       checkAvailable: async (tabId) => {
         const tab = await chrome.tabs.get(tabId);
-        if (tab.url !== DOM_READER_URL || tab.discarded || tab.frozen) {
+        const fixtureRoot = this.testingStaleDraft && tab.url === 'https://chatgpt.com/';
+        if ((!fixtureRoot && tab.url !== DOM_READER_URL) || tab.discarded || tab.frozen) {
           throw new PageBridgeError('FIXTURE_UNAVAILABLE', 'The disposable reader tab changed.');
         }
       },
@@ -107,6 +114,14 @@ class DomReaderFixture {
       candidates.map((candidate) => matchesReceipt(candidate, scenario.receipt)),
     );
     const receipt = view.transcript?.receiptDiscovery;
+    let literalPayloadExact = false;
+    if (['literal-fenced-roleless', 'literal-escaped-fence'].includes(scenario.name)) {
+      try {
+        literalPayloadExact =
+          JSON.stringify(readReplyJSON(view.codeReply?.text ?? view.assistantText)) ===
+          JSON.stringify(readReplyJSON(scenario.expectedReplyText));
+      } catch {}
+    }
     return domReaderObservationSchema.parse({
       scenario: scenario.name,
       operation,
@@ -116,6 +131,16 @@ class DomReaderFixture {
       lastUserId: view.lastUserId ?? '',
       userIds: view.userIds ?? [],
       busy: view.busy,
+      draft: view.draft,
+      recoveryKind: view.replyRecovery?.kind ?? null,
+      recoveryExact: view.replyRecovery?.responseText === scenario.expectedReplyText,
+      recoveryUserExact: view.replyRecovery?.userText === scenario.expectedUserText,
+      recoveryExchangeMatched: view.replyRecovery?.exchangeId === scenario.receipt.exchangeId,
+      recoveryConflictPreserved:
+        scenario.name === 'recovery-duplicate-known-conflicting' &&
+        view.replyRecovery?.responseText.includes(scenario.expectedReplyText) === true &&
+        view.replyRecovery.responseText.includes('reader_conflicting_reply'),
+      literalPayloadExact,
       complete: view.complete,
       stopped: view.stopped,
       ready: view.ready === true,
@@ -252,6 +277,50 @@ class DomReaderFixture {
       expiresAt: Date.now() + 60000,
     });
     return domReaderControlSchema.parse({ ready: view.ready, stopped: view.stopped });
+  }
+
+  async disclosureRecovery() {
+    const scenario = await createDomReaderScenario('complete-roleless');
+    return checkDisclosureRecovery(
+      this.connectedTab(),
+      this.transport,
+      scenario.request,
+      scenario.expectedUserText,
+      scenario.expectedReplyText,
+    );
+  }
+
+  async sentSourceRecovery() {
+    return inspectEditedSource(this.connectedTab(), this.transport);
+  }
+
+  async longTranscript() {
+    const scenario = await createDomReaderScenario('complete-roleless');
+    const payload = 'A saved long project report with source bytes.\n'.repeat(2200);
+    const text = wrapMessage(payload, scenario.receipt.exchangeId ?? 'a05c70de-2fa8-471d-82f0-df6cdf8b64b4');
+    const hash = await messageDigest(text);
+    const receipt = {
+      ...scenario.receipt,
+      textHash: hash,
+      renderedHash: hash,
+      payloadHash: await messageDigest(payload),
+    };
+    return inspectLongTranscript(
+      this.connectedTab(),
+      this.transport,
+      { ...scenario.request, receipt },
+      text,
+      scenario.expectedReplyText,
+    );
+  }
+
+  async staleDraftRecovery() {
+    this.testingStaleDraft = true;
+    try {
+      return await checkStaleDraftRecovery(this.connectedTab(), this.transport);
+    } finally {
+      this.testingStaleDraft = false;
+    }
   }
 
   async destroy(): Promise<void> {

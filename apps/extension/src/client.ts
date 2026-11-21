@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { APP_VERSION, type Snapshot } from '../../../packages/protocol/src/index.js';
 import {
   auxiliaryMessageSchema,
+  backgroundHelloSchema,
   connectionMessageSchema,
   pongSchema,
   rpcResponseSchema,
@@ -20,6 +21,7 @@ import {
 
 const viewMessageSchema = z
   .union([
+    backgroundHelloSchema,
     pongSchema,
     snapshotMessageSchema,
     connectionMessageSchema,
@@ -38,6 +40,13 @@ export class HostClient {
   private heartbeatDeadline: ReturnType<typeof setTimeout> | undefined;
   private heartbeatId = '';
   private retries = 0;
+  private backgroundReady = false;
+  private backgroundPromise: Promise<void> | undefined;
+  private finishHandshake: ((error?: Error) => void) | undefined;
+  private handshakeDeadline: ReturnType<typeof setTimeout> | undefined;
+  private handshakeId = '';
+  private hostCompatible = false;
+  private hostError: string | undefined;
 
   constructor(
     private onSnapshot: (snapshot: Snapshot) => void,
@@ -83,6 +92,11 @@ export class HostClient {
   private detachPort(): chrome.runtime.Port | undefined {
     const port = this.port;
     this.port = undefined;
+    this.finishHandshake?.(new Error('The extension connection changed. No operation was sent.'));
+    this.backgroundPromise = undefined;
+    this.backgroundReady = false;
+    this.hostCompatible = false;
+    this.hostError = undefined;
     const removeListeners = this.removePortListeners;
     this.removePortListeners = undefined;
 
@@ -180,25 +194,55 @@ export class HostClient {
       const message = parsed.data;
 
       if ('type' in message) {
-        if (message.id === this.heartbeatId) {
+        if (message.type === 'hello') {
+          if (message.id !== this.handshakeId || !this.finishHandshake) {
+            return;
+          }
+
+          if (message.version !== APP_VERSION) {
+            this.failHandshake(
+              `Miter background version ${message.version} differs from this view (${APP_VERSION}). ` +
+                'Open chrome://extensions, click Reload on Miter, then reopen the workspace. ' +
+                'Reloading only this tab does not update the background. No operation was sent.',
+            );
+            return;
+          }
+
+          this.backgroundReady = true;
+          this.finishHandshake();
+          this.scheduleHeartbeat(port);
+        } else if (this.backgroundReady && message.id === this.heartbeatId) {
           this.retries = 0;
           this.scheduleHeartbeat(port);
         }
       } else if ('id' in message) {
         this.pending.receive(message);
       } else if (message.event === 'snapshot') {
-        this.retries = 0;
-        this.onSnapshot(message.data);
-        const compatible = message.data.runtime.version === APP_VERSION;
-        let error: string | undefined;
-
-        if (!compatible) {
-          error = 'Reload Miter after setup to connect the matching local host.';
+        if (!this.backgroundReady) {
+          return;
         }
 
-        this.onConnection(compatible, error);
+        this.retries = 0;
+        this.onSnapshot(message.data);
+        this.hostCompatible = message.data.runtime.version === APP_VERSION;
+        this.hostError = undefined;
+
+        if (!this.hostCompatible) {
+          this.hostError = 'Reload Miter after setup to connect the matching local host.';
+        }
+
+        this.onConnection(this.hostCompatible, this.hostError);
       } else if (message.event === 'connection') {
-        this.onConnection(message.connected, message.error);
+        if (!this.backgroundReady) {
+          return;
+        }
+
+        if (!message.connected) {
+          this.hostCompatible = false;
+          this.hostError = message.error;
+        }
+
+        this.onConnection(this.hostCompatible, this.hostError);
       } else {
         this.onAux(message);
       }
@@ -226,7 +270,50 @@ export class HostClient {
       return;
     }
 
-    this.scheduleHeartbeat(port);
+    this.beginHandshake(port);
+  }
+
+  private failHandshake(detail: string): void {
+    this.finishHandshake?.(new Error(detail));
+    this.onConnection(false, detail);
+  }
+
+  private beginHandshake(port: chrome.runtime.Port): void {
+    const id = crypto.randomUUID();
+    this.handshakeId = id;
+    this.backgroundPromise = new Promise<void>((resolve, reject) => {
+      this.finishHandshake = (error) => {
+        clearTimeout(this.handshakeDeadline);
+        this.handshakeDeadline = undefined;
+        this.handshakeId = '';
+        this.finishHandshake = undefined;
+
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      };
+    });
+    // A view can connect without making a request. Its status still reports handshake failures.
+    void this.backgroundPromise.catch(() => {});
+    this.handshakeDeadline = setTimeout(() => {
+      if (this.port === port && this.handshakeId === id) {
+        this.failHandshake(
+          'Miter’s background did not answer the workspace check. Reconnect to try again. ' +
+            'If it keeps failing, open chrome://extensions, click Reload on Miter, then reopen the workspace. ' +
+            'Reloading only this tab does not update the background. ' +
+            'No operation was sent.',
+        );
+      }
+    }, 5000);
+    this.onConnection(false);
+
+    try {
+      port.postMessage({ type: 'hello', id, version: APP_VERSION });
+    } catch {
+      this.disconnected(port, 'The extension connection closed during its version check.');
+    }
   }
 
   connect(): void {
@@ -279,10 +366,20 @@ export class HostClient {
       throw new Error('The extension is reconnecting. No operation was sent.');
     }
 
+    if (!this.backgroundReady) {
+      await this.backgroundPromise;
+
+      if (this.port !== port || this.closed || !this.backgroundReady) {
+        throw new Error('The extension connection changed. No operation was sent.');
+      }
+    }
+
     let timeoutMs = 45000;
     let timeoutDetail = 'The local host did not respond.';
 
-    if (method === 'project.pickFolder') {
+    if (method === 'worker.previewStart') {
+      timeoutMs = 370000;
+    } else if (method === 'project.pickFolder') {
       timeoutMs = 135000;
     }
 
@@ -327,8 +424,9 @@ export class HostClient {
       return;
     }
 
-    if (!this.port) {
+    if (!this.port || !this.backgroundReady) {
       this.connect();
+      return;
     }
 
     const port = this.port;

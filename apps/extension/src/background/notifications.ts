@@ -1,6 +1,7 @@
 import type { Snapshot, Worker } from '../../../../packages/protocol/src/index.js';
 import { displayTaskName } from '../../../../packages/protocol/src/task-brief.js';
 import type { BridgeStatus } from '../../../../packages/bridge/src/index.js';
+import { isAppReady } from '../../../../packages/bridge/src/presentation.js';
 import {
   notificationStorageSchema,
   notificationChangeSchema,
@@ -26,6 +27,7 @@ export class TaskNotifications {
   private writes = new Set<Promise<unknown>>();
   private taskStates = new Map<string, string>();
   private bridgeStates = new Map<string, string>();
+  private notices = new Map<string, symbol>();
 
   private opening = new Set<string>();
   private revision = 0;
@@ -68,12 +70,18 @@ export class TaskNotifications {
     }
 
     const revision = this.revision;
+    const notice = this.notices.get(workerId);
     this.opening.add(key);
 
     try {
       await this.dependencies.openTask(workerId);
 
-      if (this.disposed || this.dependencies.blocked() || this.revision !== revision) {
+      if (
+        this.disposed ||
+        this.dependencies.blocked() ||
+        this.revision !== revision ||
+        this.notices.get(workerId) !== notice
+      ) {
         return;
       }
 
@@ -89,32 +97,37 @@ export class TaskNotifications {
   };
 
   private create(workerId: string, title: string, message: string): void {
-    if (this.disposed || !this.preferences.enabled || !chrome.notifications) {
+    if (this.disposed) {
       return;
     }
 
     const id = 'miter-task-' + workerId;
     const revision = this.revision;
+    const notice = Symbol('task notification');
+    this.notices.set(workerId, notice);
+    const isCurrent = () =>
+      !this.disposed &&
+      this.revision === revision &&
+      this.notices.get(workerId) === notice &&
+      !this.dependencies.blocked();
 
-    const write = chrome.notifications.create(id, {
-      type: 'basic',
-      iconUrl: chrome.runtime.getURL('icon-128.png'),
-      title: 'Miter · ' + title,
-      message,
-      silent: true,
+    const write = this.tail.then(async () => {
+      if (!isCurrent() || !this.preferences.enabled || !chrome.notifications) {
+        return;
+      }
+      await chrome.notifications.create(id, {
+        type: 'basic',
+        iconUrl: chrome.runtime.getURL('icon-128.png'),
+        title: 'Miter · ' + title,
+        message,
+        silent: true,
+      });
+      if (isCurrent() && this.preferences.enabled && this.preferences.sound) {
+        this.dependencies.ding();
+      }
     });
     this.writes.add(write);
     void write
-      .then(() => {
-        if (
-          !this.disposed &&
-          this.revision === revision &&
-          this.preferences.sound &&
-          !this.dependencies.blocked()
-        ) {
-          this.dependencies.ding();
-        }
-      })
       .catch((error) => this.dependencies.log('notification.error', errorMessage(error)))
       .finally(() => this.writes.delete(write));
   }
@@ -122,6 +135,15 @@ export class TaskNotifications {
   snapshot(snapshot: Snapshot): void {
     if (this.disposed || this.dependencies.blocked()) {
       return;
+    }
+
+    const currentIds = new Set(snapshot.workers.map((worker) => worker.id));
+    for (const id of this.taskStates.keys()) {
+      if (!currentIds.has(id)) {
+        this.taskStates.delete(id);
+        this.bridgeStates.delete(id);
+        this.notices.delete(id);
+      }
     }
 
     for (const worker of snapshot.workers) {
@@ -138,6 +160,10 @@ export class TaskNotifications {
       const previous = this.taskStates.get(worker.id);
       this.taskStates.set(worker.id, state);
 
+      if (previous !== state && !['complete', 'review', 'blocked', 'awaiting_approval'].includes(state)) {
+        this.notices.delete(worker.id);
+      }
+
       if (
         previous === undefined ||
         previous === state ||
@@ -151,6 +177,9 @@ export class TaskNotifications {
 
       if (state === 'complete') {
         title = 'Task complete';
+        if (isAppReady(worker)) {
+          title = 'App ready';
+        }
       } else if (state === 'review') {
         title = 'Ready for review';
       } else if (state === 'awaiting_approval') {
@@ -161,12 +190,22 @@ export class TaskNotifications {
         kind = 'warning';
       }
 
+      if (
+        state === 'blocked' &&
+        this.bridgeStates.get(worker.id) === 'error' &&
+        this.notices.has(worker.id)
+      ) {
+        continue;
+      }
+
       this.dependencies.broadcast({
         event: 'taskNotification',
         data: {
           workerId: worker.id,
           kind,
           message: title + ' · ' + displayTaskName(worker),
+          ...(state === 'awaiting_approval' &&
+            worker.pending?.action.type === 'setupCommand' && { setupApproval: true }),
         },
       });
       this.create(worker.id, title, displayTaskName(worker));
@@ -179,15 +218,28 @@ export class TaskNotifications {
     }
 
     const previous = this.bridgeStates.get(status.workerId);
-    const state = status.phase + ':' + status.reason;
+    let state: string = status.phase;
+    if (status.monitoring && status.receiving) {
+      state = 'receiving';
+    }
     this.bridgeStates.set(status.workerId, state);
 
-    if (this.dependencies.blocked() || status.phase !== 'error' || previous === state) {
+    if (
+      this.dependencies.blocked() ||
+      state !== 'error' ||
+      previous === state ||
+      worker?.state === 'complete' ||
+      worker?.state === 'cancelled' ||
+      worker?.control?.mode === 'stopped' ||
+      worker?.pending ||
+      worker?.humanAcceptanceReady ||
+      ['blocked', 'awaiting_approval', 'review'].includes(this.taskStates.get(status.workerId) || '')
+    ) {
       return;
     }
 
     let name = 'Task';
-    let message = status.reason.slice(0, 160);
+    let message = status.reason;
 
     if (worker) {
       name = displayTaskName(worker);
@@ -202,10 +254,10 @@ export class TaskNotifications {
       data: {
         workerId: status.workerId,
         kind: 'warning',
-        message: name + ' needs attention. ' + status.reason,
+        message: name + ' needs attention. ' + message,
       },
     });
-    this.create(status.workerId, 'Chat needs attention', message);
+    this.create(status.workerId, 'Chat needs attention', name + ' · ' + message);
   }
 
   async read(): Promise<NotificationPreferences> {
@@ -272,6 +324,7 @@ export class TaskNotifications {
     this.preferences = { enabled: false, sound: false };
     this.taskStates.clear();
     this.bridgeStates.clear();
+    this.notices.clear();
 
     this.opening.clear();
   }

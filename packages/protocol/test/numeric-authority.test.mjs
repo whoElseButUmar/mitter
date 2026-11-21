@@ -114,7 +114,12 @@ const nonnegativeRecords = [
   ['completion', completionRecordSchema, completion, ['checked', 'at']],
   ['worker', workerSchema, worker, ['cursor', 'iteration', 'startedAt', 'repeatCount', 'createdAt']],
   ['activity', activitySchema, activity, ['id', 'time']],
-  ['bridge progress', bridgeProgressSummarySchema, bridgeProgress, ['turns', 'activeMs', 'startedAt']],
+  [
+    'bridge progress',
+    bridgeProgressSummarySchema,
+    bridgeProgress,
+    ['turns', 'activeMs', 'startedAt', 'revision'],
+  ],
   ['follow-up', followupSchema, followup, ['createdAt', 'activatedAt', 'finishedAt']],
   ['follow-up summary', followupSummarySchema, followupSummary, ['createdAt']],
 ];

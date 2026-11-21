@@ -9,8 +9,10 @@ import { Diagnostics } from '../../../packages/bridge/src/diagnostics.js';
 import { NativeHost, type NativeRPC } from './transport/native-host.js';
 import { TaskNotifications } from './background/notifications.js';
 import { createTaskController } from './background/task-controller.js';
+import { TerminalControl } from './background/terminal-control.js';
 import { ViewConnections } from './background/view-connections.js';
 import { clearBrowserData, clearPageState, waitFor } from './background/storage-reset.js';
+import { restoreReloadedWorkspace } from './workspace-reload.js';
 import { errorMessage } from './schemas/primitives.js';
 
 /** One host and one coordinator shared by authenticated views. Page scripts cannot call host RPC. */
@@ -80,6 +82,7 @@ export function startBackground() {
     resetRequired: (error) => getReset().recover(error),
     disconnected(error) {
       announced = false;
+      terminal.disconnected();
       tasks.disconnected();
       log('host.error', error);
       views.broadcast({ event: 'connection', connected: false, error });
@@ -112,12 +115,20 @@ export function startBackground() {
     notifications,
     diagnostics,
   });
+  const terminal = new TerminalControl({
+    native: rpc,
+    request: (method, params) => tasks.request(method, params),
+    ready: () => getReset().ready,
+    blocked,
+    log,
+  });
 
   reset = new DataResetCoordinator({
     storage: chrome.storage.local,
     publish: (state) => views.publishReset(state),
     quiesceViews: () => views.quiesce(),
     async stop() {
+      terminal.dispose();
       tasks.capturePageIds(pageIds);
       await tasks.stop();
       await waitFor(views.settled(), 'Pending UI requests');
@@ -143,6 +154,14 @@ export function startBackground() {
       }
     },
   });
+
+  const installed = (details: chrome.runtime.InstalledDetails): void => {
+    if (details.reason === 'update' && !disposed) {
+      void restoreReloadedWorkspace(() => disposed).catch((error) =>
+        log('ui.open.error', errorMessage(error)),
+      );
+    }
+  };
 
   const openPanel = (tab: chrome.tabs.Tab): void => {
     if (!disposed && tab.windowId !== undefined) {
@@ -183,6 +202,11 @@ export function startBackground() {
     disposed = true;
     clearInterval(timer);
     clearTimeout(restartTimer);
+    release('the terminal relay', () => terminal.dispose());
+    release('the browser startup listener', () =>
+      chrome.runtime.onStartup.removeListener(tasks.browserStartup),
+    );
+    release('the update listener', () => chrome.runtime.onInstalled.removeListener(installed));
     release('the action listener', () => chrome.action.onClicked.removeListener(openPanel));
     release('the command listener', () => chrome.commands.onCommand.removeListener(command));
     release('the tab removal listener', () => chrome.tabs.onRemoved.removeListener(tasks.tabRemoved));
@@ -195,11 +219,14 @@ export function startBackground() {
 
   try {
     views.start();
+    chrome.runtime.onStartup.addListener(tasks.browserStartup);
+    chrome.runtime.onInstalled.addListener(installed);
     chrome.action.onClicked.addListener(openPanel);
     chrome.commands.onCommand.addListener(command);
     chrome.tabs.onRemoved.addListener(tasks.tabRemoved);
     chrome.tabs.onUpdated.addListener(tasks.tabUpdated);
     timer = setInterval(() => tasks.tick(), 1500);
+    terminal.start();
     log('app.start', `Miter ${APP_VERSION}; packaged message bridge v4.`);
   } catch (error) {
     dispose();

@@ -3,11 +3,43 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { compatibilityOutcomes, loadProtocol } from './compatibility-cases.mjs';
+import { writingSkillsText } from '../src/task-skills.ts';
 
 // Captured from the current worktree before refactoring, not from Git HEAD.
 // Small fingerprints keep the broad mutation corpus out of a huge snapshot file.
 const baseline = JSON.parse(readFileSync(new URL('./baseline-fingerprint.json', import.meta.url), 'utf8'));
-const outcomes = compatibilityOutcomes(await loadProtocol('../src'));
+const modules = await loadProtocol('../src');
+const outcomes = compatibilityOutcomes({
+  ...modules,
+  'task-brief': {
+    ...modules['task-brief'],
+    taskBriefText(goal) {
+      const current = modules['task-brief'].taskBriefText(goal);
+      const enforced =
+        '- The checklist above is guidance. The host separately enforces configured checks and applicable ' +
+        'built-in quality gates. Read the observed completion evidence: no separate acceptance click is ' +
+        'required, and untested behavior must not be described as verified.';
+      const original =
+        '- The checklist above is guidance, not executable verification. Configured checks still gate ' +
+        'completion. Finished without configured checks does not mean independently verified; no ' +
+        'separate acceptance click is required.';
+      assert.equal(current.split(enforced).length - 1, 1);
+      // Only the completion policy intentionally changed; retain all other original brief bytes.
+      return current.replace(enforced, original);
+    },
+  },
+  rewrite: {
+    ...modules.rewrite,
+    rewritePrompt(request, requestId) {
+      // Writing defaults are the one intentional prompt addition. Compare every
+      // original instruction, draft byte and reply contract against the old corpus.
+      const prompt = modules.rewrite.rewritePrompt(request, requestId);
+      const addition = '\n' + writingSkillsText() + '\n\n';
+      assert.equal(prompt.split(addition).length - 1, 1);
+      return prompt.replace(addition, '');
+    },
+  },
+});
 const rejectedAutoStartCases = new Set([
   'followup/autostart/1',
   'followup/autostart/2',

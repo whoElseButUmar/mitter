@@ -4,14 +4,34 @@ import { bindTerminalInput, readTerminalScreen } from './ui/terminal-session';
 import { disposeTerminalScreen, type TerminalScreen as Screen } from './ui/terminal-screen';
 import { createTerminalAppearance } from './ui/terminal-appearance';
 import { terminalSettings } from './ui/terminal-settings';
-import { TerminalAppearance } from './components/TerminalAppearance';
+import { TerminalSessionPicker } from './components/TerminalSessionPicker';
+import { TooltipButton } from './components/TooltipButton';
+import { AppRunOutput } from './components/AppRunOutput';
+import {
+  createTerminalRuns,
+  runTabId,
+  type SetupTerminalFocus,
+  type TerminalRunFocus,
+} from './ui/terminal-runs';
+import type { ViewRPC } from './ui/rpc';
 import { requireElement } from './ui/dom';
-import { createSignal, createEffect, onMount, onCleanup, For, Show } from 'solid-js';
+import { showConfirmation } from './ui/confirmation';
+import {
+  createSignal,
+  createEffect,
+  createMemo,
+  createUniqueId,
+  onMount,
+  onCleanup,
+  untrack,
+  Show,
+} from 'solid-js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { TerminalClient } from './terminal-client';
 import type { TerminalInfo } from '../../../packages/terminal/src/protocol';
+import type { AppRunSession } from '../../../packages/protocol/src/rpc';
 import './terminal.css';
 
 export function TerminalDock(props: {
@@ -19,24 +39,51 @@ export function TerminalDock(props: {
   projectId: string;
   workerId?: string;
   projectName: string;
+  rpc: ViewRPC;
+  runFocus?: TerminalRunFocus | undefined;
+  setupFocus?: SetupTerminalFocus | undefined;
   close: () => void;
 }) {
   const frames = createAnimationFrames();
+  const panelId = 'terminal-output-' + createUniqueId();
 
   let area: HTMLDivElement | undefined;
   let root: HTMLElement | undefined;
+  let panel: HTMLDivElement | undefined;
   const [sessions, setSessions] = createSignal<TerminalInfo[]>([]);
   const [selected, setSelected] = createSignal('');
   const [error, setError] = createSignal('');
   const [busy, setBusy] = createSignal(false);
-  const [appearance, setAppearance] = createSignal(false);
+  const [logsOpen, setLogsOpen] = createSignal(false);
+  let sessionPicker: HTMLDivElement | undefined;
+  const runs = createTerminalRuns({
+    projectId: () => props.projectId,
+    visible: () => props.visible,
+    rpc: props.rpc,
+  });
+  const selectedRun = () => runs.tabs().get(selected());
+  const launchFailure = () => {
+    const focus = props.runFocus;
+    if (focus && focus.projectId === props.projectId && selected() === runTabId(focus.workerId, focus)) {
+      return focus.failure?.();
+    }
+    return undefined;
+  };
+  let pendingRun = '';
+  let pendingSetup: SetupTerminalFocus | undefined;
+  let lastSetupFocus: SetupTerminalFocus | undefined;
+  let lastFocus: TerminalRunFocus | undefined;
 
   const screens = new Map<string, Screen>();
+  const attaching = new Map<string, symbol>();
 
   const lastByProject = new Map<string, string>();
 
   let alive = true;
-  let listBusy = false;
+  const listing = new Set<string>();
+  let confirmationScope = new AbortController();
+  let openingLink = false;
+  const ending = new Set<string>();
   const client = new TerminalClient(() => {
     for (const screen of screens.values()) {
       screen.failed = true;
@@ -48,15 +95,27 @@ export function TerminalDock(props: {
   });
 
   const scope = () => sessions().filter((screen) => screen.projectId === props.projectId);
-
   const chosen = () => screens.get(selected());
 
-  const sessionTitle = (session: TerminalInfo) => {
-    if (session.occupied) {
-      return 'In use by another view';
-    }
-
-    return session.cwd;
+  const captureScope = (screen?: Screen) => {
+    const lifetime = confirmationScope;
+    const projectId = props.projectId;
+    const workerId = props.workerId;
+    const sessionId = selected();
+    return {
+      projectId,
+      workerId,
+      signal: lifetime.signal,
+      isCurrent: () =>
+        alive &&
+        props.visible &&
+        confirmationScope === lifetime &&
+        !lifetime.signal.aborted &&
+        props.projectId === projectId &&
+        props.workerId === workerId &&
+        selected() === sessionId &&
+        (!screen || (!screen.disposed && screens.get(sessionId) === screen)),
+    };
   };
 
   const fail = (error: unknown) => {
@@ -65,18 +124,7 @@ export function TerminalDock(props: {
     }
   };
 
-  const {
-    prefs,
-    fonts,
-    ready,
-    systemFonts,
-    fontBusy,
-    apply,
-    importTheme,
-    importFont,
-    removeFont,
-    useSystemFonts,
-  } = createTerminalAppearance(
+  const { prefs, ready } = createTerminalAppearance(
     (preferences) => {
       for (const screen of screens.values()) {
         Object.assign(screen.term.options, terminalSettings(preferences));
@@ -97,11 +145,11 @@ export function TerminalDock(props: {
   };
 
   async function refresh() {
-    if (listBusy || !props.projectId) {
+    if (!props.projectId || listing.has(props.projectId)) {
       return;
     }
-    listBusy = true;
     const projectId = props.projectId;
+    listing.add(projectId);
     try {
       const rows = await client.request('terminal.list', {
         projectId,
@@ -119,9 +167,11 @@ export function TerminalDock(props: {
         }
       }
     } catch (event) {
-      fail(event);
+      if (props.projectId === projectId && props.visible) {
+        fail(event);
+      }
     } finally {
-      listBusy = false;
+      listing.delete(projectId);
     }
   }
   const choose = (id: string) => {
@@ -130,11 +180,53 @@ export function TerminalDock(props: {
       lastByProject.set(projectId, id);
     }
     if (projectId === props.projectId) {
+      pendingRun = '';
       setSelected(id);
     }
   };
 
+  const chooseRun = (id: string) => {
+    pendingRun = '';
+    lastByProject.set(props.projectId, id);
+    setSelected(id);
+  };
+
+  async function openLink(sessionId: string, uri: string) {
+    const screen = screens.get(sessionId);
+    if (!screen || openingLink) {
+      return;
+    }
+    const approval = captureScope(screen);
+    openingLink = true;
+    try {
+      const linkURL = new URL(uri);
+      if (!['https:', 'http:'].includes(linkURL.protocol)) {
+        throw Error('Only HTTP(S) terminal links can be opened.');
+      }
+      const accepted = await showConfirmation({
+        title: 'Open terminal link',
+        message: 'Open this terminal link in your browser?\n' + linkURL.href,
+        confirmLabel: 'Open link',
+        signal: approval.signal,
+        isCurrent: approval.isCurrent,
+      });
+      if (accepted && approval.isCurrent()) {
+        await chrome.tabs.create({ url: linkURL.href });
+      }
+    } catch (event) {
+      if (approval.isCurrent()) {
+        fail(event);
+      }
+    } finally {
+      openingLink = false;
+    }
+  }
+
   async function attach(info: TerminalInfo) {
+    const attachment = captureScope();
+    if (!attachment.isCurrent() || info.projectId !== attachment.projectId) {
+      return;
+    }
     const prior = screens.get(info.id);
     if (prior && !prior.failed) {
       choose(info.id);
@@ -145,11 +237,24 @@ export function TerminalDock(props: {
       disposeTerminalScreen(prior);
       screens.delete(info.id);
     }
-    await client.request('terminal.attach', {
-      sessionId: info.id,
-    });
-    if (!alive) {
-      return;
+    const claim = Symbol();
+    attaching.set(info.id, claim);
+    try {
+      await client.request('terminal.attach', { sessionId: info.id });
+      if (attaching.get(info.id) !== claim) {
+        return;
+      }
+      if (!attachment.isCurrent()) {
+        // A hidden view must not keep an unseen setup session away from its next owner.
+        if (alive) {
+          await client.request('terminal.release', { sessionId: info.id });
+        }
+        return;
+      }
+    } finally {
+      if (attaching.get(info.id) === claim) {
+        attaching.delete(info.id);
+      }
     }
     const term = new Terminal({
       ...terminalSettings(prefs()),
@@ -162,19 +267,7 @@ export function TerminalDock(props: {
       screenReaderMode: true,
       linkHandler: {
         activate: (_e, uri) => {
-          try {
-            const linkURL = new URL(uri);
-            if (!['https:', 'http:'].includes(linkURL.protocol)) {
-              throw Error('Only HTTP(S) terminal links can be opened.');
-            }
-            if (confirm('Open this terminal link in your browser?\n' + linkURL.href)) {
-              void chrome.tabs.create({
-                url: linkURL.href,
-              });
-            }
-          } catch (event) {
-            fail(event);
-          }
+          void openLink(info.id, uri);
         },
       },
     });
@@ -201,12 +294,18 @@ export function TerminalDock(props: {
     screens.set(info.id, screen);
     bindTerminalInput(screen, {
       client,
-      isCurrent: () => alive && screens.get(info.id) === screen,
+      isCurrent: () =>
+        alive &&
+        props.visible &&
+        props.projectId === info.projectId &&
+        selected() === info.id &&
+        screens.get(info.id) === screen,
+      confirmationSignal: () => confirmationScope.signal,
       fail,
     });
     choose(info.id);
     frames.schedule(() => {
-      if (!alive || screen.disposed) {
+      if (!alive || screen.disposed || !props.visible || selected() !== info.id) {
         return;
       }
       fit();
@@ -221,24 +320,68 @@ export function TerminalDock(props: {
       refresh,
       fail,
     });
+  async function attachSetup(focus: SetupTerminalFocus) {
+    const current = () =>
+      alive &&
+      props.visible &&
+      pendingSetup === focus &&
+      props.setupFocus === focus &&
+      props.projectId === focus.projectId &&
+      props.workerId === focus.workerId;
+    try {
+      const rows = await client.request('terminal.list', { projectId: focus.projectId });
+      if (!current()) {
+        return;
+      }
+      const session = rows.find(
+        (row) =>
+          row.id === focus.sessionId && row.projectId === focus.projectId && row.workerId === focus.workerId,
+      );
+      if (!session) {
+        throw new Error('This setup terminal is no longer available. Return to the task to see the result.');
+      }
+      if (session.occupied && !screens.has(session.id)) {
+        throw new Error('This setup terminal is open in another Miter window.');
+      }
+      setSessions((old) => [...old.filter((row) => row.projectId !== focus.projectId), ...rows]);
+      await attach(session);
+      if (current() && selected() === session.id) {
+        screens.get(session.id)?.term.focus();
+      }
+    } catch (reason) {
+      if (current()) {
+        fail(reason);
+      }
+    } finally {
+      if (pendingSetup === focus) {
+        pendingSetup = undefined;
+      }
+    }
+  }
+
   async function create() {
     if (busy() || !props.projectId) {
       return;
     }
-    if (
-      !confirm(
-        'Open a real local shell?\n\nIt has your macOS/user permissions, not just access to this project. Commands you type run directly. Terminal contents are not sent to ChatGPT.',
-      )
-    ) {
-      return;
-    }
+    const approval = captureScope();
     setBusy(true);
-    setError('');
     try {
-      const projectId = props.projectId;
+      const accepted = await showConfirmation({
+        title: 'Open local shell',
+        message:
+          'Open a real local shell?\n\nIt has your macOS/user permissions, not just access to this project. Commands you type run directly. Terminal contents are not sent to ChatGPT.',
+        confirmLabel: 'Open shell',
+        signal: approval.signal,
+        isCurrent: approval.isCurrent,
+      });
+      if (!accepted || !approval.isCurrent()) {
+        return;
+      }
+      setError('');
+      const projectId = approval.projectId;
       const workerScope: { workerId?: string } = {};
-      if (props.workerId) {
-        workerScope.workerId = props.workerId;
+      if (approval.workerId) {
+        workerScope.workerId = approval.workerId;
       }
 
       const info = await client.request('terminal.create', {
@@ -248,34 +391,60 @@ export function TerminalDock(props: {
         rows: 18,
         confirm: true,
       });
+      if (!approval.isCurrent()) {
+        return;
+      }
       await refresh();
+      if (!approval.isCurrent()) {
+        return;
+      }
       await attach(info);
     } catch (event) {
-      fail(event);
+      if (approval.isCurrent()) {
+        fail(event);
+      }
     } finally {
-      setBusy(false);
+      if (alive) {
+        setBusy(false);
+      }
     }
   }
   async function end() {
     const screen = chosen();
-    if (
-      !screen ||
-      !confirm('Close this shell and its attached terminal session? Running foreground work may stop.')
-    ) {
+    if (!screen || ending.has(screen.info.id)) {
       return;
     }
+    const approval = captureScope(screen);
+    ending.add(screen.info.id);
     try {
+      const accepted = await showConfirmation({
+        title: 'Close local shell',
+        message: 'Close this shell and its attached terminal session? Running foreground work may stop.',
+        confirmLabel: 'Close shell',
+        signal: approval.signal,
+        isCurrent: approval.isCurrent,
+      });
+      if (!accepted || !approval.isCurrent()) {
+        return;
+      }
       await client.request('terminal.close', {
         sessionId: screen.info.id,
         confirm: true,
       });
+      if (!approval.isCurrent()) {
+        return;
+      }
       disposeTerminalScreen(screen);
       screens.delete(screen.info.id);
       setSelected('');
       lastByProject.delete(screen.info.projectId);
       await refresh();
     } catch (event) {
-      fail(event);
+      if (approval.isCurrent()) {
+        fail(event);
+      }
+    } finally {
+      ending.delete(screen.info.id);
     }
   }
   onMount(() => {
@@ -293,11 +462,92 @@ export function TerminalDock(props: {
   });
 
   createEffect(() => {
+    props.projectId;
+    props.workerId;
+    props.visible;
+    selected();
+    confirmationScope.abort();
+    confirmationScope = new AbortController();
+  });
+
+  createEffect(() => {
+    const projectId = props.projectId;
+    const visible = props.visible;
+    const focus = props.runFocus;
+    const setup = props.setupFocus;
+    setError('');
+    if (
+      setup &&
+      visible &&
+      projectId === setup.projectId &&
+      props.workerId === setup.workerId &&
+      setup !== lastSetupFocus
+    ) {
+      lastSetupFocus = setup;
+      pendingSetup = setup;
+      pendingRun = '';
+      untrack(() => void attachSetup(setup));
+      return;
+    }
+    pendingSetup = undefined;
+    if (visible && focus && focus !== lastFocus && projectId === focus.projectId) {
+      lastFocus = focus;
+      pendingRun = runTabId(focus.workerId, focus);
+      const requestedTab = pendingRun;
+      lastByProject.set(projectId, requestedTab);
+      setSelected(requestedTab);
+      untrack(() => void runs.refresh());
+      // The output panel stays mounted while the host allocates the session.
+      // Move focus once for this explicit Run, never on log polls or drawer reopen.
+      frames.schedule(() => {
+        if (
+          alive &&
+          props.visible &&
+          props.runFocus === focus &&
+          selected() === requestedTab &&
+          props.projectId === focus.projectId
+        ) {
+          const target = sessionPicker?.querySelector('[role="combobox"]:enabled') || panel;
+          if (target instanceof HTMLElement) {
+            target.focus();
+          }
+        }
+      });
+    } else {
+      pendingRun = '';
+      setSelected((visible && lastByProject.get(projectId)) || '');
+    }
+    frames.schedule(fit);
+  });
+
+  createEffect(() => {
     if (ready() && props.visible && props.projectId) {
-      void refresh();
-      const id = lastByProject.get(props.projectId) || '';
-      setSelected(id);
-      frames.schedule(fit);
+      untrack(() => void refresh());
+    }
+  });
+
+  createEffect(() => {
+    const tabs = runs.tabs();
+    const projectId = props.projectId;
+    if (!props.visible || !projectId || pendingSetup) {
+      return;
+    }
+    if (tabs.has(pendingRun)) {
+      chooseRun(pendingRun);
+    } else if (!pendingRun && runs.loaded()) {
+      const id = untrack(selected);
+      if (id && (!id.startsWith('app:') || tabs.has(id))) {
+        return;
+      }
+      const first =
+        [...tabs.entries()].find(([, run]) => run.state === 'running' || run.state === 'starting') ||
+        tabs.entries().next().value;
+      if (first) {
+        chooseRun(first[0]);
+      } else if (id) {
+        lastByProject.delete(projectId);
+        setSelected('');
+      }
     }
   });
 
@@ -312,11 +562,87 @@ export function TerminalDock(props: {
   onCleanup(() => {
     frames.dispose();
     alive = false;
+    confirmationScope.abort();
     for (const screen of screens.values()) {
       disposeTerminalScreen(screen);
     }
     screens.clear();
     client.close();
+  });
+
+  const sessionChoices = createMemo(() => [
+    ...[...runs.tabs()].map(([id, run]) => {
+      let label = run.name + ' · ' + run.state;
+      if (id === 'app:' + run.previewId) {
+        label += ' · previous';
+      }
+      return { id, label, disabled: false };
+    }),
+    ...scope().map((session) => {
+      let label = session.title;
+      if (session.occupied) {
+        label += ' · in use';
+      } else if (session.exited) {
+        label += ' · exited';
+      }
+      return { id: session.id, label, disabled: session.occupied };
+    }),
+  ]);
+  const chooseSession = (id: string) => {
+    pendingSetup = undefined;
+    if (runs.tabs().has(id)) {
+      chooseRun(id);
+      return;
+    }
+    const session = scope().find((entry) => entry.id === id && !entry.occupied);
+    if (session) {
+      void attach(session).catch(fail);
+    }
+  };
+  const controlApp = async (
+    run: AppRunSession,
+    operation: 'open' | 'restart' | 'stop',
+    button: HTMLButtonElement,
+  ) => {
+    const scope = captureScope();
+    let restoreFocus = document.activeElement === button;
+    const cancelRestore = () => {
+      restoreFocus = false;
+    };
+    const focusChanged = (event: FocusEvent) => {
+      if (event.target !== button && event.target !== document.body) {
+        cancelRestore();
+      }
+    };
+    const options = { capture: true, signal: scope.signal };
+    document.addEventListener('pointerdown', cancelRestore, options);
+    document.addEventListener('keydown', cancelRestore, options);
+    document.addEventListener('focusin', focusChanged, options);
+    try {
+      await runs.control(run, operation);
+    } finally {
+      document.removeEventListener('pointerdown', cancelRestore, true);
+      document.removeEventListener('keydown', cancelRestore, true);
+      document.removeEventListener('focusin', focusChanged, true);
+      // Stop/Restart can remove or disable the focused button. Only repair that
+      // lost focus; a later user interaction or another session owns its focus.
+      if (
+        restoreFocus &&
+        scope.isCurrent() &&
+        document.hasFocus() &&
+        document.activeElement === document.body
+      ) {
+        const target = sessionPicker?.querySelector('[role="combobox"]:enabled');
+        if (target instanceof HTMLElement) {
+          target.focus();
+        }
+      }
+    }
+  };
+  createEffect(() => {
+    selected();
+    props.projectId;
+    setLogsOpen(false);
   });
 
   return (
@@ -325,68 +651,71 @@ export function TerminalDock(props: {
         root = element;
       }}
       class="terminal-dock"
+      classList={{ 'terminal-dock-compact': selected().startsWith('app:') && !logsOpen() }}
       hidden={!props.visible}
       aria-label="Local terminal"
     >
-      <div class="terminal-toolbar">
+      <div class="terminal-toolbar" role="group" aria-label="Terminal controls">
         <strong>Terminal</strong>
-        <small title="Project or task worktree used when the shell starts">
-          {props.projectName || 'Choose a project'}
-        </small>
-        <div class="spacer" />
-        <button
-          disabled={!props.projectId || busy() || !ready()}
-          onClick={() => void create()}
-          title="New shell"
+        <div
+          class="terminal-session-picker"
+          ref={(element) => {
+            sessionPicker = element;
+          }}
         >
-          +<span class="wide-label"> New shell</span>
-        </button>
-        <button onClick={() => setAppearance(true)} title="Themes and fonts">
-          Appearance…
-        </button>
-        <button
-          class="icon-button"
-          onClick={props.close}
-          title="Hide terminal (keep shells running)"
-          aria-label="Hide terminal"
-        >
-          ×
-        </button>
-      </div>
-      <Show when={error()}>
-        <div class="terminal-error" role="alert">
-          {error()}
-          <button
-            onClick={() => {
-              setError('');
-              void refresh();
-            }}
-          >
-            Refresh sessions
-          </button>
+          <TerminalSessionPicker
+            value={selected()}
+            choices={sessionChoices()}
+            change={chooseSession}
+            placeholder={props.projectName || 'Choose a project'}
+          />
         </div>
-      </Show>
-      <div class="terminal-session-row" role="tablist" aria-label="Project terminals">
-        <For each={scope()}>
-          {(screen) => (
-            <button
-              role="tab"
-              aria-selected={selected() === screen.id}
-              disabled={screen.occupied}
-              title={sessionTitle(screen)}
-              onClick={() => void attach(screen).catch(fail)}
-            >
-              {screen.title}
-              <Show when={screen.exited} fallback={''}>
-                {' · exited'}
+        <Show when={selectedRun()}>
+          {(run) => (
+            <div class="terminal-run-actions" role="group" aria-label="App controls">
+              <Show when={run().state === 'running'}>
+                <TooltipButton
+                  label="Open app"
+                  icon="external"
+                  disabled={runs.busy().has(run().previewId)}
+                  onClick={(event) => void controlApp(run(), 'open', event.currentTarget)}
+                />
               </Show>
-            </button>
+              <Show when={run().state !== 'starting'}>
+                <Show
+                  when={run().state === 'running'}
+                  fallback={
+                    <TooltipButton
+                      label="Run again"
+                      icon="play"
+                      disabled={runs.busy().has(run().previewId)}
+                      onClick={(event) => void controlApp(run(), 'restart', event.currentTarget)}
+                    />
+                  }
+                >
+                  <TooltipButton
+                    label="Restart"
+                    icon="restart"
+                    disabled={runs.busy().has(run().previewId)}
+                    onClick={(event) => void controlApp(run(), 'restart', event.currentTarget)}
+                  />
+                </Show>
+              </Show>
+              <Show when={run().state === 'starting' || run().state === 'running'}>
+                <TooltipButton
+                  label="Stop"
+                  icon="stop"
+                  disabled={runs.busy().has(run().previewId)}
+                  onClick={(event) => void controlApp(run(), 'stop', event.currentTarget)}
+                />
+              </Show>
+            </div>
           )}
-        </For>
-        <Show when={selected()}>
-          <div class="spacer" />
-          <button
-            class="text-button"
+        </Show>
+        <Show when={chosen()}>
+          <TooltipButton
+            label="Clear shell"
+            icon="clear"
             onClick={() => {
               const screen = chosen();
               if (alive && screen && !screen.disposed) {
@@ -394,56 +723,82 @@ export function TerminalDock(props: {
                 screen.term.focus();
               }
             }}
-          >
-            Clear
-          </button>
-          <button class="text-button" onClick={() => void end()}>
-            Close shell
-          </button>
+          />
+          <TooltipButton label="Close shell" icon="stop" onClick={() => void end()} />
         </Show>
+        <div class="spacer" />
+        <TooltipButton
+          label="New shell"
+          icon="plus"
+          disabled={!props.projectId || busy() || !ready()}
+          onClick={() => void create()}
+        />
+        <TooltipButton label="Hide terminal" icon="close" onClick={props.close} />
       </div>
-      <div
-        class="terminal-viewport"
-        ref={(element) => {
-          area = element;
-        }}
-      />
-      <Show when={!selected()}>
-        <div class="terminal-empty">
-          <strong>Open a local shell</strong>
-          <p>
-            Open a shell in this project. Its input and output stay separate from ChatGPT and task reports.
-          </p>
+      <Show when={error() || runs.error()}>
+        <div class="terminal-error" role="alert">
+          {error() || runs.error()}
           <button
-            disabled={!props.projectId || busy() || !ready()}
-            onClick={() => void create()}
-            class="primary"
+            onClick={() => {
+              setError('');
+              void refresh();
+              void runs.refresh();
+            }}
           >
-            Open terminal
+            Refresh sessions
           </button>
         </div>
       </Show>
-      <div class="terminal-status">
-        <span>Local shell · user permissions</span>
-        <span>Sessions last while the local host is running</span>
-      </div>
-      <Show when={appearance()}>
-        <TerminalAppearance
-          prefs={prefs}
-          fonts={fonts}
-          systemFonts={systemFonts}
-          ready={ready}
-          fontBusy={fontBusy}
-          error={error}
-          apply={apply}
-          fail={fail}
-          importTheme={importTheme}
-          importFont={importFont}
-          removeFont={removeFont}
-          useSystemFonts={useSystemFonts}
-          close={() => setAppearance(false)}
+      <div
+        ref={panel}
+        id={panelId}
+        class="terminal-panel"
+        role="region"
+        aria-label={selectedRun()?.name || 'Terminal output'}
+        tabIndex={-1}
+      >
+        <div
+          class="terminal-viewport"
+          hidden={selected().startsWith('app:')}
+          ref={(element) => {
+            area = element;
+          }}
         />
-      </Show>
+        <Show when={selectedRun()}>
+          {(run) => (
+            <AppRunOutput run={run()} preferences={prefs()} expanded={logsOpen()} setExpanded={setLogsOpen} />
+          )}
+        </Show>
+        <Show when={selected().startsWith('app:') && !selectedRun()}>
+          <Show
+            when={launchFailure()}
+            fallback={
+              <p class="terminal-run-wait" role="status">
+                Starting app…
+              </p>
+            }
+          >
+            {(message) => (
+              <p class="terminal-run-wait" role="alert">
+                {message()}
+              </p>
+            )}
+          </Show>
+        </Show>
+        <Show when={!selected()}>
+          <div class="terminal-empty">
+            <strong>No sessions yet</strong>
+            <p>Run an app or open a shell.</p>
+            <button
+              disabled={!props.projectId || busy() || !ready()}
+              onClick={() => void create()}
+              class="primary"
+            >
+              Open terminal
+            </button>
+          </div>
+        </Show>
+      </div>
     </section>
   );
 }

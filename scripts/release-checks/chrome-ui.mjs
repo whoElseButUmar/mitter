@@ -121,7 +121,12 @@ async function submitProject(chrome, session, name) {
     chrome,
     session,
     `(() => {
-      const inputs = document.querySelectorAll('input[required]');
+      const details = document.querySelector('.project-options');
+      if (!(details instanceof HTMLDetailsElement)) {
+        throw new Error('Expected the manual folder-path disclosure.');
+      }
+      details.open = true;
+      const inputs = [document.querySelector('input[name=root]'), document.querySelector('input[name=name]')];
       if (inputs.length !== 2) {
         throw new Error('Expected two project fields.');
       }
@@ -165,13 +170,15 @@ export async function checkDialogs(chrome, session) {
   await waitFor(
     chrome,
     session,
-    'window.mitterReleaseFixture.inspect().fields[0]?.focused === true',
-    'native invalid-field focus',
+    'document.activeElement === document.querySelector(".folder-picker")',
+    'missing folder focuses its chooser',
   );
   state = await inspect(chrome, session);
   assert.equal(state.pendingSaves.length, 0);
-  assert.ok(state.fields[0]?.focused, 'Chrome focuses the first invalid required field.');
-  assert.ok(state.fields.every((field) => field.userInvalid && field.ariaInvalid === 'true'));
+  assert.ok(state.alerts.some((alert) => alert.visible && alert.text.includes('Choose a folder first')));
+  assert.ok(state.fields.every((field) => !field.userInvalid && field.ariaInvalid === null));
+  assert.equal(await evaluate(chrome, session, 'document.querySelector(".project-options").open'), false);
+  assert.equal(await evaluate(chrome, session, 'document.querySelector("input[name=name]").required'), false);
 
   const failure = await submitProject(chrome, session, 'Readable error');
   await evaluate(
@@ -225,7 +232,235 @@ export async function checkDialogs(chrome, session) {
     `window.mitterReleaseFixture.finishSave(${newer}, 'Finish controlled save.')`,
   );
   await evaluate(chrome, session, 'window.mitterReleaseFixture.dispose()');
+  await checkTaskStart(chrome, session);
+  await checkSetupApproval(chrome, session);
   await checkAttentionLayout(chrome, session);
+}
+
+export async function checkSetupApproval(chrome, session) {
+  const buttons = "document.querySelectorAll('.setup-command-review button, .setup-approval > button')";
+  const activate = async (label) => {
+    await evaluate(
+      chrome,
+      session,
+      `[...${buttons}].find((button) => (button.getAttribute('aria-label') || button.textContent.trim()) === ${JSON.stringify(label)}).focus()`,
+    );
+    await press(chrome, session, 'Enter', 13);
+  };
+
+  for (const [label, decision] of [
+    ['No', 'deny'],
+    ['Do this instead', 'instead'],
+    ['I’ll do it myself', 'manual'],
+    ['Run it', 'run'],
+  ]) {
+    await evaluate(chrome, session, 'window.mitterReleaseFixture.mountTaskState("setup-command")');
+    await waitFor(
+      chrome,
+      session,
+      "!!document.querySelector('dialog[open] .setup-command-review')",
+      'setup approval dialog',
+    );
+    await activate('Copy command');
+    await press(chrome, session, 'Escape', 27);
+    assert.deepEqual(await evaluate(chrome, session, 'window.mitterReleaseFixture.attentionActions()'), [
+      "copy pnpm create vite 'my board'",
+    ]);
+    await activate('Review setup command');
+    await activate(label);
+    if (decision === 'instead') {
+      assert.equal(
+        await evaluate(
+          chrome,
+          session,
+          "document.activeElement === document.querySelector('dialog textarea')",
+        ),
+        true,
+      );
+      await chrome.request('Input.insertText', { text: 'Use the existing manifest.' }, session);
+      await activate('Send instruction');
+    }
+    await waitFor(chrome, session, "!document.querySelector('dialog[open]')", 'resolved setup approval');
+    const [, receipt, terminal] = await evaluate(
+      chrome,
+      session,
+      'window.mitterReleaseFixture.attentionActions()',
+    );
+    const result = JSON.parse(receipt);
+    assert.equal(result.token, 'setup_review');
+    assert.equal(result.decision, decision);
+    if (decision === 'instead') {
+      assert.equal(result.instruction, 'Use the existing manifest.');
+    }
+    if (decision === 'manual') {
+      assert.equal(terminal, 'open fixture_setup_session');
+    } else {
+      assert.equal(terminal, undefined);
+    }
+  }
+}
+
+async function checkTaskStart(chrome, session) {
+  await evaluate(chrome, session, 'window.mitterReleaseFixture.taskStart.mount()');
+  assert.equal(
+    await evaluate(
+      chrome,
+      session,
+      `!document.querySelector('[data-advanced]').open &&
+        document.querySelector('[data-start-now]').checked &&
+        document.querySelector('[data-mode]').value === 'handoff' &&
+        document.querySelector('[data-workspace]').value === 'shared' &&
+        document.querySelector('[data-rule]').value === 'human' &&
+        document.querySelector('[data-project-context]').textContent.includes('Task start check')`,
+    ),
+    true,
+    'New task opens with its scoped project and normal creation defaults.',
+  );
+  await click(chrome, session, '[data-create]');
+  assert.equal(
+    await evaluate(chrome, session, 'document.activeElement === document.querySelector("[data-goal]")'),
+    true,
+    'An empty task focuses its required prompt.',
+  );
+  await evaluate(
+    chrome,
+    session,
+    `(() => {
+      const goal = document.querySelector('[data-goal]');
+      goal.value = 'Save this task without starting it.';
+      goal.dispatchEvent(new Event('input', { bubbles: true }));
+      const rule = document.querySelector('[data-rule]');
+      rule.value = 'exists';
+      rule.dispatchEvent(new Event('change', { bubbles: true }));
+      document.querySelector('[data-advanced]').open = false;
+    })()`,
+  );
+  await click(chrome, session, '[data-create]');
+  assert.equal(
+    await evaluate(
+      chrome,
+      session,
+      'document.querySelector("[data-advanced]").open && document.activeElement === document.querySelector("[data-path]")',
+    ),
+    true,
+    'A required field inside collapsed Advanced options opens and receives native validation focus.',
+  );
+  assert.equal(await evaluate(chrome, session, 'window.mitterReleaseFixture.taskStart.inspect().created'), 0);
+  await evaluate(
+    chrome,
+    session,
+    `(() => {
+      document.querySelector('[data-path]').value = 'index.html';
+      const start = document.querySelector('[data-start-now]');
+      start.checked = false;
+      start.dispatchEvent(new Event('change', { bubbles: true }));
+      document.querySelector('[data-advanced]').open = false;
+    })()`,
+  );
+  assert.equal(
+    await evaluate(chrome, session, 'document.querySelector("[data-create]").textContent'),
+    'Create task',
+  );
+  await click(chrome, session, '[data-create]');
+  await waitFor(chrome, session, 'document.querySelector("dialog[open]") === null', 'save-only task closes');
+  assert.deepEqual(
+    await evaluate(
+      chrome,
+      session,
+      `(() => {
+        const state = window.mitterReleaseFixture.taskStart.inspect();
+        return { created: state.created, started: state.started, authorizations: state.authorizations,
+          checks: state.requests[0].checks };
+      })()`,
+    ),
+    { created: 1, started: 0, authorizations: 0, checks: [{ type: 'exists', path: 'index.html' }] },
+    'Save-only creates one task with its check and never requests chat access or starts a model.',
+  );
+  await evaluate(chrome, session, 'window.mitterReleaseFixture.dispose()');
+
+  for (const cancelled of [false, true]) {
+    let settled = 'document.querySelectorAll("dialog[open]").length === 0';
+    let settlement = 'task dialog closes before the chat loads';
+    let expectedStops = 0;
+    if (cancelled) {
+      settled = 'window.mitterReleaseFixture.taskStart.inspect().stopped === 1';
+      settlement = 'late admission cleanup after cancellation';
+      expectedStops = 1;
+    }
+    await evaluate(chrome, session, 'window.mitterReleaseFixture.taskStart.mount()');
+    await evaluate(
+      chrome,
+      session,
+      `(() => {
+        const goal = document.querySelector('[data-goal]');
+        const form = document.querySelector('[data-task-form]');
+        if (!(goal instanceof HTMLTextAreaElement) || !(form instanceof HTMLFormElement)) {
+          throw new Error('The production task form is missing.');
+        }
+        goal.value = 'Check task startup without changing files.';
+        goal.dispatchEvent(new Event('input', { bubbles: true }));
+        form.requestSubmit();
+        form.requestSubmit();
+      })()`,
+    );
+    await waitFor(
+      chrome,
+      session,
+      `(() => {
+        const state = window.mitterReleaseFixture.taskStart.inspect();
+        const button = document.querySelector('[data-create]');
+        return state.created === 1 && state.started === 1 && button?.disabled === true &&
+          button.textContent === 'Starting…';
+      })()`,
+      'one task creation and one pending chat admission',
+    );
+    assert.deepEqual(
+      await evaluate(
+        chrome,
+        session,
+        `(() => {
+          const state = window.mitterReleaseFixture.taskStart.inspect();
+          const request = state.requests[0];
+          return { authorizations: state.authorizations, projectId: request.projectId,
+            mode: request.mode, workspaceMode: request.workspaceMode, checks: request.checks,
+            maxIterations: request.maxIterations, maxMinutes: request.maxMinutes,
+            named: request.name.trim().length > 0 };
+        })()`,
+      ),
+      {
+        authorizations: 1,
+        projectId: 'task_start_project',
+        mode: 'handoff',
+        workspaceMode: 'shared',
+        checks: [],
+        maxIterations: 15,
+        maxMinutes: 30,
+        named: true,
+      },
+    );
+    if (cancelled) {
+      await press(chrome, session, 'Escape', 27);
+      await evaluate(chrome, session, 'window.mitterReleaseFixture.mountReplacement()');
+    }
+    await evaluate(chrome, session, 'window.mitterReleaseFixture.taskStart.admit()');
+    await waitFor(chrome, session, settled, settlement);
+    await waitFor(
+      chrome,
+      session,
+      `(() => {
+        const state = window.mitterReleaseFixture.taskStart.inspect();
+        return state.created === 1 && state.started === 1 && state.failed === 0 &&
+          state.stopped === ${expectedStops};
+      })()`,
+      'task startup retains exact ownership without duplicate creation or cleanup',
+    );
+    if (cancelled) {
+      const state = await inspect(chrome, session);
+      assert.equal(state.title, 'Replacement dialog');
+      assert.equal(state.replacementDraft, 'Newer draft');
+    }
+    await evaluate(chrome, session, 'window.mitterReleaseFixture.dispose()');
+  }
 }
 
 function assertContained(inner, outer, label) {
@@ -297,6 +532,211 @@ export function assertAttentionLayout(value) {
   return layout;
 }
 
+async function checkTaskStages(chrome, session) {
+  const stages = [
+    { scenario: 'connecting', heading: 'Connecting to ChatGPT', controls: ['Open chat', 'Pause', 'Stop'] },
+    {
+      scenario: 'chat-unavailable',
+      heading: 'Needs attention',
+      controls: ['Open chat', 'Resume task', 'Stop'],
+    },
+    { scenario: 'running', heading: 'Updating project', controls: ['Pause', 'Stop'] },
+    { scenario: 'checking', heading: 'Checking results', controls: ['Pause', 'Stop'] },
+    { scenario: 'approval', heading: 'Approval needed', controls: ['Reject', 'Approve', 'Pause', 'Stop'] },
+    { scenario: 'ready', heading: 'App ready', controls: ['Run', 'Open files'] },
+    { scenario: 'unverified', heading: 'Task complete', controls: ['Open files'] },
+    { scenario: 'unverified-app', heading: 'Task complete', controls: ['Run', 'Open files'] },
+  ];
+  for (const width of [1024, 320]) {
+    await chrome.request(
+      'Emulation.setDeviceMetricsOverride',
+      { width, height: 720, deviceScaleFactor: 1, mobile: false },
+      session,
+    );
+    for (const stage of stages) {
+      await evaluate(
+        chrome,
+        session,
+        `window.mitterReleaseFixture.mountTaskState(${JSON.stringify(stage.scenario)})`,
+      );
+      if (stage.scenario === 'unverified-app') {
+        await waitFor(
+          chrome,
+          session,
+          '!!document.querySelector(".app-preview-launch button")',
+          'existing unverified app entry',
+        );
+      }
+      assert.deepEqual(
+        await evaluate(
+          chrome,
+          session,
+          `(() => {
+            const visible = element => element.checkVisibility();
+            const state = document.querySelector('.task-state');
+            const technical = document.querySelector('.task-diagnostics');
+            const output = document.querySelector('.task-output');
+            return {
+              heading: state.querySelector('h2').textContent,
+              announcement: [state.getAttribute('role'), state.getAttribute('aria-live'), state.getAttribute('aria-atomic')],
+              controls: [...document.querySelectorAll('.app-preview-launch button, .task-handoff-actions > button, .approval button, .runner-controls button')].filter(visible).map(button => button.textContent.trim()),
+              outputClosed: !output.open,
+              technicalClosed: !technical.open,
+              counterHidden: !visible(document.querySelector('.task-turn-counter')),
+              horizontalOverflow: document.documentElement.scrollWidth > innerWidth,
+            };
+          })()`,
+        ),
+        {
+          heading: stage.heading,
+          announcement: ['status', 'polite', 'true'],
+          controls: stage.controls,
+          outputClosed: true,
+          technicalClosed: true,
+          counterHidden: true,
+          horizontalOverflow: false,
+        },
+        stage.scenario + ' keeps its next action visible and secondary details closed at ' + width + 'px.',
+      );
+      if (stage.scenario === 'approval') {
+        assert.equal(
+          await evaluate(
+            chrome,
+            session,
+            `document.querySelector('.state-summary').textContent === 'Run the registered project test suite.' &&
+              document.querySelector('.approval pre').textContent.includes('pnpm') &&
+              document.querySelector('.approval pre').getClientRects().length > 0`,
+          ),
+          true,
+        );
+      }
+      if (stage.scenario === 'unverified' || stage.scenario === 'unverified-app') {
+        assert.equal(
+          await evaluate(
+            chrome,
+            session,
+            `document.querySelector('.state-summary').textContent === 'Completion checks did not run.'`,
+          ),
+          true,
+        );
+      }
+      if (['ready', 'unverified', 'unverified-app'].includes(stage.scenario)) {
+        assert.equal(
+          await evaluate(
+            chrome,
+            session,
+            `document.querySelector('.task-handoff-actions').checkVisibility() &&
+              [...document.querySelectorAll('.completion-evidence')].every(details => !details.open)`,
+          ),
+          true,
+          'Completed-task actions stay visible while verification details remain collapsed.',
+        );
+        await evaluate(
+          chrome,
+          session,
+          `[...document.querySelectorAll('.task-handoff-actions button')].find(button => button.textContent.trim() === 'Open files').focus()`,
+        );
+        await press(chrome, session, 'Enter', 13);
+        assert.deepEqual(await evaluate(chrome, session, 'window.mitterReleaseFixture.attentionActions()'), [
+          'open-files',
+        ]);
+      }
+      if (stage.scenario === 'connecting' || stage.scenario === 'chat-unavailable') {
+        assert.equal(
+          await evaluate(
+            chrome,
+            session,
+            `document.querySelector('.runner-controls .primary').textContent.trim() === 'Open chat' &&
+              document.querySelector('.state-summary').textContent.includes('sign in if needed') &&
+              window.mitterReleaseFixture.attentionActions().length === 0`,
+          ),
+          true,
+          'Chat readiness recovery stays explicit and does not start a task while rendering.',
+        );
+      }
+    }
+  }
+
+  await evaluate(chrome, session, 'window.mitterReleaseFixture.mountTaskState("chat-unavailable")');
+  for (const label of ['Open chat', 'Open chat', 'Resume task']) {
+    await evaluate(
+      chrome,
+      session,
+      `[...document.querySelectorAll('.runner-controls button')].find(button => button.textContent.trim() === ${JSON.stringify(label)}).focus()`,
+    );
+    await press(chrome, session, 'Enter', 13);
+  }
+  assert.deepEqual(await evaluate(chrome, session, 'window.mitterReleaseFixture.attentionActions()'), [
+    'bridge.openChat',
+    'bridge.openChat',
+    'run-with-chat',
+  ]);
+
+  await evaluate(chrome, session, 'window.mitterReleaseFixture.mountTaskState("running")');
+  for (const action of ['bridge.pause', 'bridge.halt']) {
+    let label = 'Pause';
+    if (action === 'bridge.halt') {
+      label = 'Stop';
+    }
+    await evaluate(
+      chrome,
+      session,
+      `[...document.querySelectorAll('.runner-controls button')].find(button => button.textContent.trim() === ${JSON.stringify(label)}).focus()`,
+    );
+    await press(chrome, session, 'Enter', 13);
+  }
+  assert.deepEqual(await evaluate(chrome, session, 'window.mitterReleaseFixture.attentionActions()'), [
+    'bridge.pause',
+    'bridge.halt',
+  ]);
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await evaluate(chrome, session, 'window.mitterReleaseFixture.showTaskActivity()');
+    await waitFor(
+      chrome,
+      session,
+      `document.querySelector('.task-output').open && document.querySelector('.editor-tabs .selected').textContent.trim() === 'Activity'`,
+      'explicit activity selection reveals its output',
+    );
+    await evaluate(chrome, session, 'document.querySelector(".task-output > summary").focus()');
+    await press(chrome, session, 'Enter', 13);
+    await waitFor(
+      chrome,
+      session,
+      '!document.querySelector(".task-output").open',
+      'output disclosure closes',
+    );
+  }
+  await evaluate(chrome, session, 'window.mitterReleaseFixture.showTaskActivity()');
+  await waitFor(chrome, session, 'document.querySelector(".task-output").open', 'activity is open');
+  await evaluate(
+    chrome,
+    session,
+    `document.querySelector('.task-output > summary').click();
+      window.mitterReleaseFixture.showTaskActivity();`,
+  );
+  await waitFor(
+    chrome,
+    session,
+    'document.querySelector(".task-output").open',
+    'explicit activity selection wins before the queued native toggle event',
+  );
+
+  await evaluate(chrome, session, 'window.mitterReleaseFixture.mountTaskState("approval")');
+  for (const label of ['Reject', 'Approve']) {
+    await evaluate(
+      chrome,
+      session,
+      `[...document.querySelectorAll('.approval button')].find(button => button.textContent.trim() === ${JSON.stringify(label)}).focus()`,
+    );
+    await press(chrome, session, 'Enter', 13);
+  }
+  assert.deepEqual(await evaluate(chrome, session, 'window.mitterReleaseFixture.attentionActions()'), [
+    'worker.approve',
+    'worker.approve',
+  ]);
+}
+
 export async function checkAttentionLayout(chrome, session) {
   const deadline = Date.now() + 20000;
   const shortReason = 'The reply could not be confirmed. Check the linked chat before resending.';
@@ -338,6 +778,20 @@ export async function checkAttentionLayout(chrome, session) {
           session,
           `window.mitterReleaseFixture.mountAttention(${JSON.stringify(scenario.reason)}, ${scenario.receiving}, ${scenario.consoleOpen}, ${JSON.stringify(scenario.workerError)})`,
         );
+        assert.equal(
+          await evaluate(
+            chrome,
+            session,
+            `['.task-diagnostics', '.task-output'].every(selector => {
+              const panel = document.querySelector(selector);
+              return panel instanceof HTMLDetailsElement && !panel.open;
+            }) && document.querySelector('.task-state').getAttribute('aria-atomic') === 'true'`,
+          ),
+          true,
+          'Secondary task information starts closed, with one atomic status announcement.',
+        );
+        await click(chrome, session, '.task-diagnostics > summary');
+        await click(chrome, session, '.task-output > summary');
         const layout = assertAttentionLayout(
           await evaluate(
             chrome,
@@ -384,7 +838,7 @@ export async function checkAttentionLayout(chrome, session) {
               return {
                 viewport: { width: innerWidth, height: innerHeight },
                 project: { rect: rect(project), clientWidth: project.clientWidth, scrollWidth: project.scrollWidth },
-                status: rect(status), statusLabel: rect(required('.task-state .status')),
+                status: rect(status), statusLabel: rect(required('.task-status-heading')),
                 summary: rect(summary), summaryLines, reason: summary.textContent,
                 role: status.getAttribute('role'), live: status.getAttribute('aria-live'),
                 runner: rect(runner), runnerItems: items(runner),
@@ -403,12 +857,12 @@ export async function checkAttentionLayout(chrome, session) {
           'The complete reason must remain readable, byte for byte.',
         );
         assert.equal(layout.console !== null, scenario.consoleOpen);
-        let runnerLabels = ['Resend prompt…', 'Watching for reply', 'Stop', '3/15 turns', 'Open chat'];
-        let recoveryLabels = ['Use reply…', 'Show details', 'Copy diagnostics'];
-        let actions = ['resend', 'bridge.halt', 'bridge.openChat', 'use-reply', 'copy'];
+        let runnerLabels = ['Open chat', 'Use reply…', 'Resend prompt…', 'Stop'];
+        let recoveryLabels = ['Open console', 'Copy diagnostics'];
+        let actions = ['bridge.openChat', 'use-reply', 'resend', 'bridge.halt', 'copy'];
         if (scenario.receiving) {
-          runnerLabels = ['Receiving reply…', 'Stop', '3/15 turns', 'Open chat'];
-          recoveryLabels = ['Show details', 'Copy diagnostics'];
+          runnerLabels = ['Stop'];
+          recoveryLabels = ['Open chat', 'Open console', 'Copy diagnostics'];
           actions = ['bridge.halt', 'bridge.openChat', 'copy'];
         }
         assert.deepEqual(
@@ -467,8 +921,9 @@ export async function checkAttentionLayout(chrome, session) {
       }
     }
     checkDeadline();
+    await checkTaskStages(chrome, session);
     console.log(
-      'PASS: full task attention text and recovery controls at 690/360/320/290px, short heights and open Console.',
+      'PASS: task stages, keyboard actions, disclosures, full recovery text at 1024/690/360/320/290px and short heights.',
     );
   } finally {
     try {

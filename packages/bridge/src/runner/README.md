@@ -1,7 +1,6 @@
 # Bridge runner
 
-`../index.ts` is the public barrel. Existing transport, message-wire, progress,
-and chat-DOM module paths are unchanged.
+The extension uses `BridgeRunner` from `../index.ts` to send task prompts, verify replies and recover interrupted chats.
 
 - `bridge-runner.ts`: guarded asynchronous lifecycle, page/task ownership,
   durable-before-send checkpoints, host import/run ordering and recovery.
@@ -84,8 +83,30 @@ still-generating response from an unsupported layout. Fallback retains recognize
 history and message IDs, requires the latest known user to match, and rejects changed
 candidate sets or bodies after hashing. Busy alone, Copy code, or an exchange marker
 cannot erase unknown/intervening turns. Generation waits remain read-only and within
-the task budget; idle unreadable content still has a 12-second loading grace. Scan
-limits remain hard barriers.
+the task budget. Unclassified content without a full receipt and a single adjacent
+response still has a 12-second loading grace. Scan limits remain hard barriers.
+
+ChatGPT can change links and backticks when displaying a sent report. If a
+completed, task-linked reply follows that report, the reader can open the
+original message’s edit form, read its source, and cancel. Recovery requires a
+match against the entire composer text fingerprint saved before sending. The
+reader then rechecks the restored turn and reply before normal import. An
+existing draft or an ambiguous turn keeps recovery paused.
+
+Literal complete JSON fences, including the observed singly escaped Markdown
+fences, retain their original quoted source. Unreadable adjacent responses and
+duplicate sends can instead supply `replyRecovery`: a bounded observation that
+grants no reply role or import authority. Duplicate sends never select a reply.
+After 15 quiet seconds (two minutes for a streaming fragment), the runner verifies
+the exact saved receipt, current host ownership and a second live page read. It
+then sends the current report with a fresh exchange nonce and asks for a small
+inspection batch. Old replies remain unusable for the new exchange. Drafts,
+intervening human messages, changed routes and Stop still block the send.
+
+Automatic corrections share the saved two-request allowance per accepted batch
+and consume the ordinary turn/time budgets. Resume retains that allowance. An
+unreadable provider response cannot cause unlimited sends or replay an accepted
+batch; the host's envelope receipts continue to deduplicate local actions.
 
 Local execution uses a fresh validated native snapshot before consulting the chat.
 Approval, refusal, queued work and completion are handled there once. Only finished

@@ -4,7 +4,8 @@ import type { WorkflowFactory } from './types.js';
 
 export const TRANSITIONS: Record<WorkerState, WorkerState[]> = {
   idle: ['queued', 'planning', 'cancelled', 'paused'],
-  queued: ['planning', 'waiting_lock', 'executing', 'paused', 'cancelled', 'blocked'],
+  // Resume can drain a durably consumed batch without executing another action.
+  queued: ['planning', 'waiting_lock', 'executing', 'review', 'paused', 'cancelled', 'blocked'],
   planning: ['waiting_model', 'waiting_lock', 'executing', 'paused', 'blocked', 'cancelled'],
   waiting_model: ['waiting_lock', 'executing', 'paused', 'blocked', 'cancelled'],
   waiting_lock: ['executing', 'verifying', 'paused', 'blocked', 'cancelled'],
@@ -32,7 +33,7 @@ export const TRANSITIONS: Record<WorkerState, WorkerState[]> = {
     'blocked',
     'cancelled',
   ],
-  awaiting_approval: ['queued', 'planning', 'paused', 'blocked', 'cancelled'],
+  awaiting_approval: ['queued', 'planning', 'review', 'paused', 'blocked', 'cancelled'],
   paused: ['queued', 'planning', 'idle', 'blocked', 'cancelled'],
   review: ['queued', 'planning', 'complete', 'paused', 'cancelled'],
   blocked: ['queued', 'planning', 'paused', 'cancelled'],

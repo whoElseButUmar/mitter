@@ -238,6 +238,7 @@ test('tab roving focus survives reorders and resets at selection or focus bounda
   };
   const tabs = mountTabRow(root, options);
   const list = root.querySelector('.tabbar');
+  const close = root.querySelector('.close-active-tab');
   const [first, second] = root.querySelectorAll('[role=tab]');
   first.focus();
   await list.emit('keydown', { key: 'ArrowRight', target: first });
@@ -246,14 +247,13 @@ test('tab roving focus survives reorders and resets at selection or focus bounda
   assert.deepEqual(root.querySelectorAll('[role=tab]'), [second, first]);
   assert.equal(first.tabIndex, -1);
   assert.equal(second.tabIndex, 0);
-  assert.equal(first.parentElement.querySelector('.close-tab').tabIndex, 0);
-  assert.equal(second.parentElement.querySelector('.close-tab').tabIndex, -1);
+  assert.equal(close.getAttribute('aria-label'), 'Close Alpha tab');
 
   tabs.update({ ...options, selected: 'b' });
   assert.equal(document.activeElement, second);
   assert.equal(first.tabIndex, -1);
   assert.equal(second.tabIndex, 0);
-  assert.equal(second.parentElement.querySelector('.close-tab').tabIndex, 0);
+  assert.equal(close.getAttribute('aria-label'), 'Close Beta tab');
   const outside = document.createElement('input');
   root.append(outside);
   outside.focus();
@@ -267,6 +267,65 @@ test('tab roving focus survives reorders and resets at selection or focus bounda
   tabs.update({ ...options, items: [options.items[0]] });
   assert.equal(document.activeElement, first, 'Removing the focused tab recovers selected-tab focus');
   tabs.dispose();
+});
+
+test('closing the selected tab stays outside the tablist and restores focus after updates', async () => {
+  const { root, document } = domFixture();
+  const closed = [];
+  const options = {
+    kind: 'task',
+    items: [
+      { id: 'a', label: 'Alpha' },
+      { id: 'b', label: 'Beta' },
+    ],
+    selected: 'a',
+    canAdd: true,
+    addLabel: 'New task',
+    onSelect() {},
+    onAdd() {},
+    onClose: (id) => closed.push(id),
+    menuItems: () => [{ id: 'inspect', label: 'Inspect task', run() {} }],
+  };
+  const tabs = mountTabRow(root, options);
+  const list = root.querySelector('[role=tablist]');
+  const close = root.querySelector('.close-active-tab');
+  const add = root.querySelector('.add-tab');
+  const [first, second] = list.children;
+  assert.deepEqual(
+    list.children.map((child) => child.getAttribute('role')),
+    ['tab', 'tab'],
+  );
+  assert.equal(list.contains(close), false);
+  assert.equal(list.querySelector('.menu-popup'), null);
+  assert.equal(document.body.querySelectorAll('.menu-popup').length, 2);
+  assert.equal(close.getAttribute('aria-label'), 'Close Alpha tab');
+
+  tabs.update({ ...options, selected: 'b' });
+  assert.equal(close.getAttribute('aria-label'), 'Close Beta tab');
+  close.focus();
+  await close.emit('click');
+  assert.deepEqual(closed, ['b']);
+  assert.equal(document.activeElement, close, 'Wait for the host update before moving focus');
+  tabs.update({ ...options, items: [options.items[0]] });
+  assert.equal(document.activeElement, first);
+  assert.equal(second.isConnected, false);
+  assert.equal(close.getAttribute('aria-label'), 'Close Alpha tab');
+
+  close.focus();
+  await close.emit('click');
+  tabs.update({ ...options, items: [], selected: '' });
+  assert.deepEqual(closed, ['b', 'a']);
+  assert.equal(document.activeElement, add);
+  assert.equal(close.hidden, true);
+  assert.equal(list.hidden, true);
+  assert.equal(list.children.length, 0);
+  assert.equal(root.querySelector('.empty-tabs').hidden, false);
+
+  tabs.update({ ...options, onClose: undefined });
+  assert.equal(close.hidden, true);
+  assert.equal(list.hidden, false);
+  tabs.dispose();
+  assert.equal(close.listenerCount, 0);
 });
 
 test('library preserves local filters and observes mutated external options', async () => {
@@ -338,6 +397,53 @@ test('library preserves local filters and observes mutated external options', as
   library.dispose();
   assert.equal(document.listenerCount, 0);
   assert.ok(observers.every((observer) => observer.disconnected));
+});
+
+test('follow-up actions track running and disabled state without resetting the draft', () => {
+  const { root } = domFixture();
+  const options = {
+    workerId: 'a',
+    running: false,
+    send: async () => {},
+    steer: async () => {},
+  };
+  const composer = mountFollowupComposer(root, options);
+  const input = root.querySelector('textarea');
+  const footer = root.querySelector('.followup-footer');
+  const send = footer.querySelector('.primary');
+  const steer = footer.querySelector('.steer-button');
+  const hint = footer.querySelector('small');
+  composer.focus('Keep the current draft.');
+  assert.equal(steer.hidden, true);
+  assert.equal(hint.hidden, true);
+  assert.equal(send.textContent, 'Send');
+
+  composer.update({ ...options, running: true });
+  assert.equal(steer.hidden, false);
+  assert.equal(steer.textContent, 'Steer now');
+  assert.equal(steer.disabled, false);
+  assert.equal(hint.hidden, false);
+  assert.equal(send.textContent, 'Queue follow-up');
+
+  composer.update({ ...options, running: true, disabled: true });
+  assert.equal(input.disabled, true);
+  assert.equal(send.disabled, true);
+  assert.equal(steer.disabled, true);
+
+  composer.update({ ...options, disabled: true });
+  assert.equal(steer.hidden, true);
+  assert.equal(hint.hidden, true);
+  assert.equal(send.textContent, 'Send');
+  assert.equal(send.disabled, true);
+  assert.equal(input.disabled, true);
+  assert.equal(input.value, 'Keep the current draft.');
+
+  composer.update({ ...options, running: true });
+  assert.equal(steer.hidden, false);
+  assert.equal(steer.disabled, false);
+  assert.equal(send.disabled, false);
+  assert.equal(input.disabled, false);
+  composer.dispose();
 });
 
 for (const composer of ['draft', 'followup']) {

@@ -1,6 +1,7 @@
 import { parseRewriteRequest, structureLocally, type RewriteRequest } from '../../protocol/src/rewrite.js';
 import type { FollowupRequest } from '../../protocol/src/requests.js';
-import { createRewriteFields } from './forms/rewrite-fields.js';
+import { createRewritePanel } from './forms/rewrite-panel.js';
+import { rewriteTextSchema } from '../../protocol/src/schemas/rewrite.js';
 import { enhanceSelects } from './select.js';
 
 export type FollowupComposerOptions = {
@@ -50,60 +51,14 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
   const steer = document.createElement('button');
   steer.type = 'button';
   steer.className = 'steer-button';
-  steer.textContent = 'Steer';
+  steer.textContent = 'Steer now';
   steer.title = 'Stop the pending plan and use this instruction now. Completed work stays.';
-  const rewriteToggle = document.createElement('button');
-  rewriteToggle.type = 'button';
-  rewriteToggle.textContent = 'Rewrite…';
-  rewriteToggle.className = 'rewrite-toggle';
-  rewriteToggle.setAttribute('aria-expanded', 'false');
-  const panel = document.createElement('section');
-  panel.className = 'rewrite-panel';
-  panel.hidden = true;
-  panel.setAttribute('aria-label', 'Rewrite follow-up');
-  const fields = createRewriteFields(document);
-  const privacy = document.createElement('p');
-  privacy.className = 'muted small';
-  const preview = document.createElement('textarea');
-  preview.className = 'rewrite-preview';
-  preview.rows = 5;
-  preview.readOnly = true;
-  preview.hidden = true;
-  preview.setAttribute('aria-label', 'Rewrite preview');
-  const buttons = document.createElement('div');
-  buttons.className = 'button-row end';
-  const generate = document.createElement('button');
-  generate.type = 'button';
-  generate.textContent = 'Preview rewrite';
-  const apply = document.createElement('button');
-  apply.type = 'button';
-  apply.className = 'primary';
-  apply.textContent = 'Apply to draft';
-  apply.hidden = true;
-  const cancel = document.createElement('button');
-  cancel.type = 'button';
-  cancel.textContent = 'Cancel';
-  buttons.append(cancel, generate, apply);
-  panel.append(fields.fields, privacy, preview, buttons);
+  const controls = createRewritePanel(document, 'Rewrite follow-up', 'Cancel');
+  const { toggle: rewriteToggle, panel, preview, cancel, generate, apply } = controls;
   footer.append(hint, rewriteToggle, steer, send);
   form.append(label, panel, footer, status);
   root.append(form);
-  const selects = enhanceSelects(fields.fields);
-
-  function help(): void {
-    privacy.textContent =
-      'Adds a local instruction template, without an AI model or network request. ' +
-      'Your original wording is retained.';
-
-    if (fields.provider.value === 'chatgpt') {
-      privacy.textContent =
-        'Shares only this draft in a separate ChatGPT chat. ' +
-        'The result is a preview; nothing is executed.';
-    }
-  }
-
-  fields.provider.addEventListener('change', help);
-  help();
+  const selects = enhanceSelects(controls.fields);
 
   function update(next: FollowupComposerOptions): void {
     if (next.workerId !== options.workerId) {
@@ -118,7 +73,7 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
     options = next;
     input.disabled = !!next.disabled || busy;
     send.disabled = !!next.disabled || busy || rewriting;
-    steer.hidden = !next.steer;
+    steer.hidden = !next.running || !next.steer;
     steer.disabled = !!next.disabled || busy || rewriting;
     rewriteToggle.disabled = !!next.disabled || busy;
     generate.disabled = !!next.disabled || busy || rewriting;
@@ -136,13 +91,14 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
       send.textContent = 'Queue follow-up';
     }
 
-    hint.textContent = 'Same task and chat · up to 15 more turns';
+    hint.hidden = !next.running;
+    hint.textContent = '';
 
     if (next.running) {
       hint.textContent = 'Runs after the current work.';
 
       if (next.steer) {
-        hint.textContent = 'Queue later · Steer now';
+        hint.textContent = 'Queue waits. Steer changes the current plan.';
       }
     }
   }
@@ -191,8 +147,8 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
     try {
       const request = parseRewriteRequest({
         instruction: original,
-        mode: fields.mode.value,
-        provider: fields.provider.value,
+        mode: controls.mode.value,
+        provider: controls.provider.value,
       });
       let result: string | undefined;
 
@@ -206,12 +162,13 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
         return;
       }
 
-      if (typeof result !== 'string' || !result.trim() || result.length > 4000) {
+      const draft = rewriteTextSchema.safeParse(result);
+      if (!draft.success) {
         throw new Error('The rewrite did not return a valid draft.');
       }
 
-      previewText = result;
-      preview.value = result;
+      previewText = draft.data;
+      preview.value = previewText;
       preview.hidden = false;
       apply.hidden = false;
       status.textContent = 'Rewrite ready. Apply it to your draft, then Send when ready.';
@@ -337,7 +294,7 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
     dispose() {
       alive = false;
       abort?.abort();
-      fields.provider.removeEventListener('change', help);
+      controls.dispose();
       selects.dispose();
       form.removeEventListener('submit', submit);
       steer.removeEventListener('click', steerClick);

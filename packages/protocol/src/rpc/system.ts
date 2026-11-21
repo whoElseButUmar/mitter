@@ -92,7 +92,10 @@ export const folderPickerResultSchema = z
       .describe('A cancelled folder picker with no selected path.'),
     z
       .strictObject({
-        root: z.string().min(1).describe('The canonical host-checked absolute project folder selected.'),
+        root: z
+          .string()
+          .min(1)
+          .describe('The canonical host-checked absolute directory selected for the requested purpose.'),
         cancelled: z.literal(false).describe('The user selected a folder.'),
       })
       .describe('A selected and host-checked project folder.'),

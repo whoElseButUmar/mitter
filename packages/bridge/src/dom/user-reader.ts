@@ -1,7 +1,18 @@
-import { decodeRenderedMessage, decodeFlatRenderedMessages, messagePayload } from '../message-wire.js';
-import { contentHidden, htmlElements } from './page-elements.js';
+import {
+  decodeRenderedMessage,
+  decodeFlatRenderedMessages,
+  messagePayload,
+  unwrapMessage,
+} from '../message-wire.js';
+import { contentHidden, createVisibilityReader, htmlElements } from './page-elements.js';
+import { verifiedSentSource } from './session-state.js';
 import { headingRole, messageRole, roleSelector } from './transcript-discovery.js';
-import type { MessageDisclosure, ObservedTaskTurn, UserReadResult } from './types.js';
+import {
+  USER_READER_VERSION,
+  type MessageDisclosure,
+  type ObservedTaskTurn,
+  type UserReadResult,
+} from './types.js';
 
 /** innerText is a layout API: Chromium adds an extra newline around an empty
  * block after insertText. Serialize the editor's logical lines instead. This
@@ -92,9 +103,17 @@ export function messageDisclosure(message: HTMLElement, bounded = false): Messag
       throw new TypeError('A disclosure control did not clone as an HTML element.');
     }
     labelCopy.querySelectorAll('svg,[aria-hidden="true"]').forEach((icon) => icon.remove());
-    const label = (element.getAttribute('aria-label') || labelCopy.textContent || '')
-      .replace(/\s+/g, ' ')
-      .trim();
+    const visibleLabel = (labelCopy.textContent || '').replace(/\s+/g, ' ').trim();
+    // Some provider buttons retain aria-label="Show more" after their visible
+    // label becomes "Show less". Never toggle that expanded message closed.
+    if (
+      /^(?:show less|read less|collapse(?: (?:message|text))?|afficher moins|voir moins|mostrar menos|weniger anzeigen|عرض أقل)(?:[.\u2026]*)$/i.test(
+        visibleLabel,
+      )
+    ) {
+      return false;
+    }
+    const label = (element.getAttribute('aria-label') || visibleLabel).replace(/\s+/g, ' ').trim();
     if (!disclosureLabelPattern.test(label)) {
       return false;
     }
@@ -118,21 +137,35 @@ export function messageDisclosure(message: HTMLElement, bounded = false): Messag
 }
 
 export function readUserMessageVariants(message: HTMLElement): UserReadResult {
-  const texts = [readUserMessage(message), readUserMessage(message, true)];
+  // Both serializations restore their temporary payload marker. Sanitize the
+  // live subtree once, then reuse that detached snapshot synchronously.
+  const messageClone = userContentClone(message);
+  const texts = [readUserContent(messageClone), readUserContent(messageClone, true)];
+  const inlineFrame = readInlineCodeFrame(messageClone);
+  if (inlineFrame !== undefined) {
+    texts.push(inlineFrame);
+  }
+  const flatTexts: string[] = [];
   // A literal bubble need not use semantic PRE/CODE tags. Read the whole
   // sanitized bubble, never just a matching marker or a convenient substring.
   // Candidates are inert until the runner verifies the entire saved receipt.
-  const messageClone = userContentClone(message);
   if (!messageClone.matches('pre,code') && !messageClone.querySelector('pre,code')) {
     for (const full of [editableText(messageClone), messageClone.textContent || '']) {
-      texts.push(...decodeFlatRenderedMessages(full));
+      flatTexts.push(...decodeFlatRenderedMessages(full));
     }
+  }
+  // The paragraph reader may rewrite this detached snapshot. Run it last,
+  // preserving the priority of paragraph candidates over flat fallbacks.
+  texts.push(...serializedParagraphCandidates(messageClone), ...flatTexts);
+  const verified = verifiedSentSource(message);
+  if (verified !== undefined) {
+    texts.unshift(verified);
   }
   const uniqueTexts = [...new Set(texts)].slice(0, 6);
   return {
     texts: uniqueTexts,
     stats: {
-      serializer: 'user-turn/6',
+      serializer: USER_READER_VERSION,
       roleElements: 1 + message.querySelectorAll('[data-message-author-role]').length,
       preElements: message.querySelectorAll('pre').length,
       codeElements: message.querySelectorAll('code').length,
@@ -143,11 +176,152 @@ export function readUserMessageVariants(message: HTMLElement): UserReadResult {
   };
 }
 
+// ChatGPT sometimes keeps the literal outer fence but renders backticked
+// snippets in the payload as inline CODE. The runner checks the full receipt.
+function readInlineCodeFrame(snapshot: HTMLElement): string | undefined {
+  if (!snapshot.matches('.whitespace-pre-wrap') || !snapshot.querySelector(':scope > code')) {
+    return;
+  }
+  let frame = '';
+  for (const child of snapshot.childNodes) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      frame += child.nodeValue || '';
+    } else if (child instanceof HTMLElement && child.tagName === 'CODE' && child.childElementCount === 0) {
+      frame += '`' + child.textContent + '`';
+    } else {
+      return;
+    }
+    if (frame.length > 160_000) {
+      return;
+    }
+  }
+  if (unwrapMessage(frame)) {
+    return frame;
+  }
+  return undefined;
+}
+
+// ChatGPT mixes plain span tokens with raw text in serialized JSON reports. A
+// quote escape rendered as a span is literal. In raw text the renderer can
+// double the entire run of backslashes before a quote. Keep both readings.
+function readEscapedReportParagraph(paragraph: HTMLParagraphElement, literal: string): string {
+  if (literal.length > 160_000 || !/\\\\(?=")/.test(literal)) {
+    return literal;
+  }
+  const parts = Array.from(paragraph.children);
+  if (
+    !parts.every(
+      (part) => part.matches('br,span') && part.attributes.length === 0 && !part.childElementCount,
+    ) ||
+    !parts.some(
+      (part) =>
+        part.textContent === '\\' &&
+        part.nextSibling instanceof HTMLSpanElement &&
+        part.nextSibling.textContent?.startsWith('"'),
+    )
+  ) {
+    return literal;
+  }
+  let changed = false;
+  for (const node of paragraph.childNodes) {
+    if (node instanceof Text) {
+      const decoded = node.data.replace(/(?<!\\)(?:\\\\)+(?=")/g, (run) => run.slice(0, run.length / 2));
+      if (decoded !== node.data) {
+        node.data = decoded;
+        changed = true;
+      }
+    }
+  }
+  if (!changed) {
+    return literal;
+  }
+  const candidate = editableText(paragraph);
+  const previous = literal.split('\n');
+  const lines = candidate.split('\n');
+  for (const [i, line] of lines.entries()) {
+    if (line === previous[i]) {
+      continue;
+    }
+    if (!line.startsWith('{"ok":') && !line.startsWith('{"action":')) {
+      return literal;
+    }
+    try {
+      JSON.parse(line);
+    } catch {
+      return literal;
+    }
+  }
+  return candidate;
+}
+
+/** This provider renderer stores paragraph breaks separately from its P nodes.
+ * Read those explicit boundaries without adding another block separator. A
+ * complete saved receipt must still match; source text is never unescaped or
+ * rewritten. Composer serialization never uses this path. */
+function serializedParagraphCandidates(snapshot: HTMLElement): string[] {
+  const selector = '[data-markdown-text-tone="user-message"].rich-text-serialized-paragraphs';
+  const renderers = htmlElements(snapshot, selector);
+  if (snapshot.matches(selector)) {
+    renderers.unshift(snapshot);
+  }
+  const renderer = renderers[0];
+  if (renderers.length !== 1 || !renderer) {
+    return [];
+  }
+
+  let literal = '';
+  let report = '';
+  let paragraphs = 0;
+  let blankLines = 0;
+  for (const child of Array.from(renderer.childNodes)) {
+    if (child instanceof HTMLParagraphElement) {
+      if (paragraphs > 0) {
+        literal += '\n';
+        report += '\n';
+      }
+      const text = editableText(child);
+      literal += text;
+      report += readEscapedReportParagraph(child, text);
+      paragraphs++;
+      continue;
+    }
+    if (
+      child instanceof HTMLSpanElement &&
+      child.matches('[data-markdown-copy="blank-lines"]') &&
+      child.children.length === 0 &&
+      /^\n+$/.test(child.textContent || '')
+    ) {
+      literal += child.textContent;
+      report += child.textContent;
+      blankLines++;
+      continue;
+    }
+    // Unknown content must remain visible in the ordinary reading. Do not
+    // discard prose, unexpected nodes or whitespace to manufacture a match.
+    return [];
+  }
+  if (paragraphs < 2 || blankLines === 0) {
+    return [];
+  }
+
+  renderer.replaceChildren(document.createTextNode(literal));
+  const candidates = [editableText(snapshot)];
+  if (report !== literal) {
+    renderer.replaceChildren(document.createTextNode(report));
+    const candidate = editableText(snapshot);
+    if (unwrapMessage(candidate)?.payload.includes('BEGIN UNTRUSTED MITTER REPORT\n')) {
+      candidates.push(candidate);
+    }
+  }
+  return candidates;
+}
+
 function userContentClone(message: HTMLElement): HTMLElement {
+  const isHidden = createVisibilityReader();
   // Prefer the bubble's actual text over the role wrapper containing Edit/Copy,
   // branch controls and accessibility-only labels.
   const contentBodies = htmlElements(message, '[data-message-content],.whitespace-pre-wrap,.markdown').filter(
-    (element) => !contentHidden(element),
+    (element) => !isHidden(element),
   );
   // .whitespace-pre-wrap is also used INSIDE a fenced code renderer. A match
   // is not necessarily the message bubble. Prefer it only when no substantive
@@ -161,7 +335,7 @@ function userContentClone(message: HTMLElement): HTMLElement {
       if (
         candidate.contains(textNode) ||
         !parent ||
-        contentHidden(parent) ||
+        isHidden(parent) ||
         parent.closest(
           'button,[role="button"],summary,svg,script,style,template,[data-message-toolbar],[data-mitter-ui]',
         )
@@ -192,7 +366,7 @@ function userContentClone(message: HTMLElement): HTMLElement {
       continue;
     }
     if (
-      contentHidden(element) ||
+      isHidden(element) ||
       element.matches(
         'button,[role="button"],summary,svg,script,style,template,[data-message-toolbar],[data-mitter-ui]',
       ) ||
@@ -205,7 +379,10 @@ function userContentClone(message: HTMLElement): HTMLElement {
 }
 
 export function readUserMessage(message: HTMLElement, logicalCodeLines = false): string {
-  const messageClone = userContentClone(message);
+  return readUserContent(userContentClone(message), logicalCodeLines);
+}
+
+function readUserContent(messageClone: HTMLElement, logicalCodeLines = false): string {
   const preElements: HTMLElement[] = [];
   if (messageClone.tagName === 'PRE') {
     preElements.push(messageClone);

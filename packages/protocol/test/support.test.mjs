@@ -6,7 +6,31 @@ import { followupRequestSchema } from '../src/schemas/requests.ts';
 import { DEFAULT_SETTINGS, parseModelSettings, restoreModelSettings } from '../src/model-settings.ts';
 import { parseFollowup, parseSelection, summarizeFollowup } from '../src/requests.ts';
 import { parseRewriteReply, parseRewriteRequest, rewritePrompt, structureLocally } from '../src/rewrite.ts';
-import { buildTaskBrief, displayTaskName, suggestedTaskName, taskBriefText } from '../src/task-brief.ts';
+import {
+  buildTaskBrief,
+  displayTaskName,
+  isProjectLaunchRequest,
+  suggestedTaskName,
+  taskBriefText,
+} from '../src/task-brief.ts';
+
+test('only an explicit framework launch can skip the ordinary coding and preview flow', () => {
+  for (const goal of [
+    'Install dependencies with pnpm, start the dev server, and open the app preview.',
+    'Run pnpm dev and open it in Chrome, please.',
+    'Start the Vite dev server.',
+  ]) {
+    assert.equal(isProjectLaunchRequest(goal), true, goal);
+  }
+  for (const goal of [
+    'Open the app',
+    'Run this project',
+    'Install dependencies with pnpm',
+    'Start the dev server and fix the build',
+  ]) {
+    assert.equal(isProjectLaunchRequest(goal), false, goal);
+  }
+});
 
 const selection = {
   path: 'a.ts',
@@ -226,4 +250,26 @@ test('task shaping remains deterministic, subordinate and display-only', () => {
   );
   assert.ok(changed.approach.some((value) => value.includes('Do not rebuild unrelated features.')));
   assert.ok(taskBriefText('build a game').includes('No browser-testing tool is implied by this brief.'));
+});
+
+test('the requested subject determines the task title and game guidance', () => {
+  const general = buildTaskBrief('Write a test');
+  for (const goal of [
+    'Fix a typo in the color memory game README',
+    'Write unit tests for the tic-tac-toe CLI parser',
+    'Build a database memory sequence analyzer for game telemetry',
+    'Build a calendar.\nUse the palette from our skeuomorphic tic-tac-toe game.',
+  ]) {
+    const brief = buildTaskBrief(goal);
+    assert.equal(brief.kind, 'general', goal);
+    assert.deepEqual(brief.approach, general.approach, goal);
+    assert.deepEqual(brief.quality, general.quality, goal);
+    assert.deepEqual(brief.defaults, general.defaults, goal);
+    assert.doesNotMatch(brief.title, /^(Color Memory|Tic-tac-toe)$/);
+  }
+
+  assert.equal(buildTaskBrief('Please build a classic tic-tac-toe game with sound').kind, 'tic-tac-toe');
+  assert.equal(buildTaskBrief('Make a colour memory game for two players').kind, 'color-memory');
+  assert.equal(buildTaskBrief('Build a memory game with matching cards').kind, 'general');
+  assert.deepEqual(buildTaskBrief('Fix the color memory game').approach, general.approach);
 });

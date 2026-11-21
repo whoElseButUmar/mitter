@@ -125,6 +125,25 @@ export function launcherSource(options) {
   );
 }
 
+/** The terminal client preserves cwd and literal arguments; it never launches a second host. */
+export function cliLauncherSource({ platform, nodeExecutable, cliScript, dataDirectory }) {
+  if (platform === 'win32') {
+    if (/[\r\n%"]/.test(nodeExecutable + cliScript + dataDirectory)) {
+      throw new Error('For Windows registration, use an installation path without %, quotes, or newlines.');
+    }
+
+    return (
+      '@echo off\r\n' + `set "MITTER_HOME=${dataDirectory}"\r\n` + `"${nodeExecutable}" "${cliScript}" %*\r\n`
+    );
+  }
+
+  return (
+    '#!/bin/sh\n' +
+    `export MITTER_HOME=${quotePosix(dataDirectory)}\n` +
+    `exec ${quotePosix(nodeExecutable)} ${quotePosix(cliScript)} "$@"\n`
+  );
+}
+
 export function registrationManifest(identity, launcher) {
   const parsedIdentity = extensionIdentitySchema.parse(identity);
 

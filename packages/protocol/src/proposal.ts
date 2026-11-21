@@ -3,7 +3,10 @@
 import { object, only, parseSchema } from './helpers.js';
 import { parseAction } from './parsing/actions.js';
 import { parseEnvelopeWith } from './parsing/envelopes.js';
+import { exceedsHandoffBytes } from './reply-json.js';
 import {
+  bundledWriteSchema,
+  expectedHashSchema,
   readReferenceSchema,
   referencedWriteSchema,
   referencedReplaceSchema,
@@ -41,26 +44,37 @@ export function parseProposalAction(value: unknown): ProposalAction {
     });
   }
 
-  if (action.base === undefined) {
-    if (action.expectedHash === undefined) {
-      throw new ReplyValidationError({
-        stage: 'schema',
-        code: 'BASE_REQUIRED',
-        field: 'base',
-        message:
-          'An edit needs a recorded read base or an exact expectedHash. ' +
-          'No default/current version is assumed.',
-      });
-    }
-
-    return parseAction(action);
+  if (action.base === undefined && action.expectedHash === undefined) {
+    throw new ReplyValidationError({
+      stage: 'schema',
+      code: 'BASE_REQUIRED',
+      field: 'base',
+      message:
+        'An edit needs a recorded read base or an exact expectedHash. ' +
+        'No default/current version is assumed.',
+    });
   }
 
   if (
-    (!isReadReference(action.base) && action.base !== 'missing') ||
-    (action.type === 'replace' && action.base === 'missing')
+    action.base !== undefined &&
+    ((!isReadReference(action.base) && action.base !== 'missing') ||
+      (action.type === 'replace' && action.base === 'missing'))
   ) {
     throw editBaseError('base');
+  }
+
+  if (action.type === 'write' && Object.hasOwn(action, 'asset')) {
+    if (Object.hasOwn(action, 'content')) {
+      throw new Error('A write must supply either a bundled asset or file content.');
+    }
+    if (action.expectedHash !== undefined && !expectedHashSchema.safeParse(action.expectedHash).success) {
+      throw editBaseError('expectedHash');
+    }
+    return parseSchema(bundledWriteSchema, action);
+  }
+
+  if (action.base === undefined) {
+    return parseAction(action);
   }
 
   if (action.type === 'write') {
@@ -70,6 +84,16 @@ export function parseProposalAction(value: unknown): ProposalAction {
 
   only(action, Object.keys(referencedReplaceSchema.shape));
   return parseSchema(referencedReplaceSchema, action);
+}
+
+export function checkProposalSize(proposal: { actions: ProposalAction[]; summary: string }): void {
+  if (exceedsHandoffBytes(JSON.stringify(proposal))) {
+    throw new ReplyValidationError({
+      stage: 'schema',
+      code: 'PROPOSAL_TOO_LARGE',
+      message: 'The expanded reply exceeds 400,000 UTF-8 bytes. Split the writes across smaller batches.',
+    });
+  }
 }
 
 export function parseProposalEnvelope(input: string): ProposalEnvelope {
@@ -87,5 +111,6 @@ export function parseProposalEnvelope(input: string): ProposalEnvelope {
     }
   }
 
+  checkProposalSize(envelope);
   return envelope;
 }

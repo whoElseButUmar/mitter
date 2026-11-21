@@ -1,14 +1,16 @@
 import { z } from 'zod';
 import { object, only, parseChecks, text } from '../../../../../packages/protocol/src/index.js';
-import { parseProposalAction, proposalActionSchema } from '../../../../../packages/protocol/src/proposal.js';
+import {
+  checkProposalSize,
+  parseProposalAction,
+  proposalActionSchema,
+} from '../../../../../packages/protocol/src/proposal.js';
 import { parseSchema } from '../../../../../packages/protocol/src/helpers.js';
 
 import { textSchema } from '../../../../../packages/protocol/src/schemas/primitives.js';
 import {
   workerCreationSchema,
   optionalRpcFlagSchema,
-  browsePathSchema,
-  promptKindSchema,
   handoffTextSchema,
 } from '../../../../../packages/protocol/src/rpc.js';
 import type { WorkerCreation } from '../../../../../packages/protocol/src/rpc.js';
@@ -52,7 +54,11 @@ export function parseLocalDraft(value: unknown): LocalProposalDraft {
 
   return {
     actions,
-    readSummary: () => parseSchema(localProposalSchema.shape.summary, summary),
+    readSummary: () => {
+      const validated = parseSchema(localProposalSchema.shape.summary, summary);
+      checkProposalSize({ actions, summary: validated });
+      return validated;
+    },
   };
 }
 
@@ -78,7 +84,7 @@ export function parseWorkerCreation(value: unknown): WorkerCreation {
     throw new Error('Choose handoff or local mode.');
   }
 
-  const goal = parseSchema(workerCreationSchema.shape.goal, params.goal).trim();
+  const goal = parseSchema(workerCreationSchema.shape.goal, params.goal);
   let name: string;
 
   if (params.name === undefined || (typeof params.name === 'string' && !params.name.trim())) {
@@ -110,26 +116,6 @@ export function parseOptionalFlag(value: unknown, label: string): boolean | unde
 
   if (!parsed.success) {
     throw new Error('Invalid ' + label + '. Use true or false.', { cause: parsed.error });
-  }
-
-  return parsed.data;
-}
-
-export function parseBrowsePath(value: unknown): string {
-  const parsed = browsePathSchema.safeParse(value);
-
-  if (!parsed.success) {
-    throw new Error('Invalid browse path. Use a relative project path.', { cause: parsed.error });
-  }
-
-  return parsed.data;
-}
-
-export function parsePromptKind(value: unknown): z.infer<typeof promptKindSchema> {
-  const parsed = promptKindSchema.safeParse(value);
-
-  if (!parsed.success) {
-    throw new Error('Choose bootstrap, review, fix or next for the prompt.', { cause: parsed.error });
   }
 
   return parsed.data;

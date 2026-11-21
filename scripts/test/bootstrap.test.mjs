@@ -61,6 +61,7 @@ async function recordedSetupFixture(context) {
     recorder,
     'import { appendFileSync } from "node:fs";\n' +
       'appendFileSync("commands.jsonl", JSON.stringify(process.argv.slice(2)) + "\\n");\n' +
+      'appendFileSync("build-consent.txt", String(process.env.PNPM_CONFIG_STRICT_DEP_BUILDS) + "\\n");\n' +
       'if (process.env.MITTER_FIXTURE_NETWORK_BLOCKED === "1") {\n' +
       '  console.error("fixture network disabled"); process.exitCode = 1;\n' +
       '}\n',
@@ -89,6 +90,7 @@ async function recordedSetupFixture(context) {
     PATH: bin + path.delimiter + (process.env.PATH ?? ''),
     CI: 'true',
     MITTER_FIXTURE_NETWORK_BLOCKED: '',
+    PNPM_CONFIG_STRICT_DEP_BUILDS: 'false',
   };
 
   return { directory, environment, manager };
@@ -146,16 +148,18 @@ test('bootstrap model runtime guards validate records, names and exact version p
   }
 });
 
-test('setup flags and Node minimum preserve their existing behavior', () => {
+test('setup flags require Node 26 and keep build-only installation separate', () => {
   assert.deepEqual(parseSetupArguments([]), {
     buildOnly: false,
     chromium: false,
     help: false,
+    destination: undefined,
   });
   assert.deepEqual(parseSetupArguments(['--build-only', '--chromium', '--help']), {
     buildOnly: true,
     chromium: true,
     help: true,
+    destination: undefined,
   });
 
   for (const args of [['--help', '--unknown'], ['--chromium', '--chromium'], ['--portable']]) {
@@ -165,8 +169,8 @@ test('setup flags and Node minimum preserve their existing behavior', () => {
   }
 
   assert.equal(supportsSetupNode('22.15.0'), false);
-  assert.equal(supportsSetupNode('22.16.0'), true);
-  assert.equal(supportsSetupNode('23.0.0'), true);
+  assert.equal(supportsSetupNode('22.16.0'), false);
+  assert.equal(supportsSetupNode('26.0.0'), true);
   assert.equal(supportsSetupNode('21.99.0'), false);
   assert.equal(supportsSetupNode('invalid'), false);
 });
@@ -251,11 +255,11 @@ test('fresh setup does not require a committed lockfile and skips registration i
 
   assert.deepEqual(commands, [
     ['--yes', fixture.manager, 'install', '--no-frozen-lockfile'],
-    ['--yes', fixture.manager, 'approve-builds'],
     ['--yes', fixture.manager, 'build'],
     ['terminal', '--repair'],
   ]);
   assert.deepEqual(await readFile(manifestFile), originalManifest);
+  assert.equal(await readFile(path.join(fixture.directory, 'build-consent.txt'), 'utf8'), 'true\ntrue\n');
 });
 
 test('disabled setup network stops before build, repair or registration', async (context) => {

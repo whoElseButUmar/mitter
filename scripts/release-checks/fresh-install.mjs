@@ -1,6 +1,17 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFile, copyFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import {
+  appendFile,
+  copyFile,
+  cp,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -87,13 +98,37 @@ export function freshInstallEnvironment(work, inherited = process.env) {
   });
 }
 
+async function sourceIdentity(source) {
+  let ancestor = path.resolve(source);
+  const missing = [];
+
+  for (;;) {
+    const existing = await lstat(ancestor).catch((error) => {
+      if (!hasErrorCode(error, 'ENOENT')) {
+        throw error;
+      }
+      return undefined;
+    });
+
+    if (existing !== undefined) {
+      // Resolve existing ancestors even when the proposed source does not exist yet.
+      // A dangling symlink fails here instead of being treated as a missing directory.
+      return path.join(await realpath(ancestor), ...missing);
+    }
+
+    missing.unshift(path.basename(ancestor));
+    ancestor = path.dirname(ancestor);
+  }
+}
+
 async function freshInstallDirectory(source, directory) {
   const temporary = await ownedTemporaryDirectory(path.resolve(directory));
   const work = path.join(temporary, 'work');
+  const canonicalSource = await sourceIdentity(source);
 
   for (const [parent, child] of [
-    [source, work],
-    [work, source],
+    [canonicalSource, work],
+    [work, canonicalSource],
   ]) {
     const relative = path.relative(parent, child);
 

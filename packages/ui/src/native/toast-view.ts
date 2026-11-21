@@ -1,5 +1,6 @@
 import { isElement, isHTMLElement, isNode, requireWindow } from '../dom/elements.js';
-import { ToastCenter, type ToastKind } from './toast-center.js';
+import { ToastCenter } from './toast-center.js';
+import { createIcon } from '../icons.js';
 
 type ToastCard = {
   node: HTMLElement;
@@ -51,32 +52,6 @@ export function mountToasts(document: Document, center: ToastCenter): () => void
   });
   document.addEventListener('pointercancel', clearHover, true);
   window.addEventListener('blur', clearHover);
-
-  function icon(kind: ToastKind): SVGSVGElement {
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 24 24');
-    svg.setAttribute('aria-hidden', 'true');
-    svg.setAttribute('fill', 'none');
-    svg.setAttribute('stroke', 'currentColor');
-    svg.setAttribute('stroke-width', '1.8');
-    const circle = document.createElementNS(svg.namespaceURI, 'circle');
-    circle.setAttribute('cx', '12');
-    circle.setAttribute('cy', '12');
-    circle.setAttribute('r', '9');
-    svg.append(circle);
-    const path = document.createElementNS(svg.namespaceURI, 'path');
-    let shape = 'M12 7v6m0 3v1';
-
-    if (kind === 'success') {
-      shape = 'm7.5 12 3 3 6-6';
-    } else if (kind === 'error') {
-      shape = 'm9 9 6 6m0-6-6 6';
-    }
-
-    path.setAttribute('d', shape);
-    svg.append(path);
-    return svg;
-  }
 
   const relocate = () => {
     const dialogs = Array.from(document.querySelectorAll('dialog[open]'));
@@ -150,7 +125,7 @@ export function mountToasts(document: Document, center: ToastCenter): () => void
         close.className = 'miter-toast-close';
         close.setAttribute('aria-label', 'Dismiss notification');
         close.title = 'Dismiss notification';
-        close.textContent = '×';
+        close.append(createIcon(document, 'close'));
         close.onclick = () => center.dismiss(entry.id);
         node.append(text, close);
         node.onpointerenter = () => hover(entry.id, true);
@@ -181,7 +156,7 @@ export function mountToasts(document: Document, center: ToastCenter): () => void
 
       if (card.node.dataset.kind !== entry.kind) {
         card.node.dataset.kind = entry.kind;
-        card.badge.replaceChildren(icon(entry.kind));
+        card.badge.replaceChildren(createIcon(document, entry.kind));
       }
 
       if (card.message.textContent !== entry.message) {

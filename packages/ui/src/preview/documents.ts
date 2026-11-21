@@ -248,10 +248,9 @@ export async function htmlDocument(
     style.textContent = await css(style.textContent || '', asset.path);
   }
 
-  // Modules using imports/fetch and apps needing a server remain desktop-run workflows.
   if (document.querySelector('script[type="module"]')) {
     warnings.push(
-      'Module imports and network requests are disabled; use a local dev server for bundled apps.',
+      'Module imports and network requests need the app server. In the completed task, choose Run, then Open app in Terminal.',
     );
   }
 

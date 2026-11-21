@@ -1,6 +1,6 @@
 import { chatDom, clearChatDomState } from './chat-dom.js';
 import { retireChatDomSession } from './dom/session-state.js';
-import type { ChatView } from './dom/types.js';
+import { PAGE_READER_REVISION, type ChatView } from './dom/types.js';
 import {
   PAGE_CHANNEL,
   PAGE_READER,
@@ -147,6 +147,7 @@ export function installPageEndpoint(runtime: PageRuntime): void {
         value: {
           version: PAGE_CHANNEL,
           reader: PAGE_READER,
+          readerRevision: PAGE_READER_REVISION,
           instanceId,
           url: location.origin + location.pathname,
           readyState: document.readyState,
@@ -184,7 +185,11 @@ export function installPageEndpoint(runtime: PageRuntime): void {
 
     const perform = async (): Promise<PageReply> => {
       try {
-        const changesComposer = action.op === 'prepare' || action.op === 'commit' || action.op === 'send';
+        const changesComposer =
+          action.op === 'prepare' ||
+          action.op === 'commit' ||
+          action.op === 'send' ||
+          action.op === 'clear_draft';
 
         if (changesComposer) {
           if (composerMutation) {

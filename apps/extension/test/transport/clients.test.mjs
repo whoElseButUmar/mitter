@@ -1,18 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
+import { APP_VERSION } from '../../../../packages/protocol/src/index.ts';
 import { HostClient } from '../../src/client.ts';
 import { FilePreviewClient } from '../../src/file-preview-client.ts';
 import { TerminalClient } from '../../src/terminal-client.ts';
-import { mockPort, snapshot, assetChunk, terminalInfo, settle } from './chrome-mock.mjs';
+import { mockPort, snapshot, assetChunk, terminalInfo, settle, answerViewHandshake } from './chrome-mock.mjs';
 
-function runtime(context, configurePort = () => {}) {
+function runtime(context, configurePort = () => {}, handshake = true) {
   const ports = [];
   context.mock.timers.enable({ apis: ['setTimeout'] });
   globalThis.chrome = {
     runtime: {
       connect({ name }) {
         const port = mockPort(name);
+        if (name === 'mitter-ui' && handshake) {
+          answerViewHandshake(port);
+        }
         configurePort(port, ports.length);
         ports.push(port);
         return port;
@@ -395,7 +399,7 @@ test('HostClient routes validated messages once, preserving heartbeat and event 
   const port = ports[0];
   port.onMessage.emit({ event: 'connection', connected: false, error: 'Unavailable' });
   port.onMessage.emit({ event: 'workspaceError', error: 'Not saved' });
-  assert.deepEqual(connections, [[false, 'Unavailable']]);
+  assert.deepEqual(connections, [[false], [false, 'Unavailable']]);
   assert.deepEqual(auxiliary, [{ event: 'workspaceError', error: 'Not saved' }]);
 
   const pending = client.request('worker.prompt', { workerId: 'worker' }, z.string());
@@ -413,9 +417,157 @@ test('HostClient routes validated messages once, preserving heartbeat and event 
     result: 'not a response',
   });
   assert.equal(snapshots.length, 1);
-  assert.equal(connections.length, 2);
+  assert.equal(connections.length, 3);
   port.onMessage.emit({ id: requestId, ok: true, result: 'exact response' });
   assert.equal(await pending, 'exact response');
+});
+
+test('HostClient waits for its exact background version challenge before sending initial reads', async (context) => {
+  const ports = runtime(context, () => {}, false);
+  const { client, events } = clientCase('host');
+  context.after(() => client.close());
+  const reading = client.request('worker.prompt', { workerId: 'worker' });
+  const port = ports[0];
+  const hello = port.messages[0];
+  assert.deepEqual(hello, { type: 'hello', id: hello.id, version: APP_VERSION });
+  port.onMessage.emit({ type: 'hello', id: 'wrong-nonce', version: APP_VERSION });
+  port.onMessage.emit({ event: 'snapshot', data: snapshot });
+  port.onMessage.emit({ event: 'connection', connected: true });
+  await settle();
+  assert.equal(port.messages.length, 1);
+  assert.deepEqual(events.snapshots, []);
+  assert.deepEqual(events.connections, [[false]]);
+
+  port.onMessage.emit({ type: 'hello', id: hello.id, version: APP_VERSION });
+  await settle();
+  assert.equal(port.messages.length, 2);
+  assert.equal(port.messages[1].method, 'worker.prompt');
+  assert.equal(
+    events.connections.some(([connected]) => connected),
+    false,
+  );
+  port.onMessage.emit({ event: 'snapshot', data: snapshot });
+  assert.deepEqual(events.connections.at(-1), [true, undefined]);
+  port.onMessage.emit({ id: port.messages[1].id, ok: true, result: 'Fresh prompt' });
+  assert.equal(await reading, 'Fresh prompt');
+});
+
+test('HostClient keeps a native version mismatch after a matching background handshake', (context) => {
+  const ports = runtime(context);
+  const { client, events } = clientCase('host');
+  context.after(() => client.close());
+  client.connect();
+  const port = ports[0];
+  port.onMessage.emit({
+    event: 'snapshot',
+    data: { ...snapshot, runtime: { ...snapshot.runtime, version: 'older-native' } },
+  });
+  port.onMessage.emit({ event: 'connection', connected: true });
+  assert.equal(
+    events.connections.some(([connected]) => connected),
+    false,
+  );
+  assert.match(events.connections.at(-1)[1], /matching local host/);
+});
+
+test('HostClient rejects a different background version without sending or replaying RPC', async (context) => {
+  const ports = runtime(context, () => {}, false);
+  const { client, events } = clientCase('host');
+  context.after(() => client.close());
+  const request = client.request('project.create', {
+    parentRoot: '/projects',
+    folderName: 'trial',
+    name: 'Trial',
+  });
+  const rejected = assert.rejects(
+    request,
+    /background version older-background.*chrome:\/\/extensions.*No operation was sent/,
+  );
+  const port = ports[0];
+  port.onMessage.emit({ type: 'hello', id: port.messages[0].id, version: 'older-background' });
+  await rejected;
+  port.onMessage.emit({ event: 'snapshot', data: snapshot });
+  port.onMessage.emit({ event: 'connection', connected: true });
+  context.mock.timers.tick(180000);
+  assert.equal(ports.length, 1);
+  assert.equal(port.messages.length, 1);
+  assert.equal(
+    events.connections.some(([connected]) => connected),
+    false,
+  );
+  await assert.rejects(client.request('worker.prompt', { workerId: 'worker' }), /Reload on Miter/);
+  assert.equal(port.messages.length, 1);
+});
+
+test('HostClient reports an older background without handshake support and ordinary reconnect recovers', async (context) => {
+  const ports = runtime(context, () => {}, false);
+  const { client, events } = clientCase('host');
+  context.after(() => client.close());
+  const request = client.request('worker.prompt', { workerId: 'worker' });
+  const rejected = assert.rejects(
+    request,
+    /background did not answer.*Reconnect to try again.*Reload on Miter/,
+  );
+  const old = ports[0];
+  old.onMessage.emit({ type: 'pong', id: old.messages[0].id });
+  old.onMessage.emit({ event: 'snapshot', data: snapshot });
+  context.mock.timers.tick(5000);
+  await rejected;
+  assert.equal(old.messages.length, 1);
+  assert.match(events.connections.at(-1)[1], /Reloading only this tab does not update the background/);
+  context.mock.timers.tick(180000);
+  assert.equal(ports.length, 1);
+
+  client.reconnect();
+  const next = ports[1];
+  const reading = client.request('worker.prompt', { workerId: 'worker' });
+  next.onMessage.emit({ type: 'hello', id: next.messages[0].id, version: APP_VERSION });
+  await settle();
+  assert.equal(old.onMessage.size, 0);
+  assert.equal(next.messages.length, 2);
+  next.onMessage.emit({ id: next.messages[1].id, ok: true, result: 'Recovered' });
+  assert.equal(await reading, 'Recovered');
+  client.reconnect();
+  assert.deepEqual(next.messages[2], { type: 'reconnect' });
+});
+
+test('HostClient abandons handshake waits on disconnect and ignores a retired port acknowledgement', async (context) => {
+  const queued = new Map();
+  const ports = runtime(context, (port) => queued.set(port, captureCallbacks(port)), false);
+  const { client } = clientCase('host');
+  context.after(() => client.close());
+  const previous = client.request('worker.prompt', { workerId: 'worker' });
+  const rejected = assert.rejects(previous, /connection changed.*No operation was sent/);
+  const old = ports[0];
+  old.disconnect();
+  await rejected;
+  const current = client.request('worker.prompt', { workerId: 'worker' });
+  const next = ports[1];
+  queued.get(old).messages[0]({ type: 'hello', id: next.messages[0].id, version: APP_VERSION });
+  await settle();
+  assert.equal(next.messages.length, 1);
+  next.onMessage.emit({ type: 'hello', id: next.messages[0].id, version: APP_VERSION });
+  await settle();
+  next.onMessage.emit({ id: next.messages[1].id, ok: true, result: 'Fresh' });
+  assert.equal(await current, 'Fresh');
+  assert.equal(old.messages.length, 1);
+  client.close();
+  context.mock.timers.tick(180000);
+  assert.equal(ports.length, 2);
+});
+
+test('HostClient close clears a pending handshake without leaving an unhandled rejection or timer', async (context) => {
+  const ports = runtime(context, () => {}, false);
+  const { client, events } = clientCase('host');
+  client.connect();
+  client.close();
+  await settle();
+  const before = structuredClone(events);
+  context.mock.timers.tick(180000);
+  assert.deepEqual(events, before);
+  assert.equal(ports.length, 1);
+  assert.equal(ports[0].onMessage.size, 0);
+  assert.equal(ports[0].messages.length, 1);
 });
 
 test('file previews validate exact path, offset, stamp, chunk size, and EOF', async (context) => {

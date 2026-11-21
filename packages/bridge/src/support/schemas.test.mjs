@@ -12,7 +12,13 @@ const { replyGapObservationSchema } = await import('../reply-gap.ts');
 const { tabStateSchema, tabLeaseSchema, ChatTabLiveness } = await import('../tab-liveness.ts');
 const { rewriteResultSchema } = await import('../rewrite-runner.ts');
 
-const link = { id: 7, url: 'https://chatgpt.com/c/task-1', title: 'Task chat', newChat: false };
+const link = {
+  providerId: 'chatgpt',
+  id: 7,
+  url: 'https://chatgpt.com/c/task-1',
+  title: 'Task chat',
+  newChat: false,
+};
 const receipt = {
   workerId: 'worker_1',
   projectId: 'project_1',
@@ -24,7 +30,7 @@ const receipt = {
 
 test('serialized support schemas preserve absent optional fields', () => {
   for (const [schema, value] of [
-    [chatChoiceSchema, { id: 7, title: 'Task chat', url: 'https://chatgpt.com' }],
+    [chatChoiceSchema, { providerId: 'chatgpt', id: 7, title: 'Task chat', url: 'https://chatgpt.com' }],
     [chatLinkSchema, link],
     [dataResetStateSchema, { phase: 'idle' }],
     [resetViewContextSchema, {}],
@@ -38,7 +44,9 @@ test('serialized support schemas preserve absent optional fields', () => {
 });
 
 test('schemas reject malformed fields rather than coercing or defaulting them', () => {
-  assert.equal(chatChoiceSchema.safeParse({ id: '7', title: 'Task chat', url: link.url }).success, false);
+  assert.equal(chatChoiceSchema.safeParse({ ...link, id: '7' }).success, false);
+  assert.equal(chatChoiceSchema.safeParse({ ...link, providerId: undefined }).success, false);
+  assert.equal(chatChoiceSchema.safeParse({ ...link, providerId: 'gemini' }).success, false);
   assert.equal(chatLinkSchema.safeParse({ ...link, maxTurns: 21 }).success, false);
   assert.equal(chatLinkSchema.safeParse({ ...link, maxMinutes: '30' }).success, false);
   assert.equal(dataResetStateSchema.safeParse({ phase: 'unknown' }).success, false);
@@ -91,7 +99,7 @@ test('link storage writes keep optional absence through JSON serialization and s
   });
   store.set('worker_1', link);
   await store.flush(true);
-  assert.deepEqual(writes, [{ [LINK_STORAGE_KEY]: { version: 2, links: { worker_1: link } } }]);
+  assert.deepEqual(writes, [{ [LINK_STORAGE_KEY]: { version: 3, links: { worker_1: link } } }]);
   await store.quiesce();
 });
 

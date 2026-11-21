@@ -9,6 +9,7 @@ function ticket(workerId = 'worker') {
     projectId: 'project',
     goal: 'exact goal',
     link: {
+      providerId: 'chatgpt',
       id: 7,
       url: 'https://chatgpt.com/c/conversation',
       title: 'Chat',
@@ -80,6 +81,10 @@ test('ticket binding pins the exact tab, conversation, task, project, and goal',
   const proof = tickets.read('proof', 'worker');
   const worker = { id: 'worker', projectId: 'project', goal: 'exact goal' };
   tickets.assertBinding(proof, worker, value.link);
+  assert.throws(
+    () => tickets.assertBinding(proof, worker, { ...value.link, providerId: 'gemini' }),
+    /changed/,
+  );
   assert.throws(() => tickets.assertBinding(proof, worker, { ...value.link, id: 8 }), /changed/);
   assert.throws(
     () =>
@@ -111,7 +116,7 @@ test('ticket binding pins the exact tab, conversation, task, project, and goal',
 test('reply ticket approval cannot be reused in a replacement task epoch', () => {
   const tickets = new ReplyTickets(() => 0);
   const value = ticket();
-  tickets.issue('proof', value, 7);
+  tickets.issue('proof', value, { epoch: 7, mode: 'active' });
   const proof = tickets.read('proof', 'worker');
   const worker = { id: 'worker', projectId: 'project', goal: 'exact goal', control: { epoch: 7 } };
   tickets.assertBinding(proof, worker, value.link);

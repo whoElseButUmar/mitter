@@ -54,6 +54,7 @@ function controlledFile(kind, size = 12) {
 }
 
 function appearanceEnvironment(context) {
+  const storageListeners = new Set();
   const faceLoads = [];
   const activeFaces = new Set();
   const faceMaps = new Set();
@@ -105,7 +106,13 @@ function appearanceEnvironment(context) {
     FontFace: ControlledFontFace,
     chrome: {
       runtime: { getURL: (name) => 'chrome-extension://test/' + name },
-      storage: { local: storage },
+      storage: {
+        local: storage,
+        onChanged: {
+          addListener: (listener) => storageListeners.add(listener),
+          removeListener: (listener) => storageListeners.delete(listener),
+        },
+      },
       fontSettings: {
         getFontList() {
           const read = deferred();
@@ -184,8 +191,208 @@ function appearanceEnvironment(context) {
     removedFaces,
     feedback,
     systemReads,
+    storageListeners,
+    notifyStorage(changes, area = 'local') {
+      for (const listener of storageListeners) {
+        listener(changes, area);
+      }
+    },
   };
 }
+
+test('terminal appearance observes saved changes without writing them back and releases its listener', async (context) => {
+  const environment = appearanceEnvironment(context);
+  await environment.initialize();
+  assert.equal(environment.storageListeners.size, 1);
+  const reads = environment.storage.gets.length;
+  environment.notifyStorage({ [preferencesKey]: { newValue: {} } }, 'session');
+  environment.notifyStorage({ unrelated: { newValue: true } });
+  await flush();
+  assert.equal(environment.storage.gets.length, reads);
+
+  const next = { ...DEFAULT_TERMINAL_PREFERENCES, fontSize: 19 };
+  environment.storage.read = deferred();
+  environment.notifyStorage({ [preferencesKey]: { newValue: next } });
+  await flush();
+  environment.storage.read.resolve({ [preferencesKey]: next, [fontsKey]: [] });
+  await flush();
+  assert.equal(environment.appearance.prefs().fontSize, 19);
+  assert.equal(environment.feedback.changes.at(-1).fontSize, 19);
+  assert.equal(environment.storage.writes.length, 0);
+  assert.equal(environment.faceLoads.length, 1, 'Preference changes reuse the bundled font');
+
+  environment.dispose();
+  assert.equal(environment.storageListeners.size, 0);
+  environment.notifyStorage({ [preferencesKey]: { newValue: DEFAULT_TERMINAL_PREFERENCES } });
+  await flush();
+  assert.equal(environment.storage.gets.length, reads + 1);
+});
+
+test('stored imported fonts load before terminal preferences change and removed fonts are released', async (context) => {
+  const environment = appearanceEnvironment(context);
+  await environment.initialize();
+  const font = savedFont('MiterFont_ab12');
+  const next = { ...DEFAULT_TERMINAL_PREFERENCES, fontFamily: font.family };
+  environment.storage.read = deferred();
+  environment.notifyStorage({ [fontsKey]: { newValue: [font] } });
+  await flush();
+  environment.storage.read.resolve({ [preferencesKey]: next, [fontsKey]: [font] });
+  await flush();
+  assert.equal(environment.faceLoads.length, 2);
+  assert.equal(environment.appearance.prefs().fontFamily, BUNDLED_FONT);
+  environment.faceLoads[1].completion.resolve();
+  await flush();
+  assert.equal(environment.appearance.prefs().fontFamily, font.family);
+  assert.deepEqual(environment.appearance.fonts(), [font]);
+  assert.equal(environment.feedback.changes.at(-1).fontFamily, font.family);
+
+  environment.notifyStorage({ [preferencesKey]: { newValue: next } });
+  await flush();
+  assert.equal(environment.faceLoads.length, 2, 'Preference echoes do not duplicate FontFace instances');
+  environment.storage.read = deferred();
+  environment.notifyStorage({ [fontsKey]: { newValue: [] } });
+  await flush();
+  environment.storage.read.resolve({ [preferencesKey]: DEFAULT_TERMINAL_PREFERENCES, [fontsKey]: [] });
+  await flush();
+  assert.equal(environment.appearance.prefs().fontFamily, BUNDLED_FONT);
+  assert.deepEqual(environment.appearance.fonts(), []);
+  assert.equal(environment.activeFaces.has(environment.faceLoads[1]), false);
+  assert.equal(environment.storage.writes.length, 0);
+});
+
+test('storage echoes wait for queued preference writes and cannot roll back the newest local choice', async (context) => {
+  const environment = appearanceEnvironment(context);
+  await environment.initialize();
+  environment.storage.hold = true;
+  const first = environment.appearance.apply({ ...DEFAULT_TERMINAL_PREFERENCES, fontSize: 14 });
+  const second = environment.appearance.apply({ ...DEFAULT_TERMINAL_PREFERENCES, fontSize: 15 });
+  await flush();
+  environment.storage.read = deferred();
+  environment.notifyStorage({
+    [preferencesKey]: { newValue: { ...DEFAULT_TERMINAL_PREFERENCES, fontSize: 14 } },
+  });
+  await flush();
+  assert.equal(environment.storage.gets.length, 1);
+  environment.storage.writes[0].completion.resolve();
+  await flush();
+  assert.equal(environment.storage.writes.length, 2);
+  assert.equal(environment.appearance.prefs().fontSize, 15);
+  assert.equal(environment.storage.gets.length, 1);
+  environment.storage.writes[1].completion.resolve();
+  await Promise.all([first, second]);
+  await flush();
+  environment.storage.read.resolve({
+    [preferencesKey]: { ...DEFAULT_TERMINAL_PREFERENCES, fontSize: 15 },
+    [fontsKey]: [],
+  });
+  await flush();
+  assert.equal(environment.appearance.prefs().fontSize, 15);
+  assert.equal(environment.storage.writes.length, 2);
+  assert.deepEqual(
+    environment.feedback.changes.map((preferences) => preferences.fontSize),
+    [14, 15, 15],
+  );
+});
+
+test('a refresh waiting on the first write also waits for a later queued preference change', async (context) => {
+  const environment = appearanceEnvironment(context);
+  await environment.initialize();
+  environment.storage.hold = true;
+  const first = environment.appearance.apply({ ...DEFAULT_TERMINAL_PREFERENCES, fontSize: 14 });
+  await flush();
+  environment.storage.read = deferred();
+  environment.notifyStorage({
+    [preferencesKey]: { newValue: { ...DEFAULT_TERMINAL_PREFERENCES, fontSize: 14 } },
+  });
+  await flush();
+  assert.equal(environment.storage.gets.length, 1);
+
+  const second = environment.appearance.apply({ ...DEFAULT_TERMINAL_PREFERENCES, fontSize: 15 });
+  await flush();
+  environment.storage.writes[0].completion.resolve();
+  await first;
+  await flush();
+  assert.equal(environment.storage.writes.length, 2);
+  assert.equal(
+    environment.storage.gets.length,
+    1,
+    'A write queued while refreshing must settle before reading',
+  );
+  assert.equal(environment.appearance.prefs().fontSize, 15);
+
+  environment.storage.writes[1].completion.resolve();
+  await second;
+  await flush();
+  environment.storage.read.resolve({
+    [preferencesKey]: { ...DEFAULT_TERMINAL_PREFERENCES, fontSize: 15 },
+    [fontsKey]: [],
+  });
+  await flush();
+  assert.equal(environment.appearance.prefs().fontSize, 15);
+  assert.equal(environment.storage.writes.length, 2);
+  assert.deepEqual(
+    environment.feedback.changes.map((preferences) => preferences.fontSize),
+    [14, 15, 15],
+  );
+});
+
+test('late storage refreshes cannot replace a newer preference edit or a disposed owner', async (context) => {
+  const environment = appearanceEnvironment(context);
+  await environment.initialize();
+  environment.storage.read = deferred();
+  environment.notifyStorage({ [preferencesKey]: { newValue: {} } });
+  await flush();
+  await environment.appearance.apply({ ...DEFAULT_TERMINAL_PREFERENCES, fontSize: 18 });
+  environment.storage.read.resolve({
+    [preferencesKey]: { ...DEFAULT_TERMINAL_PREFERENCES, fontSize: 20 },
+    [fontsKey]: [],
+  });
+  await flush();
+  assert.equal(environment.appearance.prefs().fontSize, 18);
+  assert.deepEqual(
+    environment.feedback.changes.map((preferences) => preferences.fontSize),
+    [18],
+  );
+  environment.storage.read = deferred();
+  environment.notifyStorage({ [preferencesKey]: { newValue: {} } });
+  await flush();
+  environment.dispose();
+  environment.storage.read.resolve({
+    [preferencesKey]: { ...DEFAULT_TERMINAL_PREFERENCES, fontSize: 21 },
+    [fontsKey]: [],
+  });
+  await flush();
+  assert.equal(environment.appearance.prefs().fontSize, 18);
+  assert.equal(environment.feedback.changes.length, 1);
+  assert.equal(environment.storageListeners.size, 0);
+});
+
+test('font import can receive its own storage notifications without deadlock or duplicate font loads', async (context) => {
+  const environment = appearanceEnvironment(context);
+  await environment.initialize();
+  let saved = { [preferencesKey]: DEFAULT_TERMINAL_PREFERENCES, [fontsKey]: [] };
+  environment.storage.get = async () => saved;
+  const write = environment.storage.set.bind(environment.storage);
+  environment.storage.set = async (data) => {
+    await write(data);
+    saved = { ...saved, ...data };
+    const changes = Object.fromEntries(Object.entries(data).map(([key, newValue]) => [key, { newValue }]));
+    environment.notifyStorage(changes);
+  };
+  const input = controlledFile('ttf');
+  const importing = environment.appearance.importFont(input.file);
+  await flush();
+  input.read.resolve(fontBytes().buffer);
+  await flush();
+  environment.faceLoads[1].completion.resolve();
+  await importing;
+  await flush();
+  assert.equal(environment.appearance.fonts().length, 1);
+  assert.equal(environment.appearance.prefs().fontFamily, environment.appearance.fonts()[0].family);
+  assert.equal(environment.faceLoads.length, 2);
+  assert.equal(environment.storage.writes.length, 2);
+  assert.deepEqual(environment.feedback.failures, []);
+});
 
 for (const reject of [false, true]) {
   test('disposed theme read has no feedback or preference changes; rejected=' + reject, async (context) => {

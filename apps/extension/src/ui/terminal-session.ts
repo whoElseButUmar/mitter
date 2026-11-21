@@ -1,5 +1,6 @@
 import type { TerminalClient } from '../terminal-client';
 import type { TerminalScreen } from './terminal-screen';
+import { showConfirmation } from './confirmation';
 
 type TerminalSessionDependencies = {
   client: Pick<TerminalClient, 'request'>;
@@ -7,16 +8,26 @@ type TerminalSessionDependencies = {
   fail: (error: unknown) => void;
 };
 
-export function bindTerminalInput(screen: TerminalScreen, dependencies: TerminalSessionDependencies): void {
+export function bindTerminalInput(
+  screen: TerminalScreen,
+  dependencies: TerminalSessionDependencies & { confirmationSignal: () => AbortSignal },
+): void {
   const { client, isCurrent, fail } = dependencies;
   const { term, el } = screen;
   const acceptsInput = () => isCurrent() && !screen.disposed && !screen.failed && !screen.info.exited;
+  const lifetime = new AbortController();
+  let pastePending = false;
+  screen.disposables.push({ dispose: () => lifetime.abort() });
 
   // Escape sequences cannot query or change the clipboard. Clipboard access remains a human gesture.
   screen.disposables.push(term.parser.registerOscHandler(52, () => true));
   screen.disposables.push(
     term.onData((data) => {
       if (!acceptsInput()) {
+        return;
+      }
+      const inputScope = dependencies.confirmationSignal();
+      if (inputScope.aborted) {
         return;
       }
 
@@ -33,7 +44,7 @@ export function bindTerminalInput(screen: TerminalScreen, dependencies: Terminal
       screen.tail = screen.tail
         .then(async () => {
           for (let offset = 0; offset < data.length;) {
-            if (!acceptsInput()) {
+            if (!acceptsInput() || inputScope.aborted) {
               return;
             }
 
@@ -92,7 +103,7 @@ export function bindTerminalInput(screen: TerminalScreen, dependencies: Terminal
 
     event.preventDefault();
     event.stopImmediatePropagation();
-    if (!acceptsInput()) {
+    if (!acceptsInput() || pastePending) {
       return;
     }
 
@@ -101,10 +112,29 @@ export function bindTerminalInput(screen: TerminalScreen, dependencies: Terminal
       return;
     }
 
-    if (
-      /[\r\n\x00-\x08\x0b-\x1f\x7f]/.test(text) &&
-      !confirm('Paste multiple lines or control characters into the real shell? This may execute commands.')
-    ) {
+    if (/[\r\n\x00-\x08\x0b-\x1f\x7f]/.test(text)) {
+      pastePending = true;
+      const signal = AbortSignal.any([lifetime.signal, dependencies.confirmationSignal()]);
+      void showConfirmation({
+        title: 'Paste into shell',
+        message: 'Paste multiple lines or control characters into the real shell? This may execute commands.',
+        confirmLabel: 'Paste into shell',
+        signal,
+        isCurrent: acceptsInput,
+      })
+        .then((accepted) => {
+          if (accepted && !signal.aborted && acceptsInput()) {
+            term.paste(text);
+          }
+        })
+        .catch((error) => {
+          if (!signal.aborted && acceptsInput()) {
+            fail(error);
+          }
+        })
+        .finally(() => {
+          pastePending = false;
+        });
       return;
     }
 

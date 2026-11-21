@@ -94,6 +94,10 @@ test('malformed initial page observations cannot prepare, Send, or import', asyn
       assert.equal(harness.runner.status.phase, 'reconnecting');
       harness.advance(30000);
       await harness.runner.tick();
+      assert.equal(harness.runner.status.active, true);
+      assert.equal(harness.runner.status.phase, 'reconnecting');
+      harness.advance(30000);
+      await harness.runner.tick();
       assert.equal(harness.runner.status.errorCode, 'INVALID_PAGE_STATE');
       assert.equal(harness.runner.status.reason.includes('"users"'), false);
       assert.equal(harness.events.includes('page:prepare'), false);

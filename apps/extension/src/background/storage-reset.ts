@@ -1,9 +1,10 @@
 import { DATA_RESET_KEY } from '../../../../packages/bridge/src/data-reset.js';
 import { pageReplySchema, PAGE_CHANNEL } from '../../../../packages/bridge/src/transport/messages.js';
 import { z } from 'zod';
+import { chatgptProvider } from '../../../../packages/bridge/src/connections/providers.js';
 import { errorMessage } from '../schemas/primitives.js';
 
-export const chatOrigins = ['https://chatgpt.com/*', 'https://chat.openai.com/*'];
+export const chatOrigins = chatgptProvider.origins.map((origin) => origin + '/*');
 const clearAcknowledgementSchema = z
   .object({ cleared: z.literal(true) })
   .describe('The page endpoint retired itself and cleared its document-local state.');

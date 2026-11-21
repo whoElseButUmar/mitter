@@ -14,6 +14,34 @@ export const shutdownRecoveryMessage =
   'Interrupted by host shutdown. Inspect the report before resuming. ' +
   'In-flight commands are never blindly replayed.';
 
+export const drainedHandoffRecoveryMessage =
+  'Recovered a consumed handoff batch after its review transition failed. ' +
+  'Its report is ready; no actions were rerun.';
+
+export function recoverDrainedHandoff(worker: Worker): Worker {
+  if (
+    worker.mode !== 'handoff' ||
+    !['paused', 'blocked'].includes(worker.state) ||
+    worker.error !== 'Invalid transition queued → review.' ||
+    worker.queue.length !== 0 ||
+    worker.cursor !== 0 ||
+    worker.pending ||
+    worker.completion ||
+    worker.humanAcceptanceReady ||
+    worker.control?.mode === 'stopped'
+  ) {
+    return worker;
+  }
+
+  return {
+    ...worker,
+    state: 'review',
+    error: undefined,
+    autoCommands: false,
+    approvedFingerprint: undefined,
+  };
+}
+
 export function recoverInterruptedWorker(worker: Worker): Worker {
   if (stableStates.has(worker.state)) {
     return worker;

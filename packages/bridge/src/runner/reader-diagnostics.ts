@@ -1,4 +1,5 @@
-import { ASSISTANT_READER_VERSION, type ChatView } from '../chat-dom.js';
+import type { ReaderDiagnostic } from '../../../protocol/src/index.js';
+import { ASSISTANT_READER_VERSION, USER_READER_VERSION, type ChatView } from '../dom/types.js';
 import { messageDigest, unwrapMessage, type OutboundReceipt } from '../message-wire.js';
 
 function boundedCount(value: unknown, maximum: number): number {
@@ -48,6 +49,25 @@ export function transcriptReadShape(transcript: NonNullable<ChatView['transcript
   return shape + receiptShape;
 }
 
+/** Only fixed classifications and bounded counters may enter native task status. */
+export function readerDiagnostic(view: ChatView, reason: ReaderDiagnostic['reason']): ReaderDiagnostic {
+  const identity = {
+    ...(view.readerRevision !== undefined && { readerRevision: view.readerRevision }),
+    ...(view.transcript && { transcript: view.transcript.state }),
+  };
+  const receipt = view.transcript?.receiptDiscovery;
+  if (!receipt) {
+    return { ...identity, reason };
+  }
+  return {
+    ...identity,
+    receipt: receipt.state,
+    matches: boundedCount(receipt.matches, 24000),
+    tail: boundedCount(receipt.tailBranches, 24000),
+    reason,
+  };
+}
+
 export function userReadStructure(
   stats: ChatView['lastUserReadStats'],
 ): { roles: number; pres: number; codes: number; frames: number } | undefined {
@@ -70,7 +90,15 @@ export function userReadShape(
   duplicate: boolean,
   expectedCharacters: number,
 ): string {
-  const readers = ['user-turn/6', 'user-turn/5', 'user-turn/4', 'user-turn/3', 'user-turn/2'];
+  const readers = [
+    USER_READER_VERSION,
+    'user-turn/7',
+    'user-turn/6',
+    'user-turn/5',
+    'user-turn/4',
+    'user-turn/3',
+    'user-turn/2',
+  ];
   let reader = 'legacy';
   if (view.userReader && readers.includes(view.userReader)) {
     reader = view.userReader;

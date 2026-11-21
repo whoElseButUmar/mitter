@@ -43,7 +43,9 @@ export const workerCreationSchema = z
     mode: z
       .enum(['handoff', 'local'], { error: 'Choose handoff or local mode.' })
       .describe('Whether the task uses chat handoffs or a local model.'),
-    goal: textSchema('goal', 4000).describe('The user task goal, trimmed explicitly by the creation parser.'),
+    goal: textSchema('goal', 4000).describe(
+      'The literal nonblank user task goal, preserved without trimming.',
+    ),
     name: textSchema('worker name', 60).describe('The task name or a name suggested from its goal.'),
     maxIterations: integerSchema('iterations', 1, 100).describe(
       'The creation-time local proposal iteration limit.',
@@ -185,6 +187,45 @@ export const projectAddParamsSchema = z
     ),
   })
   .describe('Project registration fields validated before filesystem resolution.');
+
+export const projectFolderNameSchema = z
+  .string({ error: 'Enter a name for the new folder.' })
+  .min(1, 'Enter a name for the new folder.')
+  .max(80, 'Use at most 80 characters for the folder name.')
+  .refine(
+    (value) =>
+      !/[\uD800-\uDFFF]/u.test(value) &&
+      value === value.trim() &&
+      !/[\\/<>:"|?*\x00-\x1f\x7f]/.test(value) &&
+      !value.startsWith('.') &&
+      !/[. ]$/.test(value) &&
+      !/^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(value),
+    'Use one folder name without path separators, reserved characters, or leading/trailing dots and spaces.',
+  )
+  .describe('One portable visible folder name, 1–80 UTF-16 units, preserved without normalization.');
+
+export const projectCreateParamsSchema = z
+  .strictObject({
+    parentRoot: textSchema('parent folder', 2000).describe(
+      'The existing absolute parent directory chosen by the user.',
+    ),
+    folderName: projectFolderNameSchema,
+    name: projectAddParamsSchema.shape.name,
+  })
+  .describe(
+    'Explicit creation of one empty project folder; no recursive path creation or overwrite is allowed.',
+  );
+
+export type ProjectCreateParams = z.infer<typeof projectCreateParamsSchema>;
+
+export const projectFolderPickerParamsSchema = z
+  .strictObject({
+    purpose: z
+      .enum(['project', 'parent'])
+      .optional()
+      .describe('A project to open, or a parent location for one new folder; absence means project.'),
+  })
+  .describe('The intended use of the native folder chooser; this operation creates no project.');
 
 export const projectProfileParamsSchema = projectParamsSchema
   .extend({
@@ -407,6 +448,33 @@ export const workerApproveParamsSchema = epochParamsSchema
     ),
   })
   .describe('An exact token/revision-bound approval choice that cannot approve later imported content.');
+
+const setupDecision = workerParamsSchema
+  .extend({
+    expectedRun: taskBoundarySchema.describe('The exact run whose command was shown.'),
+    token: textSchema('setup approval token', 100).describe('The host-issued token for this single command.'),
+  })
+  .strict();
+
+export const workerSetupDecisionParamsSchema = z
+  .discriminatedUnion('decision', [
+    setupDecision
+      .extend({
+        decision: z
+          .enum(['run', 'deny', 'manual'])
+          .describe('Run once, decline, or open the project terminal for manual input.'),
+      })
+      .describe('One command decision without replacement instructions.'),
+    setupDecision
+      .extend({
+        decision: z.literal('instead').describe('Return an alternative instruction to the model.'),
+        instruction: textSchema('alternative instruction', 2000).describe(
+          'The user’s replacement instruction, returned to the task as text.',
+        ),
+      })
+      .describe('A request to use a different approach for this task.'),
+  ])
+  .describe('A decision made in the workspace about one pending project setup command.');
 
 export const workerSkipParamsSchema = workerParamsSchema
   .extend({

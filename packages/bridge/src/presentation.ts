@@ -1,5 +1,24 @@
-import type { Worker } from '../../protocol/src/index.js';
+import type { CompletionRecord, Worker } from '../../protocol/src/index.js';
 import type { BridgeStatus } from './runner/types.js';
+
+export function verifiedWebResult(worker: {
+  state: Worker['state'];
+  completion?: CompletionRecord | undefined;
+}): string | undefined {
+  const record = worker.completion;
+  if (
+    worker.state === 'complete' &&
+    record?.verification === 'passed' &&
+    record.evidence?.lighthouse === 'passed'
+  ) {
+    return record.evidence.detail;
+  }
+  return undefined;
+}
+
+export function isAppReady(worker: Worker): boolean {
+  return !!verifiedWebResult(worker) && worker.completion?.evidence?.browser === 'passed';
+}
 
 export function taskPresentation(worker: Worker, bridge?: BridgeStatus) {
   if (worker.state === 'complete') {
@@ -9,14 +28,14 @@ export function taskPresentation(worker: Worker, bridge?: BridgeStatus) {
         detail = 'Finished. Previously accepted by you.';
         break;
       case 'passed':
-        detail = 'Finished. Configured checks passed.';
+        detail = verifiedWebResult(worker) ?? 'Finished. Applicable checks passed.';
         break;
       case 'not-run':
-        detail = 'Finished. No automated checks configured.';
+        detail = 'Finished. No completion checks configured.';
         break;
       default:
         if (worker.checks.length) {
-          detail = 'Finished. Configured checks passed.';
+          detail = 'Finished. Applicable checks passed.';
         } else {
           detail = 'Finished. Verification not recorded.';
         }
@@ -57,7 +76,7 @@ export function taskPresentation(worker: Worker, bridge?: BridgeStatus) {
     };
   }
 
-  if (bridge?.monitoring && bridge.receiving) {
+  if (bridge?.monitoring && (bridge.receiving || bridge.phase === 'waiting_reply')) {
     return {
       status: 'working',
       detail: bridge.reason,

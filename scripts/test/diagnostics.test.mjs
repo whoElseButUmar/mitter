@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, writeFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { z } from 'zod';
-import { inspectInstallation, parseDoctorArguments } from '../doctor.mjs';
+import { inspectInstallation, installationReady, parseDoctorArguments } from '../doctor.mjs';
 import { buildVerificationSchema } from '../build/contracts.mjs';
 import { parseJsonContract } from '../helpers/runtime.mjs';
 import {
@@ -44,18 +44,47 @@ test('installation diagnostics validate JSON and leave source-only fixtures unto
     path.join(directory, 'package.json'),
     JSON.stringify({
       name: 'mitter',
-      version: '1.0.0-rc.21',
+      version: '1.0.0-rc.27',
       packageManager: 'pnpm@12.10.1',
       mitter: { modelRuntimes: { 'node-llama-cpp': '3.22.1' } },
     }),
   );
   await writeFile(path.join(directory, 'brand/extension-identity.json'), JSON.stringify(identity));
   const before = await readdir(directory, { recursive: true });
-  const report = await inspectInstallation(directory);
+  const report = await inspectInstallation(directory, {
+    home: directory,
+    nodeVersion: '22.16.0',
+    platform: 'linux',
+  });
 
   assert.equal(report.networkRequested, false);
   assert.equal(report.projectFilesChanged, false);
   assert.equal(report.checks[0].status, 'not-built');
+  assert.equal(installationReady(report), false);
+  assert.equal(
+    report.checks.find((check) => {
+      return check.name === 'node-runtime';
+    }).status,
+    'failed',
+  );
+  assert.equal(
+    report.checks.find((check) => {
+      return check.name === 'automatic-app-checks';
+    }).status,
+    'failed',
+  );
+  assert.equal(
+    report.checks.find((check) => {
+      return check.name === 'native-registration';
+    }).status,
+    'failed',
+  );
+  assert.equal(
+    report.assets.some((asset) => {
+      return asset.file === 'pnpm-lock.yaml';
+    }),
+    false,
+  );
   assert.deepEqual(await readdir(directory, { recursive: true }), before);
   assert.equal(installationReportSchema.safeParse({ ...report, networkRequested: true }).success, false);
   assert.equal(installationReportSchema.safeParse({ ...report, projectFilesChanged: true }).success, false);
@@ -173,8 +202,10 @@ test('terminal report uses the actual host runtime schema and declares read-only
 });
 
 test('diagnostic CLI options reject ignored or duplicate arguments', () => {
-  assert.deepEqual(parseDoctorArguments([]), { json: false });
-  assert.deepEqual(parseDoctorArguments(['--json']), { json: true });
+  assert.deepEqual(parseDoctorArguments([]), { json: false, browser: 'chrome' });
+  assert.deepEqual(parseDoctorArguments(['--json']), { json: true, browser: 'chrome' });
+
+  assert.deepEqual(parseDoctorArguments(['--json', '--chromium']), { json: true, browser: 'chromium' });
 
   for (const args of [['--json', '--json'], ['--json', '--unknown'], ['--help'], ['extra']]) {
     assert.throws(() => {

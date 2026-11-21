@@ -1,3 +1,4 @@
+import { addDisclosureMarkers } from '../../ui/src/icons.js';
 import { requiredElement } from './sheets/required-element.js';
 import { replyPreviewSchema, type ReplyPreview } from './reply-recovery.js';
 import { replySheetTemplate } from './sheets/reply-template.js';
@@ -14,6 +15,7 @@ export type ReplySheetDependencies = {
 /** Actual production recovery UI. All reply content uses textContent. */
 export function mountReplySheet(root: HTMLElement, deps: ReplySheetDependencies): () => void {
   root.innerHTML = replySheetTemplate;
+  addDisclosureMarkers(root);
 
   const status = requiredElement(root, '.reply-status', HTMLDivElement);
   const previewPanel = requiredElement(root, '.reply-preview', HTMLElement);

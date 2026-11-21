@@ -143,21 +143,26 @@ export const previewFrameTreeSchema = z
   })
   .describe('The bounded portion of a DevTools frame tree used by the preview check.');
 
-export const previewTargetsSchema = z
+export const browserTargetsSchema = z
   .object({
     targetInfos: z
       .array(
         z
           .object({
-            targetId: identifierSchema.describe('The target to attach when the sandbox is out of process.'),
-            type: z.string().min(1).describe('The target kind; only iframe targets may be attached.'),
-            url: z.string().describe('The complete target URL used for exact sandbox selection.'),
+            targetId: identifierSchema.describe(
+              'The target ID for the matching extension view or preview frame.',
+            ),
+            type: z
+              .string()
+              .min(1)
+              .describe('The target kind used to distinguish extension pages and sandbox frames.'),
+            url: z.string().describe('The complete URL used for exact target selection.'),
           })
           .describe('One available DevTools target; unrelated target metadata is ignored.'),
       )
       .describe('Targets available through this private Chrome debugging pipe.'),
   })
-  .describe('Target discovery for same-process and out-of-process preview frames.');
+  .describe('Page and frame targets in the isolated release-check browser.');
 
 export const previewWorldSchema = z
   .object({

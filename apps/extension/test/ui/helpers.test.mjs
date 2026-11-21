@@ -3,7 +3,7 @@ import { getEventListeners } from 'node:events';
 import test from 'node:test';
 import { z } from 'zod';
 import { errorMessage } from '../../src/schemas/primitives.ts';
-import { checkSchema, approvalSchema, projectSchema } from '../../../../packages/protocol/src/index.ts';
+import { checkSchema, approvalSchema } from '../../../../packages/protocol/src/index.ts';
 import { rewriteRequestSchema } from '../../../../packages/protocol/src/rewrite.ts';
 import { enforceExplicitImportPolicy } from '../../build/import-policy.ts';
 import { requireElement } from '../../src/ui/dom.ts';
@@ -20,18 +20,18 @@ import {
   chatStartLabel,
   checkDescription,
   isFreshContinuation,
-  welcomeCopy,
 } from '../../src/ui/task-view.ts';
 import { performDraftRewrite } from '../../src/ui/rewrite-draft.ts';
 import { terminalSettings, terminalTheme } from '../../src/ui/terminal-settings.ts';
 import { tabRowOptions } from '../../src/ui/tab-row-options.ts';
+import { taskStatus } from '../../src/ui/task-status.ts';
 import {
   DEFAULT_TERMINAL_PREFERENCES,
   BUNDLED_FONT,
   COLOR_KEYS,
   TerminalColorsSchema,
 } from '../../../../packages/terminal/src/appearance.ts';
-import { worker, control, flush } from './fixtures.mjs';
+import { worker, bridge, control, flush } from './fixtures.mjs';
 
 const request = (provider) =>
   rewriteRequestSchema.parse({
@@ -39,6 +39,198 @@ const request = (provider) =>
     mode: 'clarity',
     instruction: 'Preserve this draft.',
   });
+
+test('task status gives pending approval priority over stale completion and bridge progress', () => {
+  const reason = 'This command can change project files. Review the registered command before approving.';
+  const task = worker({
+    state: 'complete',
+    pending: {
+      token: 'approval_1',
+      fingerprint: 'fingerprint_1',
+      revision: 1,
+      reason,
+      action: { type: 'command', profileId: 'test' },
+    },
+  });
+  assert.deepEqual(taskStatus(task, bridge({ active: true, phase: 'running' })), {
+    heading: 'Approval needed',
+    detail: reason,
+    tone: 'attention',
+    requiresAttention: true,
+  });
+  assert.equal(taskStatus(worker({ state: 'awaiting_approval' })).requiresAttention, true);
+});
+
+test('App ready requires recorded browser and Lighthouse evidence and ignores stale bridge errors', () => {
+  const completion = {
+    version: 1,
+    verification: 'passed',
+    checked: 5,
+    at: 1,
+    summary: 'All done.',
+    evidence: {
+      source: 'passed',
+      domain: 'passed',
+      browser: 'passed',
+      lighthouse: 'passed',
+      detail: 'Checked snapshot only; deployed performance was not checked.',
+    },
+  };
+  const stale = bridge({ phase: 'error', monitoring: true, reason: 'An earlier reply was unreadable.' });
+  assert.deepEqual(taskStatus(worker({ state: 'complete', completion }), stale), {
+    heading: 'App ready',
+    detail: 'Browser checks passed.',
+    tone: 'success',
+    requiresAttention: false,
+  });
+  for (const evidence of [
+    { ...completion.evidence, browser: 'not-run' },
+    { ...completion.evidence, lighthouse: 'not-run' },
+    { source: 'passed', domain: 'passed', browser: 'passed', detail: 'No Lighthouse record.' },
+  ]) {
+    const result = taskStatus(worker({ state: 'complete', completion: { ...completion, evidence } }), stale);
+    assert.equal(result.heading, 'Task complete');
+    assert.equal(result.tone, 'neutral');
+    assert.match(result.detail, /Checks passed|did not run|were not recorded/);
+    assert.equal(result.requiresAttention, false);
+  }
+});
+
+test('unverified completions never infer success from configured checks or the model summary', () => {
+  for (const completion of [
+    undefined,
+    { version: 1, verification: 'not-run', checked: 0, at: 1, summary: 'All checks passed.' },
+    { version: 1, verification: 'legacy-accepted', checked: 0, at: 1, summary: 'Perfect app.' },
+    { version: 1, verification: 'passed', checked: 1, at: 1, summary: 'Done.' },
+  ]) {
+    const result = taskStatus(
+      worker({ state: 'complete', checks: [{ type: 'exists', path: 'index.html' }], completion }),
+      bridge({ active: true, phase: 'running' }),
+    );
+    assert.equal(result.heading, 'Task complete');
+    if (completion?.verification === 'passed') {
+      assert.equal(result.detail, 'Checks passed.');
+    } else {
+      assert.match(result.detail, /not recorded|did not run/);
+    }
+    assert.equal(result.tone, 'neutral');
+  }
+});
+
+test('receiving recovery stays working while a stalled watch preserves the complete attention reason', () => {
+  const reason =
+    'The reply could not be confirmed. Keep the saved prompt; completed actions must not be replayed.';
+  for (const receiving of [false, true]) {
+    const result = taskStatus(
+      worker({ state: 'review' }),
+      bridge({
+        phase: 'error',
+        monitoring: true,
+        receiving,
+        errorCode: 'SEND_UNCONFIRMED',
+        reason,
+      }),
+    );
+    assert.equal(result.detail, reason);
+    assert.equal(result.requiresAttention, !receiving);
+    if (receiving) {
+      assert.equal(result.heading, 'Reading reply');
+      assert.equal(result.tone, 'working');
+    } else {
+      assert.equal(result.heading, 'Needs attention');
+      assert.equal(result.tone, 'attention');
+    }
+  }
+});
+
+test('an automatic layout check stays working until user attention is needed', () => {
+  const result = taskStatus(
+    worker({ state: 'review' }),
+    bridge({
+      phase: 'waiting_reply',
+      monitoring: true,
+      errorCode: 'TRANSCRIPT_UNSUPPORTED',
+      reason: 'Checking the chat for a complete reply.',
+    }),
+  );
+  assert.equal(result.heading, 'Checking chat reply');
+  assert.equal(result.requiresAttention, false);
+});
+
+test('active bridge phases stay concise and automatic retries do not demand manual recovery', () => {
+  for (const [phase, heading] of [
+    ['connecting', 'Connecting to ChatGPT'],
+    ['sending', 'Sending request'],
+    ['waiting_reply', 'Waiting for ChatGPT'],
+    ['running', 'Updating project'],
+    ['reconnecting', 'Reconnecting'],
+    ['repairing', 'Repairing reply'],
+    ['waiting_team', 'Waiting for another task'],
+    ['future-phase', 'Working'],
+  ]) {
+    const result = taskStatus(
+      worker({ state: 'review', error: 'Earlier check failed.' }),
+      bridge({
+        active: true,
+        phase,
+        errorCode: 'HOST_RECONNECTING',
+        reason: 'Detailed transport diagnostic that remains available in Technical details.',
+      }),
+    );
+    assert.equal(result.heading, heading);
+    assert.equal(result.tone, 'working');
+    assert.equal(result.requiresAttention, false);
+    assert.doesNotMatch(result.detail, /transport diagnostic|Earlier check failed/);
+  }
+  const approval = taskStatus(worker(), bridge({ active: true, phase: 'waiting_approval' }));
+  assert.equal(approval.heading, 'Approval needed');
+  assert.equal(approval.requiresAttention, true);
+});
+
+test('local checking and file contention keep their own status inside bridge execution', () => {
+  for (const [state, heading] of [
+    ['verifying', 'Checking results'],
+    ['waiting_lock', 'Waiting for files'],
+    ['executing', 'Updating project'],
+  ]) {
+    for (const transport of [undefined, bridge({ active: true, phase: 'running' })]) {
+      const result = taskStatus(worker({ state }), transport);
+      assert.equal(result.heading, heading);
+      assert.equal(result.tone, 'working');
+    }
+  }
+});
+
+test('stopped, fresh, and human review boundaries override stale bridge progress', () => {
+  const stale = bridge({ active: true, phase: 'running' });
+  assert.equal(taskStatus(worker({ control: control('stopped') }), stale).heading, 'Stopped');
+  assert.equal(taskStatus(worker({ state: 'cancelled' }), stale).heading, 'Stopped');
+  const review = taskStatus(worker({ humanAcceptanceReady: true }), stale);
+  assert.equal(review.heading, 'Ready for review');
+  assert.equal(review.requiresAttention, true);
+  const fresh = taskStatus(worker({ control: control('fresh') }), bridge({ phase: 'error' }));
+  assert.equal(fresh.heading, 'Ready to continue');
+  assert.equal(fresh.tone, 'neutral');
+});
+
+test('halted errors and failed checks retain exact reasons and ignore another task’s bridge', () => {
+  const reason = 'Completion checks failed. Review the recorded results and return a fresh repair batch.';
+  for (const state of ['blocked', 'review', 'paused']) {
+    const task = worker({ state, error: reason });
+    const result = taskStatus(task, bridge({ phase: 'stopped' }));
+    assert.equal(result.heading, 'Needs attention');
+    assert.equal(result.detail, reason);
+    assert.equal(result.requiresAttention, true);
+  }
+  const transportReason = 'Sign in to the open chat, then resume this task.';
+  const halted = taskStatus(worker(), bridge({ phase: 'error', reason: transportReason }));
+  assert.equal(halted.detail, transportReason);
+  assert.equal(halted.requiresAttention, true);
+  assert.equal(
+    taskStatus(worker(), bridge({ workerId: 'other_worker', active: true, phase: 'running' })).heading,
+    'Ready to start',
+  );
+});
 
 test('RPC reads validate unknown responses before exposing data to views', async () => {
   const calls = [];
@@ -202,20 +394,6 @@ test('task descriptions preserve check literals, profile arguments, and fresh-st
   assert.equal(chatStartLabel(worker(), true, true, 'Resume task'), 'Use reply…');
   assert.equal(chatStartLabel(worker(), false, true, 'Resume task'), 'Connecting…');
   assert.equal(chatStartLabel(worker(), false, false, 'Resume task'), 'Resume task');
-});
-
-test('welcome copy distinguishes saved-but-closed projects/tasks from a new workspace', () => {
-  const project = projectSchema.parse({
-    id: 'project_1',
-    name: 'Demo',
-    root: '/project',
-    profiles: [],
-    revision: 1,
-  });
-  assert.equal(welcomeCopy(project, 1, 1).title, 'No open task tabs.');
-  assert.equal(welcomeCopy(project, 0, 1).text, 'Give Demo its first task.');
-  assert.equal(welcomeCopy(undefined, 0, 1).title, 'No open project tabs.');
-  assert.equal(welcomeCopy(undefined, 0, 0).title, 'Open a project.');
 });
 
 test('terminal appearance always includes the bundled and safe monospace fallbacks', () => {
@@ -446,4 +624,10 @@ test('rewrite polls a waiting job and removes its abort listener when it complet
   assert.equal(await rewriting, 'Finished draft.');
   assert.deepEqual(calls, ['rewrite.start', 'rewrite.read']);
   assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+});
+
+test('setup approval spells the same argv for the local terminal', () => {
+  const review = { action: { type: 'setupCommand', command: ['pnpm', 'create', 'my board'] } };
+  assert.equal(approvalDescription(review, 'Win32'), "& 'pnpm' 'create' 'my board'");
+  assert.equal(approvalDescription(review, 'MacIntel'), "pnpm create 'my board'");
 });

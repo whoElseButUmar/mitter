@@ -1,4 +1,4 @@
-import { utf8Bytes, MAX_HANDOFF_BYTES } from '../../../protocol/src/reply-json.js';
+import { hasCompleteReplyFence, utf8Bytes, MAX_HANDOFF_BYTES } from '../../../protocol/src/reply-json.js';
 import { contentHidden, htmlElements } from './page-elements.js';
 import { headingRole } from './transcript-discovery.js';
 import { ASSISTANT_READER_VERSION, type AssistantReadResult, type AssistantReadStats } from './types.js';
@@ -161,6 +161,10 @@ export function readAssistantMessage(body: HTMLElement): AssistantReadResult {
   let format: AssistantReadResult['format'] = 'plain';
   if (plain.issue) {
     format = 'rendered';
+  } else if (hasCompleteReplyFence(plain.text)) {
+    // A literal outer fence is a source carrier even without PRE/CODE tags.
+    // Preserve its bytes; the shared parser validates transport syntax later.
+    format = 'code';
   }
   return {
     text: plain.text,

@@ -3,8 +3,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { atomicConfig, configTransaction } from './atomic-config.mjs';
+import { installTerminalCommand } from './installation/terminal-command.mjs';
 import { extensionIdentitySchema } from './installation/contracts.mjs';
 import {
+  cliLauncherSource,
   launcherSource,
   parseRegistrationArguments,
   registrationManifest,
@@ -41,6 +43,14 @@ async function registerHost() {
     nativeHost: identity.nativeHost,
   });
   const manifest = registrationManifest(identity, paths.launcher);
+  let commandName = 'miter';
+
+  if (process.platform === 'win32') {
+    commandName = 'miter.cmd';
+  }
+
+  const command = path.join(paths.installDirectory, commandName);
+  const cliScript = path.join(root, 'dist/apps/host/src/cli.js');
 
   const files = [paths.manifestPath];
 
@@ -60,12 +70,14 @@ async function registerHost() {
     await mkdir(paths.installDirectory, { recursive: true, mode: 0o700 });
     await mkdir(paths.manifestDirectory, { recursive: true });
     files.unshift(paths.launcher);
+    files.push(command);
   }
 
   await configTransaction(files, async () => {
     if (!options.remove) {
       // Fail before registering a nonexistent build.
       await readFile(paths.hostScript);
+      await readFile(cliScript);
       const source = launcherSource({
         ...paths,
         platform: process.platform,
@@ -75,6 +87,16 @@ async function registerHost() {
       });
 
       await atomicConfig(paths.launcher, source, 0o700);
+      await atomicConfig(
+        command,
+        cliLauncherSource({
+          platform: process.platform,
+          nodeExecutable: process.execPath,
+          cliScript,
+          dataDirectory: paths.dataDirectory,
+        }),
+        0o700,
+      );
     }
 
     if (options.remove) {
@@ -117,6 +139,9 @@ async function registerHost() {
   console.log('Extension ID:', identity.extensionId);
 
   if (!options.remove) {
+    console.log('Terminal command:', command);
+    const terminal = await installTerminalCommand({ home: os.homedir(), command });
+    console.log(terminal.detail);
     console.log('Next: Chrome → Extensions → Developer mode → Load unpacked');
     console.log(path.join(root, 'apps/extension/.output/chrome-mv3'));
   }

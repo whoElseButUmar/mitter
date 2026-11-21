@@ -1,3 +1,4 @@
+import { addDisclosureMarkers } from '../../ui/src/icons.js';
 import { requiredElement } from './sheets/required-element.js';
 import { mountDraftRewrite, type DraftRewriteOptions } from '../../ui/src/draft-rewrite.js';
 import type { RewriteRequest } from '../../protocol/src/rewrite.js';
@@ -11,7 +12,7 @@ import {
   RpcResultValidationError,
 } from '../../protocol/src/rpc.js';
 import { NativeRequestTimeout } from './native-request.js';
-import { buildTaskBrief, suggestedTaskName } from '../../protocol/src/task-brief.js';
+import { buildTaskBrief, isProjectLaunchRequest, suggestedTaskName } from '../../protocol/src/task-brief.js';
 import { taskSheetTemplate } from './sheets/task-template.js';
 
 export type TaskSheetDependencies = {
@@ -40,6 +41,7 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
   }
 
   root.innerHTML = taskSheetTemplate;
+  addDisclosureMarkers(root);
 
   const form = requiredElement(root, '[data-task-form]', HTMLFormElement);
   const goalInput = requiredElement(root, '[data-goal]', HTMLTextAreaElement);
@@ -47,6 +49,8 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
   const nameInput = requiredElement(root, '[data-name]', HTMLInputElement);
   const modeSelect = requiredElement(root, '[data-mode]', HTMLSelectElement);
   const ruleSelect = requiredElement(root, '[data-rule]', HTMLSelectElement);
+  const commandCheckOption = requiredElement(root, '[data-command-check]', HTMLOptionElement);
+  const commandCheckHint = requiredElement(root, '[data-command-check-hint]', HTMLElement);
   const workspaceSelect = requiredElement(root, '[data-workspace]', HTMLSelectElement);
   const startNowInput = requiredElement(root, '[data-start-now]', HTMLInputElement);
   const submitButton = requiredElement(root, '[data-create]', HTMLButtonElement);
@@ -59,6 +63,7 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
   const profileField = requiredElement(root, '[data-profile-field]', HTMLElement);
   const profileSelect = requiredElement(root, '[data-profile]', HTMLSelectElement);
   const briefContainer = requiredElement(root, '[data-brief]', HTMLElement);
+  const advancedOptions = requiredElement(root, '[data-advanced]', HTMLDetailsElement);
 
   let alive = true;
   let busy = false;
@@ -78,6 +83,9 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
     projectSelect.value = scopedProject.id;
     projectSelect.disabled = true;
     requiredElement(root, '[data-project-field]', HTMLElement).hidden = true;
+    const projectContext = requiredElement(root, '[data-project-context]', HTMLElement);
+    projectContext.textContent = 'Project: ' + scopedProject.name;
+    projectContext.hidden = false;
   } else {
     const selectedProject = deps.projects.find((project) => project.id === deps.selectedProjectId);
     if (selectedProject) {
@@ -97,6 +105,11 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
     profileSelect.add(placeholder);
 
     const profiles = deps.projects.find((project) => project.id === selectedProjectId())?.profiles || [];
+    commandCheckOption.disabled = profiles.length === 0;
+    commandCheckHint.hidden = profiles.length > 0;
+    if (!profiles.length && ruleSelect.value === 'command') {
+      ruleSelect.value = 'human';
+    }
     for (const profile of profiles) {
       const option = document.createElement('option');
       option.value = profile.id;
@@ -113,11 +126,14 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
     }
 
     submitButton.textContent = 'Start task';
-    if (modeSelect.value === 'local') {
-      disclosure.textContent = 'Uses your configured local models. Commands still need your approval.';
+    if (isProjectLaunchRequest(goalInput.value)) {
+      disclosure.textContent =
+        'Installs the project dependencies, starts its development server and opens the preview.';
+    } else if (modeSelect.value === 'local') {
+      disclosure.textContent = 'Uses your configured local models. Commands need your approval.';
     } else {
       disclosure.textContent =
-        'Start shares this task and its project results with ChatGPT. Commands still need your approval.';
+        'Shares this task and project results with ChatGPT. Commands need your approval.';
     }
   }
 
@@ -183,6 +199,12 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
     selects?.refresh();
   }
 
+  function revealInvalidField(event: Event): void {
+    if (event.target instanceof HTMLElement && advancedOptions.contains(event.target)) {
+      advancedOptions.open = true;
+    }
+  }
+
   function completionChecks(): Check[] {
     switch (ruleSelect.value) {
       case 'human':
@@ -242,7 +264,10 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
       return;
     }
 
-    const selectedMode = modeSelect.value;
+    let selectedMode = modeSelect.value;
+    if (isProjectLaunchRequest(cleanGoal)) {
+      selectedMode = 'local';
+    }
     if (selectedMode !== 'handoff' && selectedMode !== 'local') {
       modeSelect.setCustomValidity('Choose a coding source.');
       modeSelect.reportValidity();
@@ -360,7 +385,7 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
 
   projectSelect.addEventListener('change', () => {
     updateCommandProfiles();
-    selects?.refresh();
+    refreshForm();
   });
   goalInput.addEventListener('input', refreshForm);
   ruleSelect.addEventListener('change', refreshForm);
@@ -368,6 +393,9 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
   startNowInput.addEventListener('change', refreshForm);
   requiredElement(root, '[data-cancel]', HTMLElement).addEventListener('click', () => deps.close());
   form.addEventListener('submit', submitTask);
+  // Invalid does not bubble. Reveal optional controls before native validation
+  // or the enhanced select moves focus to the field that needs attention.
+  form.addEventListener('invalid', revealInvalidField, true);
 
   queueMicrotask(() => {
     if (alive) {
@@ -383,6 +411,7 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
 
     draftRewrite.dispose();
     selects?.dispose();
+    form.removeEventListener('invalid', revealInvalidField, true);
     root.replaceChildren();
   };
 }

@@ -73,6 +73,57 @@ export function parseAssistantReply(view: ChatView, lastReceipt?: OutboundReceip
   return reply;
 }
 
+/** Identify a rejected response for correction only. Never substitute an identifier or return its actions. */
+export function mistypedProjectHeaders(view: ChatView, receipt: OutboundReceipt) {
+  const transcript = view.transcript;
+  const discovery = transcript?.receiptDiscovery;
+  if (
+    !receipt.expectsReplyTo ||
+    !receipt.exchangeId ||
+    view.lastRole !== 'assistant' ||
+    !view.complete ||
+    view.busy ||
+    view.draft ||
+    view.stopped ||
+    view.ready !== true ||
+    !view.lastUserText ||
+    view.lastUserCollapsed ||
+    view.lastUserTruncated ||
+    view.assistantReadIssue ||
+    view.assistantFormat !== 'code' ||
+    view.replyEvidence ||
+    view.codeReply ||
+    view.unlinkedReply ||
+    view.codeReplyCount !== 0 ||
+    view.codeReplyIssue !== 'NEWER_REPLY_UNREADABLE' ||
+    view.codeRead?.incomplete ||
+    transcript?.state !== 'ready' ||
+    transcript.scanLimited ||
+    transcript.unclassifiedTail ||
+    discovery?.state !== 'matched' ||
+    discovery.matches !== 1 ||
+    discovery.tailBranches !== 1
+  ) {
+    return;
+  }
+  const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+  try {
+    const reply = parseAssistantReply(view, receipt);
+    if (
+      reply.workerId === receipt.workerId &&
+      reply.replyTo === receipt.exchangeId &&
+      uuid.test(receipt.projectId) &&
+      uuid.test(reply.projectId) &&
+      [...reply.projectId].filter((char, index) => char !== receipt.projectId[index]).length === 1
+    ) {
+      return { id: reply.id, projectId: reply.projectId };
+    }
+  } catch {
+    // Other malformed data follows its own recovery rules.
+  }
+  return undefined;
+}
+
 const waitExplanations: Record<string, string> = {
   INVALID_JSON:
     'The visible reply is not valid complete JSON. Ask for one fenced json block, not an escaped Markdown copy.',

@@ -4,6 +4,7 @@ import type { TabKind } from './workspace.js';
 import { isHTMLElement, requireWindow } from './dom/elements.js';
 import { navigationIndex } from './native/keyboard.js';
 import { LibraryFilterSchema, libraryRows, type LibraryData, type LibraryView } from './library/rows.js';
+import { createIcon } from './icons.js';
 
 export {
   LibraryFilterSchema,
@@ -367,8 +368,10 @@ export function mountLibrary(root: HTMLElement, initial: LibraryOptions) {
         const more = document.createElement('div');
         more.className = 'library-more';
         item.append(more);
-        const visible = mountMenu(more, '…', options.menu(row.kind, row.id));
-        visible.trigger.setAttribute('aria-label', 'Actions for ' + row.label);
+        const actionsLabel = 'Actions for ' + row.label;
+        const visible = mountMenu(more, actionsLabel, options.menu(row.kind, row.id));
+        visible.trigger.replaceChildren(createIcon(document, 'more'));
+        visible.trigger.setAttribute('aria-label', actionsLabel);
         menus.push(visible);
       }
     }

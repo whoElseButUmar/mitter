@@ -53,6 +53,10 @@ export const auxiliaryMessageSchema = z
           workerId: identifierSchema,
           kind: z.enum(['warning', 'success', 'error']).describe('The notice severity.'),
           message: z.string().describe('The task notification text.'),
+          setupApproval: z
+            .literal(true)
+            .optional()
+            .describe('This notice opens the task’s pending setup command.'),
         })
         .describe('A task transition notice.'),
     }),
@@ -102,10 +106,23 @@ export const nativeMessageSchema = z
 
 export const uiControlSchema = z
   .discriminatedUnion('type', [
+    z.object({
+      type: z.literal('hello'),
+      id: identifierSchema,
+      version: z.string().min(1).describe('The version compiled into the connecting view.'),
+    }),
     z.object({ type: z.literal('ping'), id: identifierSchema }),
     z.object({ type: z.literal('reconnect') }),
   ])
-  .describe('A view liveness ping or explicit host reconnect.');
+  .describe('A view version challenge, liveness ping, or explicit host reconnect.');
+
+export const backgroundHelloSchema = z
+  .object({
+    type: z.literal('hello'),
+    id: identifierSchema,
+    version: z.string().min(1).describe('The version compiled into the running background.'),
+  })
+  .describe('The background version returned for an exact view challenge.');
 
 export const pongSchema = z
   .object({ type: z.literal('pong'), id: identifierSchema })

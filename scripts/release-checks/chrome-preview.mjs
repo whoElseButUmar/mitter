@@ -4,7 +4,7 @@ import {
   previewFixtureSchema,
   previewFrameTreeSchema,
   previewProbeSchema,
-  previewTargetsSchema,
+  browserTargetsSchema,
   previewWorldSchema,
   sessionIdSchema,
 } from './chrome-schemas.mjs';
@@ -14,7 +14,7 @@ import { evaluate, waitFor } from './chrome-ui.mjs';
 // fixture URL, and never grant the inspection world universal origin access.
 export async function withPreviewFrame(chrome, parentSession, url, check) {
   const targets = parseContract(
-    previewTargetsSchema,
+    browserTargetsSchema,
     await chrome.request('Target.getTargets'),
     'Chrome did not return valid preview target identities.',
   ).targetInfos.filter((target) => target.type === 'iframe' && target.url === url);

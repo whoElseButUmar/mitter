@@ -45,6 +45,27 @@ export const READER_REPLY_TEXT =
   '  "note": "  😀 <tag> & \\t \\n \\\"quote\\\" `tick`  "\r\n' +
   '}\r\n\t ';
 
+const literalReply = JSON.stringify(
+  {
+    protocol: 'mitter/1',
+    id: 'reader_reply',
+    workerId: READER_WORKER_ID,
+    projectId: READER_PROJECT_ID,
+    replyTo: exchangeId,
+    summary: 'Preserve literal source bytes.',
+    actions: [
+      {
+        type: 'write',
+        path: 'literal.js',
+        expectedHash: 'missing',
+        content: 'const value = `raw &#x20; &nbsp; \\n`;\n// \\"quoted\\" 😀\n',
+      },
+    ],
+  },
+  null,
+  2,
+);
+
 export type DomReaderScenario = {
   name: DomReaderScenarioName;
   plan: DomReaderPlan;
@@ -112,9 +133,114 @@ export async function createDomReaderScenario(rawName: unknown): Promise<DomRead
     draft: '',
   };
   let expectedUserText = userText;
+  let expectedReplyText = READER_REPLY_TEXT;
 
   switch (name) {
+    case 'roleless-code-unanchored-receipt':
+    case 'roleless-code-unanchored-duplicate':
+    case 'roleless-code-unanchored-human':
+    case 'roleless-code-unanchored-unknown':
+    case 'roleless-code-unanchored-edited':
+    case 'roleless-code-unanchored-quote':
+    case 'roleless-code-intervening-branch':
+      user.role = 'branch';
+      response.role = 'branch';
+      response.controls = false;
+      plan.turns = [
+        turn('reader-old-code', 'branch', '{"note":"Earlier unrelated code"}', { code: true }),
+        user,
+        response,
+      ];
+      if (name === 'roleless-code-unanchored-duplicate') {
+        plan.turns.splice(1, 0, turn('reader-duplicate-prior', 'branch', userText));
+      } else if (name === 'roleless-code-unanchored-human') {
+        plan.turns.push(turn(READER_LATER_USER_ID, 'user', DOM_READER_LATER_USER_TEXT));
+      } else if (name === 'roleless-code-unanchored-unknown') {
+        plan.turns.push(turn('reader-unknown', 'unknown', 'An unclassified real turn.'));
+      } else if (name === 'roleless-code-unanchored-edited') {
+        user.role = 'user';
+      } else if (name === 'roleless-code-intervening-branch') {
+        plan.turns.splice(2, 0, turn('reader-unknown', 'branch', 'Intervening substantive content.'));
+      }
+      break;
+    case 'recovery-roleless-literal':
+    case 'recovery-roleless-malformed':
+    case 'recovery-duplicate-send':
+    case 'recovery-duplicate-known':
+    case 'recovery-duplicate-known-malformed':
+    case 'recovery-duplicate-known-conflicting':
+    case 'recovery-duplicate-intervention':
+    case 'recovery-duplicate-later-branch':
+    case 'recovery-hidden-response':
+    case 'recovery-extra-response-text':
+      user.role = 'branch';
+      response.role = 'branch';
+      response.controls = false;
+      response.code = false;
+      response.text = '```json\n' + literalReply + '\n```';
+      if (name === 'recovery-roleless-malformed') {
+        response.text = '```json\n' + literalReply.replace('"actions": [', '"actions" [') + '\n```';
+      }
+      plan.turns = [user, response];
+      if (name.startsWith('recovery-duplicate-')) {
+        plan.turns.unshift(turn('reader-duplicate-prior', 'branch', userText));
+        response.code = true;
+        response.text = literalReply;
+        receipt.priorUserId = 'receipt-reader_previous_send';
+        receipt.priorUserHash = receipt.textHash;
+      }
+      if (name.startsWith('recovery-duplicate-known')) {
+        user.role = 'user';
+        response.role = 'assistant';
+        const previousUser = plan.turns[0];
+        if (previousUser) {
+          previousUser.role = 'user';
+        }
+        if (name === 'recovery-duplicate-known-malformed') {
+          response.text = literalReply.replace('"actions": [', '"actions" [');
+        }
+      }
+      expectedReplyText = response.text;
+      if (!response.code) {
+        // The plain reader emits the markdown DIV's closing block separator
+        // outside the fenced JSON; all quoted source bytes remain unchanged.
+        expectedReplyText += '\n';
+      }
+      if (name === 'recovery-duplicate-intervention') {
+        plan.turns.push(turn(READER_LATER_USER_ID, 'user', DOM_READER_LATER_USER_TEXT));
+      } else if (name === 'recovery-duplicate-later-branch') {
+        plan.turns.push(turn('reader-intervening', 'branch', 'A later unknown message.'));
+      } else if (name === 'recovery-extra-response-text') {
+        response.text += '\nA separate unrelated message after the fenced reply.';
+      }
+      break;
+    case 'literal-fenced-roleless':
+    case 'literal-escaped-fence':
+    case 'literal-malformed-fence':
+      response.code = false;
+      response.text = '```json\n' + literalReply + '\n```';
+      if (name === 'literal-escaped-fence') {
+        response.text = '\\`\\`\\`json\\\n' + literalReply.replaceAll('\n', '\\\n&#x20;') + '\n\\`\\`\\`';
+      } else if (name === 'literal-malformed-fence') {
+        response.text = '```json\n' + literalReply.replace('"actions": [', '"actions" [') + '\n```';
+      }
+      expectedReplyText = response.text + '\n';
+      break;
+    case 'roleless-resend-draft':
+    case 'roleless-composer-only':
+      user.role = 'branch';
+      response.role = 'branch';
+      response.text = 'An incomplete response without role metadata.';
+      response.code = false;
+      response.controls = false;
+      plan.turns = [user, response];
+      plan.draft = userText;
+      if (name === 'roleless-composer-only') {
+        user.text = 'An unrelated visible message.';
+      }
+      break;
     case 'mixed-generating':
+    case 'mixed-generating-modern-stop':
     case 'digest-assistant-progress':
       response.text = 'Thinking\nStructuring the outline';
       response.code = false;
@@ -157,6 +283,8 @@ export async function createDomReaderScenario(rawName: unknown): Promise<DomRead
       break;
     case 'duplicate-receipt':
       plan.turns.splice(3, 0, turn('reader-duplicate', 'unknown', userText));
+      receipt.priorUserId = user.id;
+      receipt.priorUserHash = receipt.textHash;
       break;
     case 'mismatched-receipt': {
       const wrongHash = await messageDigest('A different complete outbound body.');
@@ -219,6 +347,6 @@ export async function createDomReaderScenario(rawName: unknown): Promise<DomRead
     request,
     receipt,
     expectedUserText,
-    expectedReplyText: READER_REPLY_TEXT,
+    expectedReplyText,
   };
 }

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { bridgeProgressSummarySchema } from '../../protocol/src/index.js';
-import { outboundReceiptSchema, parseReceipt } from './message-wire.js';
+import { outboundReceiptSchema, parseReceipt, type OutboundReceipt } from './message-wire.js';
 import {
   conversationUrlSchema,
   identifierSchema,
@@ -66,6 +66,9 @@ const taskProgressFieldsSchema = z.object({
     .regex(/^[A-Z0-9_]{1,64}$/)
     .optional()
     .describe('A failure code when the task needs attention.'),
+  readerDiagnostic: bridgeProgressSummarySchema.shape.readerDiagnostic,
+  monitoring: bridgeProgressSummarySchema.shape.monitoring,
+  watchUntil: bridgeProgressSummarySchema.shape.watchUntil,
 });
 
 function checkReceiptBinding(
@@ -95,6 +98,55 @@ export const taskProgressSchema = taskProgressFieldsSchema
   .describe('Durable task progress used to resume safely after a pause or restart.');
 
 export type TaskProgress = z.infer<typeof taskProgressSchema>;
+
+export function isActiveReplyWait(
+  progress: Pick<TaskProgress, 'phase' | 'errorCode' | 'monitoring'>,
+): boolean {
+  return (
+    !progress.monitoring && !progress.errorCode && ['waiting_reply', 'reconnecting'].includes(progress.phase)
+  );
+}
+
+export function matchesWaitingReply(
+  saved: TaskProgress | null,
+  revision: number,
+  url: string,
+  receipt?: OutboundReceipt,
+): boolean {
+  return (
+    !!saved &&
+    isActiveReplyWait(saved) &&
+    saved.revision === revision &&
+    saved.stage === 'waiting_reply' &&
+    !saved.approvedReply &&
+    saved.conversationUrl === url &&
+    !!receipt?.expectsReplyTo &&
+    !!receipt.exchangeId &&
+    saved.lastReceipt?.expectsReplyTo === true &&
+    saved.lastReceipt.exchangeId === receipt.exchangeId &&
+    saved.lastReceipt.textHash === receipt.textHash &&
+    saved.lastReceipt.renderedHash === receipt.renderedHash &&
+    saved.lastReceipt.goalHash === receipt.goalHash &&
+    saved.lastReceipt.workerId === receipt.workerId &&
+    saved.lastReceipt.projectId === receipt.projectId &&
+    saved.lastReceipt.turn === receipt.turn &&
+    saved.lastReceipt.turn === saved.turns
+  );
+}
+
+/** A ready checkpoint with no reserved, staged, or admitted exchange. */
+export function isUnsentBootstrap(progress: TaskProgress | null | undefined): boolean {
+  return (
+    progress?.stage === 'ready' &&
+    progress.turns === 0 &&
+    !progress.lowerBound &&
+    !progress.lastReceipt &&
+    !progress.conversationUrl &&
+    !progress.lastImportedId &&
+    !progress.approvedReply &&
+    !progress.lastActionsHash
+  );
+}
 
 function readSavedPhase(value: unknown): string {
   if (typeof value === 'string') {
@@ -173,6 +225,9 @@ export const taskProgressSummarySchema = bridgeProgressSummarySchema
       phase: true,
       reason: true,
       errorCode: true,
+      readerDiagnostic: true,
+      monitoring: true,
+      watchUntil: true,
     }).shape,
   )
   .describe('Task counters, limits, and status without private message receipts.');
@@ -182,6 +237,7 @@ export type TaskProgressSummary = z.infer<typeof taskProgressSummarySchema>;
 export function progressSummary(progress: TaskProgress): TaskProgressSummary {
   return {
     workerId: progress.workerId,
+    revision: progress.revision,
     turns: progress.turns,
     maxTurns: progress.maxTurns,
     lowerBound: progress.lowerBound,
@@ -191,5 +247,8 @@ export function progressSummary(progress: TaskProgress): TaskProgressSummary {
     phase: progress.phase,
     reason: progress.reason,
     errorCode: progress.errorCode,
+    ...(progress.readerDiagnostic && { readerDiagnostic: progress.readerDiagnostic }),
+    monitoring: progress.monitoring,
+    watchUntil: progress.watchUntil,
   };
 }

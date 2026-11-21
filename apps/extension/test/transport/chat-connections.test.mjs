@@ -6,18 +6,10 @@ import { deferred, settle } from './chrome-mock.mjs';
 function setup() {
   const updates = [];
   const creations = [];
-  const probes = [];
   const reads = [];
   const loads = [];
   let sessions = [];
-  let rewriteTabs = [];
-  let view = {
-    url: 'https://chatgpt.com',
-    ready: true,
-    draft: false,
-    busy: false,
-    count: 0,
-  };
+  let current;
   let queried = [{ id: 7, url: 'https://chatgpt.com/', title: 'Chat' }];
   const storage = { get: async () => ({}), set: async () => {} };
   globalThis.chrome = {
@@ -45,16 +37,8 @@ function setup() {
       loads.push({ method, params });
       return { progress: null, importedCount: 0 };
     },
-    page: {
-      request: async (tabId, action) => {
-        probes.push({ tabId, action });
-        return view;
-      },
-      forget() {},
-    },
-    snapshot: () => undefined,
+    snapshot: () => current,
     sessions: () => sessions,
-    rewriteTabs: () => rewriteTabs,
     log: () => {},
   });
 
@@ -62,22 +46,128 @@ function setup() {
     chats,
     updates,
     creations,
-    probes,
     reads,
     loads,
+    snapshot(value) {
+      current = value;
+    },
     sessions(value) {
       sessions = value;
-    },
-    rewriteTabs(value) {
-      rewriteTabs = value;
-    },
-    view(value) {
-      view = value;
     },
     queried(value) {
       queried = value;
     },
   };
+}
+
+function signInSetup() {
+  const state = setup();
+  state.snapshot({ workers: [{ id: 'worker', projectId: 'project', runId: 'run', control: { epoch: 1 } }] });
+  state.sessions([{ workerId: 'worker', tabId: 7, active: false }]);
+  state.chats.links.set('worker', {
+    providerId: 'chatgpt',
+    id: 7,
+    url: 'https://chatgpt.com',
+    title: 'Task chat',
+    newChat: true,
+    projectId: 'project',
+  });
+  return state;
+}
+
+for (const url of ['https://chatgpt.com/auth/login', 'https://auth.openai.com/log-in', undefined]) {
+  test('the live-owned sign-in tab can be focused but never becomes a resumable chat: ' + url, async () => {
+    const state = signInSetup();
+    await state.chats.links.ready;
+    state.queried([{ id: 7, url }]);
+    const original = state.chats.links.get('worker');
+    assert.equal(await state.chats.signInTab('worker', () => {}), 7);
+    assert.equal(await state.chats.saved('worker'), undefined);
+    assert.deepEqual(state.chats.links.get('worker'), original);
+    assert.deepEqual(state.creations, []);
+    assert.deepEqual(state.updates, []);
+    await state.chats.links.quiesce();
+  });
+}
+
+for (const tab of [
+  { id: 7, url: 'https://example.com/' },
+  { id: 7, url: 'https://auth.openai.com.example.com/' },
+  { id: 7, url: 'https://user:password@auth.openai.com/' },
+  { id: 7, url: 'http://auth.openai.com/' },
+  { id: 7, url: 'https://chatgpt.com/authentication' },
+  { id: 7, url: 'https://chatgpt.com/auth/login', pendingUrl: 'https://example.com/' },
+  { id: 8, url: 'https://chatgpt.com/auth/login' },
+]) {
+  test(
+    'sign-in recovery rejects an unrelated readable address or wrong tab: ' + JSON.stringify(tab),
+    async () => {
+      const state = signInSetup();
+      await state.chats.links.ready;
+      chrome.tabs.get = async () => tab;
+      assert.equal(await state.chats.signInTab('worker', () => {}), undefined);
+      assert.deepEqual(state.creations, []);
+      assert.deepEqual(state.updates, []);
+      await state.chats.links.quiesce();
+    },
+  );
+}
+
+test('saved tab IDs alone, mismatched projects and competing owners cannot recover sign-in', async () => {
+  const state = signInSetup();
+  await state.chats.links.ready;
+  state.queried([{ id: 7 }]);
+  state.sessions([]);
+  assert.equal(await state.chats.signInTab('worker', () => {}), undefined);
+  state.sessions([{ workerId: 'worker', tabId: 7 }]);
+  state.snapshot({ workers: [{ id: 'worker', projectId: 'different', runId: 'run' }] });
+  assert.equal(await state.chats.signInTab('worker', () => {}), undefined);
+  state.snapshot({ workers: [{ id: 'worker', projectId: 'project', runId: 'run' }] });
+  state.sessions([
+    { workerId: 'worker', tabId: 7 },
+    { workerId: 'another', tabId: 7 },
+  ]);
+  assert.equal(await state.chats.signInTab('worker', () => {}), undefined);
+  state.sessions([{ workerId: 'worker', tabId: 7 }]);
+  state.chats.reserve('another', state.chats.links.get('worker'));
+  assert.equal(await state.chats.signInTab('worker', () => {}), undefined);
+  assert.deepEqual(state.reads, []);
+  await state.chats.links.quiesce();
+});
+
+for (const change of ['link', 'run', 'epoch', 'reset']) {
+  test('a late sign-in tab lookup cannot outlive its owner: ' + change, async () => {
+    const state = signInSetup();
+    await state.chats.links.ready;
+    const read = deferred();
+    let cancelled = false;
+    chrome.tabs.get = () => read.promise;
+    const opening = state.chats.signInTab('worker', () => {
+      if (cancelled) {
+        throw new Error('Reset retired this request.');
+      }
+    });
+    await settle();
+    if (change === 'link') {
+      state.chats.links.set('worker', { ...state.chats.links.get('worker'), id: 8 });
+    } else if (change === 'run') {
+      state.snapshot({
+        workers: [{ id: 'worker', projectId: 'project', runId: 'replacement', control: { epoch: 1 } }],
+      });
+    } else if (change === 'epoch') {
+      state.snapshot({
+        workers: [{ id: 'worker', projectId: 'project', runId: 'run', control: { epoch: 2 } }],
+      });
+    } else {
+      cancelled = true;
+    }
+    const rejected = assert.rejects(opening, /changed|retired/);
+    read.resolve({ id: 7 });
+    await rejected;
+    assert.deepEqual(state.creations, []);
+    assert.deepEqual(state.updates, []);
+    await state.chats.links.quiesce();
+  });
 }
 
 test('chat reservations enforce task and conversation ownership across different tab IDs', async () => {
@@ -86,6 +176,7 @@ test('chat reservations enforce task and conversation ownership across different
   const choice = {
     id: 7,
     url: 'https://chatgpt.com/c/conversation',
+    providerId: 'chatgpt',
     title: 'Chat',
     newChat: false,
   };
@@ -105,6 +196,7 @@ test('pending reservations bind the normalized conversation across duplicate tab
   const first = {
     id: 7,
     url: 'https://chatgpt.com/c/shared/?source=first',
+    providerId: 'chatgpt',
     title: 'Shared',
     newChat: false,
   };
@@ -125,7 +217,13 @@ test('pending reservations bind the normalized conversation across duplicate tab
 test("releasing one duplicate tab keeps the same task's other pending conversation binding", async () => {
   const state = setup();
   await state.chats.links.ready;
-  const first = { id: 7, url: 'https://chatgpt.com/c/shared', title: 'Shared', newChat: false };
+  const first = {
+    providerId: 'chatgpt',
+    id: 7,
+    url: 'https://chatgpt.com/c/shared',
+    title: 'Shared',
+    newChat: false,
+  };
   state.chats.reserve('worker', first);
   state.chats.reserve('worker', { ...first, id: 8 });
   state.chats.release('worker', first.id);
@@ -138,7 +236,13 @@ test("releasing one duplicate tab keeps the same task's other pending conversati
 test('new-chat roots on separate tabs do not share a conversation reservation', async () => {
   const state = setup();
   await state.chats.links.ready;
-  const first = { id: 7, url: 'https://chatgpt.com/', title: 'New chat', newChat: true };
+  const first = {
+    providerId: 'chatgpt',
+    id: 7,
+    url: 'https://chatgpt.com/',
+    title: 'New chat',
+    newChat: true,
+  };
   const second = { ...first, id: 8, url: 'https://chatgpt.com/?source=second' };
   state.chats.reserve('first-worker', first);
   state.chats.reserve('second-worker', second);
@@ -151,54 +255,20 @@ test('new-chat roots on separate tabs do not share a conversation reservation', 
   await state.chats.links.quiesce();
 });
 
-test('fresh selection does not probe or navigate a duplicate tab of a pending conversation', async () => {
-  const state = setup();
-  await state.chats.links.ready;
-  state.chats.reserve('first-worker', {
-    id: 9,
-    url: 'https://chatgpt.com/c/shared',
-    title: 'Shared',
-    newChat: false,
+for (const activeUrl of ['https://chatgpt.com/', 'https://chatgpt.com/c/personal']) {
+  test('automatic new-chat opens a separate background tab without inspecting ' + activeUrl, async () => {
+    const state = setup();
+    state.queried([{ id: 7, url: activeUrl, title: 'Personal chat with a draft' }]);
+    const choice = await state.chats.fresh('worker');
+    assert.equal(choice.id, 8);
+    assert.deepEqual(state.reads, []);
+    assert.deepEqual(state.updates, []);
+    assert.deepEqual(state.creations, [{ url: 'https://chatgpt.com/', active: false }]);
+    assert.equal(state.chats.isCreatedTab('worker', 7), false);
+    assert.equal(state.chats.isCreatedTab('worker', 8), true);
+    await state.chats.links.quiesce();
   });
-  state.queried([{ id: 7, url: 'https://chatgpt.com/c/shared/?source=duplicate', title: 'Duplicate' }]);
-  const selected = await state.chats.fresh('second-worker');
-  assert.equal(selected.id, 8);
-  assert.equal(state.probes.length, 0);
-  assert.equal(state.updates.length, 0);
-  assert.equal(state.creations.length, 1);
-  state.chats.release('second-worker', selected.id);
-  state.chats.clearReservations();
-  await state.chats.links.quiesce();
-});
-
-test('fresh chat selection never probes or navigates a tab owned by a rewrite', async () => {
-  const state = setup();
-  await state.chats.links.ready;
-  state.rewriteTabs([7]);
-  const choice = await state.chats.fresh('worker');
-  assert.equal(choice.id, 8);
-  assert.equal(state.probes.length, 0);
-  assert.equal(state.updates.length, 0);
-  assert.equal(state.creations.length, 1);
-  await state.chats.links.quiesce();
-});
-
-test('a composer draft prevents tab reuse without modifying that conversation', async () => {
-  const state = setup();
-  await state.chats.links.ready;
-  state.view({
-    url: 'https://chatgpt.com',
-    ready: true,
-    draft: true,
-    busy: false,
-    count: 0,
-  });
-  const choice = await state.chats.fresh('worker');
-  assert.equal(choice.id, 8);
-  assert.equal(state.probes.length, 1);
-  assert.equal(state.updates.length, 0);
-  await state.chats.links.quiesce();
-});
+}
 
 test('a saved conversation search cannot reopen a tab after its admission is cancelled', async () => {
   const state = setup();
@@ -206,6 +276,7 @@ test('a saved conversation search cannot reopen a tab after its admission is can
   state.chats.links.set('worker', {
     id: 7,
     url: 'https://chatgpt.com/c/original',
+    providerId: 'chatgpt',
     title: 'Original',
     newChat: false,
   });
@@ -238,6 +309,7 @@ test('a bound saved link disagreeing with the reviewed checkpoint fails before a
   const original = {
     id: 7,
     url: 'https://chatgpt.com/c/unrelated',
+    providerId: 'chatgpt',
     title: 'Unrelated chat',
     newChat: false,
     bindingPending: false,
@@ -253,7 +325,6 @@ test('a bound saved link disagreeing with the reviewed checkpoint fails before a
   );
   assert.deepEqual(state.reads, []);
   assert.deepEqual(state.creations, []);
-  assert.deepEqual(state.probes, []);
   assert.deepEqual(state.loads, []);
   assert.equal(state.chats.links.get('worker').url, original.url);
   await state.chats.links.quiesce();
@@ -265,6 +336,7 @@ test('a matching checkpoint normalizes chat identity without selecting another o
   state.chats.links.set('worker', {
     id: 7,
     url: 'https://chatgpt.com/c/original/?saved=1#reply',
+    providerId: 'chatgpt',
     title: 'Original',
     newChat: false,
   });
@@ -295,7 +367,7 @@ for (const pending of [
     async () => {
       const state = setup();
       await state.chats.links.ready;
-      state.chats.links.set('worker', { id: 7, title: 'Pending', ...pending });
+      state.chats.links.set('worker', { providerId: 'chatgpt', id: 7, title: 'Pending', ...pending });
       state.queried([{ id: 7, url: 'https://chatgpt.com/c/original' }]);
       const selected = await state.chats.saved('worker', true, () => {}, 'https://chatgpt.com/c/original');
       assert.equal(selected.id, 7);
@@ -313,7 +385,13 @@ for (const pending of [
 test('an invalid pinned conversation is rejected without browser work or checkpoint fallback', async () => {
   const state = setup();
   await state.chats.links.ready;
-  state.chats.links.set('worker', { id: 7, title: 'Pending', url: 'https://chatgpt.com', newChat: true });
+  state.chats.links.set('worker', {
+    providerId: 'chatgpt',
+    id: 7,
+    title: 'Pending',
+    url: 'https://chatgpt.com',
+    newChat: true,
+  });
   await assert.rejects(state.chats.saved('worker', true, () => {}, 'https://example.com/c/original'));
   assert.deepEqual(state.reads, []);
   assert.deepEqual(state.loads, []);
@@ -327,6 +405,7 @@ test('resume searches only the exact saved conversation, never an arbitrary open
   state.chats.links.set('worker', {
     id: 7,
     url: 'https://chatgpt.com/c/original',
+    providerId: 'chatgpt',
     title: 'Original',
     newChat: false,
   });
@@ -336,5 +415,45 @@ test('resume searches only the exact saved conversation, never an arbitrary open
   const reopened = await state.chats.saved('worker', true);
   assert.equal(reopened.url, 'https://chatgpt.com/c/original');
   assert.equal(state.creations[0].url, 'https://chatgpt.com/c/original');
+  await state.chats.links.quiesce();
+});
+
+test('manual-only providers cannot reserve automatic task connections or claim their tabs', async () => {
+  const state = setup();
+  await state.chats.links.ready;
+  for (const [providerId, url] of [
+    ['gemini', 'https://gemini.google.com/app'],
+    ['perplexity', 'https://www.perplexity.ai'],
+  ]) {
+    assert.throws(
+      () => state.chats.reserve('manual', { providerId, id: 7, url, title: 'Manual', newChat: true }),
+      /manual handoff only/,
+    );
+  }
+  state.chats.reserve('automatic', {
+    providerId: 'chatgpt',
+    id: 7,
+    url: 'https://chatgpt.com',
+    title: 'New chat',
+    newChat: true,
+  });
+  assert.deepEqual(state.reads, []);
+  assert.deepEqual(state.loads, []);
+  assert.deepEqual(state.updates, []);
+  assert.deepEqual(state.creations, []);
+  assert.deepEqual(state.chats.links.entries(), []);
+  await state.chats.links.quiesce();
+});
+
+test('only a tab created by this coordinator retains bounded stale-draft cleanup eligibility', async () => {
+  const state = setup();
+  const created = await state.chats.fresh('created');
+  assert.equal(state.chats.isCreatedTab('created', created.id), true);
+  assert.equal(state.chats.isCreatedTab('other', created.id), false);
+  state.chats.forgetCreatedTab(created.id);
+  assert.equal(state.chats.isCreatedTab('created', created.id), false);
+  await state.chats.fresh('created');
+  state.chats.clearReservations();
+  assert.equal(state.chats.isCreatedTab('created', created.id), false);
   await state.chats.links.quiesce();
 });

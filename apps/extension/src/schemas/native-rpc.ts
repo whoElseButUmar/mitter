@@ -8,6 +8,12 @@ import {
   resetCompletionSchema,
 } from '../../../../packages/bridge/src/data-reset.js';
 import { nativeTerminalRpcRegistry } from './terminal.js';
+import {
+  terminalClaimParamsSchema,
+  terminalClaimResultSchema,
+  terminalCompleteParamsSchema,
+  terminalCompleteResultSchema,
+} from '../../../../packages/protocol/src/terminal-control.js';
 
 const resetParametersSchema = z
   .strictObject({
@@ -31,6 +37,12 @@ export const nativeRpcRegistry = Object.freeze({
   ...progressRpcRegistry,
   ...nativeTerminalRpcRegistry,
   ...resetRpcRegistry,
+  'terminal.claim': { params: terminalClaimParamsSchema, result: terminalClaimResultSchema, mutation: true },
+  'terminal.complete': {
+    params: terminalCompleteParamsSchema,
+    result: terminalCompleteResultSchema,
+    mutation: true,
+  },
 });
 
 export type NativeRpcMethod = keyof typeof nativeRpcRegistry;

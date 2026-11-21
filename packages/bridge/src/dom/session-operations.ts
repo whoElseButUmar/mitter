@@ -1,10 +1,20 @@
+import { recoverSentSource } from './sent-source.js';
+import { clearStaleDraft } from './stale-draft.js';
 import { matchesReceipt, parseReceipt } from '../message-wire.js';
+import { chatgptAddress } from '../connections/chatgpt.js';
+import { isProviderOrigin } from '../connections/providers.js';
 import { readAssistantMessage } from './assistant-reader.js';
 import { readCodeReply } from './code-replies.js';
 import { findComposer, composerText, sendComposerMessage } from './composer-operations.js';
 import { contentHidden, pageElements, generationActive, generationStopControls } from './page-elements.js';
+import { hasStreamRetry } from './provider-activity.js';
 import { discoverReceiptMessages } from './receipt-discovery.js';
-import { getChatDomSession, resetChatDomSessions, type MessageReveal } from './session-state.js';
+import {
+  forgetSentSource,
+  getChatDomSession,
+  resetChatDomSessions,
+  type MessageReveal,
+} from './session-state.js';
 import {
   discoverMessages,
   messageRole,
@@ -12,6 +22,7 @@ import {
   resetMessageDiscoveryState,
 } from './transcript-discovery.js';
 import { messageDisclosure, readUserMessageVariants, countTaskTurns } from './user-reader.js';
+import { PAGE_READER_REVISION, USER_READER_VERSION } from './types.js';
 import type {
   AssistantReadResult,
   ChatView,
@@ -35,19 +46,12 @@ function canonicalURL(rawURL: string): string {
 }
 
 function isConversationURL(rawURL: string): boolean {
-  try {
-    const url = new URL(rawURL);
-    return (
-      ['https://chatgpt.com', 'https://chat.openai.com'].includes(url.origin) &&
-      /^\/(?:g\/[^/]+\/)?c\/[a-zA-Z0-9-]+\/?$/.test(url.pathname)
-    );
-  } catch {
-    return false;
-  }
+  return chatgptAddress(rawURL) !== undefined;
 }
 
 export async function chatDom(request: DomRequest): Promise<ChatView> {
   const emptyView = (): ChatView => ({
+    readerRevision: PAGE_READER_REVISION,
     url: canonicalURL(location.href),
     count: 0,
     userCount: 0,
@@ -120,7 +124,7 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
       isConversationURL(expectedURL)
     );
   };
-  if (!['https://chatgpt.com', 'https://chat.openai.com'].includes(location.origin)) {
+  if (!isProviderOrigin('chatgpt', location.href)) {
     failOperation('UNSUPPORTED_ORIGIN', 'This page is not a supported ChatGPT page.');
   }
   if (!locationMatchesRequest()) {
@@ -178,9 +182,11 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
     };
   }
   const existingSession = getChatDomSession();
+  if (request.preservePause && existingSession?.stopped) {
+    failOperation('STOPPED', 'Paused from the chat page.');
+  }
   if (
-    request.op === 'commit' &&
-    request.composerSession !== undefined &&
+    (request.op === 'clear_draft' || (request.op === 'commit' && request.composerSession !== undefined)) &&
     (!existingSession ||
       existingSession.token !== request.token ||
       existingSession.composerSession !== request.composerSession)
@@ -279,10 +285,82 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
       receipt &&
       !request.replyId &&
       !discovery.stats.scanLimited &&
-      ((discovery.stats.users === 0 && !codeReplies?.reply) || discovery.stats.unclassifiedTail)
+      (discovery.stats.users === 0 ||
+        discovery.stats.unclassifiedTail ||
+        !!codeReplies?.read ||
+        hasStreamRetry(document))
     ) {
-      discovery = await discoverReceiptMessages(receipt, discovery);
+      discovery = await discoverReceiptMessages(receipt, discovery, checkSession);
       checkSession();
+    }
+    const receiptDiscovery = discovery.stats.receiptDiscovery;
+    const syntheticUser = discovery.messages.find((message) => messageRole(message) === 'user');
+    if (
+      request.replyTo &&
+      request.replyTo === receipt?.exchangeId &&
+      request.workerId &&
+      request.projectId &&
+      receiptDiscovery?.state === 'unknown_tail' &&
+      receiptDiscovery.matches === 1 &&
+      receiptDiscovery.tailBranches === 0 &&
+      receiptDiscovery.responseControls === 0 &&
+      !discovery.stats.scanLimited &&
+      !discovery.replyRecovery &&
+      discovery.userRead &&
+      syntheticUser &&
+      !syntheticUser.closest('blockquote')
+    ) {
+      // A failed climb from a receipt bubble is not a native user/unknown turn.
+      // Refresh both structures after hashing yielded, preserving the existing
+      // independent nonce lane only when no real transcript barrier is present.
+      const native = discoverMessages();
+      if (
+        !native.stats.scanLimited &&
+        native.messages.length === 0 &&
+        native.stats.turnContainers === 0 &&
+        native.stats.roleAttributes === 0 &&
+        native.stats.alternativeRoles === 0 &&
+        native.stats.semanticRoles === 0 &&
+        !native.stats.unclassifiedTail
+      ) {
+        const currentCode = readCodeReply(
+          request.workerId,
+          request.projectId,
+          request.replyId,
+          request.replyTo,
+        );
+        if (
+          currentCode.reply?.replyTo === request.replyTo &&
+          currentCode.count === 1 &&
+          currentCode.issue === undefined &&
+          currentCode.read?.incomplete !== true
+        ) {
+          discovery = {
+            messages: native.messages,
+            stats: {
+              ...native.stats,
+              version: 'message-discovery/2',
+              strategy: 'receipt',
+              receiptDiscovery,
+              codeAncestry: discovery.stats.codeAncestry,
+            },
+            userRead: discovery.userRead,
+          };
+          codeReplies = currentCode;
+        }
+      }
+    }
+    const ambiguousReceipt = discovery.stats.receiptDiscovery?.state === 'ambiguous';
+    if (ambiguousReceipt) {
+      // A valid old nonce cannot choose between repeated sends. Keep the
+      // ambiguous exchange available only for a fresh-request correction.
+      codeReplies = {
+        ...codeReplies,
+        count: 0,
+        issue: 'DUPLICATE_SENT_RECEIPT',
+        reply: undefined,
+        unlinked: undefined,
+      };
     }
     lastDiscovery = discovery;
     const messages = discovery.messages;
@@ -290,8 +368,20 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
     const users = messages.filter((element) => messageRole(element) === 'user');
     const lastUser = users.at(-1);
     let lastAssistant: HTMLElement | undefined;
-    if (messageRole(lastMessage) === 'assistant') {
+    if (!ambiguousReceipt && messageRole(lastMessage) === 'assistant') {
       lastAssistant = lastMessage;
+    }
+    if (discovery.assistantRead && lastAssistant && request.workerId && request.projectId) {
+      // Receipt discovery can identify a literal fenced response with no role
+      // attributes. Include only that freshly verified root in the code scan;
+      // old widget diagnostics must not obscure the current bounded payload.
+      codeReplies = readCodeReply(
+        request.workerId,
+        request.projectId,
+        request.replyId,
+        request.replyTo,
+        lastAssistant,
+      );
     }
     let assistantBody = lastAssistant;
     const markdown = lastAssistant?.querySelector('.markdown');
@@ -356,6 +446,7 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
       unlinkedReply: codeReplies?.unlinked,
       codeReplyIds: codeReplies?.ids,
       codeReplyTotal: codeReplies?.total,
+      readerRevision: PAGE_READER_REVISION,
       url: canonicalURL(location.href),
       count: messages.length,
       userCount: users.length,
@@ -370,7 +461,7 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
       lastUserId: messageIdentity(lastUser),
       userIds: users.map(messageIdentity).filter(Boolean).slice(-256),
       lastUserTruncated: userText.length > 160000,
-      userReader: 'user-turn/6',
+      userReader: USER_READER_VERSION,
       lastUserCollapsed: disclosure.collapsed,
       disclosure: { state: disclosureState, attempts: 0 },
       lastUserReadStats: userRead?.stats,
@@ -382,6 +473,7 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
       renderedDraftText,
       stopped: !!session?.stopped,
       transcript: discovery.stats,
+      replyRecovery: discovery.replyRecovery,
       ready: !!composer,
       readiness,
     };
@@ -483,10 +575,17 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
         }
       }
     }
+    if (receipt && (await recoverSentSource(request, receipt, view, checkSession))) {
+      view = await collectView();
+      checkSession();
+    }
     return view;
   }
   if (!session) {
     failOperation('STOPPED', 'Stopped from the chat page.');
+  }
+  if (request.op === 'clear_draft') {
+    return clearStaleDraft(request, collectView, checkSession);
   }
   return sendComposerMessage(
     request,
@@ -500,6 +599,7 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
 /** Clear only Miter's isolated-world memory. Provider conversation/draft DOM is
  * user data and is never erased by a local application reset. */
 export function clearChatDomState(): void {
+  forgetSentSource();
   resetChatDomSessions();
   resetMessageDiscoveryState();
   document.getElementById('mitter-automation-control')?.remove();

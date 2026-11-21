@@ -4,12 +4,13 @@ import { checkDescription } from '../ui/task-view';
 import { FileViewer } from '../FileViewer';
 import { TeamPanel } from '../TeamPanel';
 import { ContextArea } from '../ContextArea';
-import { For, Show } from 'solid-js';
+import { createEffect, For, Show } from 'solid-js';
 import { Icon } from '../icons';
 import { InfoPopover } from '../controls';
 
 export function TaskEditor(props: { controller: WorkspaceController; task: Worker }) {
-  const { snapshot, success, setNotice, output, rpc, copy, sendFollowup, showText } = props.controller;
+  const { snapshot, success, setNotice, output, rpc, copy, sendFollowup, showText, connected } =
+    props.controller;
   const {
     files,
     file,
@@ -17,26 +18,57 @@ export function TaskEditor(props: { controller: WorkspaceController; task: Worke
     setView,
     historyMore,
     historyBusy,
+    historyError,
+    retryHistory,
+    filesLoading,
+    filesError,
+    retryFiles,
+    browsing,
     activity,
     loadHistory,
     preview,
     openFileWindow,
     fileMenu,
     browseFiles,
+    expanded,
+    setExpanded,
   } = output;
   const task = () => props.task;
+  let disclosure: HTMLDetailsElement | undefined;
+
+  createEffect(() => {
+    const open = expanded();
+    // The browser can close <details> before its toggle event reaches Solid.
+    // Assign directly so an explicit open also repairs that native DOM change.
+    if (disclosure) {
+      disclosure.open = open;
+    }
+  });
 
   const checksLabel = () => {
     const count = task().checks.length;
-    if (count > 1) {
-      return count + ' checks';
+    if (count === 0) {
+      return 'Checks';
     }
-
-    return count + ' check';
+    return `Checks (${count})`;
   };
 
   return (
-    <>
+    <details
+      class="task-output task-disclosure-panel"
+      ref={(element) => {
+        disclosure = element;
+      }}
+      onToggle={(event) => {
+        if (expanded() !== event.currentTarget.open) {
+          setExpanded(event.currentTarget.open);
+        }
+      }}
+    >
+      <summary>
+        <Icon name="right" />
+        Files and activity
+      </summary>
       <div class="editor-tabs">
         <button
           classList={{
@@ -44,7 +76,7 @@ export function TaskEditor(props: { controller: WorkspaceController; task: Worke
           }}
           onClick={() => setView('result')}
         >
-          Files & result{' '}
+          Files{' '}
           <Show when={files().length}>
             <span>{files().length}</span>
           </Show>
@@ -66,11 +98,13 @@ export function TaskEditor(props: { controller: WorkspaceController; task: Worke
           Team
         </button>
         <div class="spacer" />
-        <Show when={task().checks.length}>
-          <InfoPopover label={checksLabel()} title="Completion checks">
-            <For each={task().checks}>{(check) => <p>{checkDescription(check)}</p>}</For>
-          </InfoPopover>
-        </Show>
+        <InfoPopover label={checksLabel()} title="Completion checks">
+          <p>
+            Miter checks shared controls, runs domain tests, and tests web apps in Chrome on desktop and
+            mobile.
+          </p>
+          <For each={task().checks}>{(check) => <p>{checkDescription(check)}</p>}</For>
+        </InfoPopover>
       </div>
       <section class="editor-surface">
         <Show when={view() === 'team'}>
@@ -103,7 +137,37 @@ export function TaskEditor(props: { controller: WorkspaceController; task: Worke
             ]}
           >
             <div class="activity-list">
-              <For each={activity()} fallback={<p class="muted">No activity yet.</p>}>
+              <Show when={historyBusy() && !activity().length}>
+                <p class="preview-hint" role="status">
+                  Loading activity…
+                </p>
+              </Show>
+              <Show when={historyError()}>
+                <div class="read-error">
+                  <p class="error" role="alert">
+                    Could not load activity. {historyError()}
+                  </p>
+                  <button
+                    type="button"
+                    disabled={!connected() || historyBusy()}
+                    onClick={() => void retryHistory()}
+                  >
+                    Retry activity
+                  </button>
+                </div>
+              </Show>
+              <For
+                each={activity()}
+                fallback={
+                  <Show when={!historyBusy() && !historyError()}>
+                    <p class="muted">
+                      <Show when={connected()} fallback="Reconnect to load activity.">
+                        No activity yet.
+                      </Show>
+                    </p>
+                  </Show>
+                }
+              >
                 {(event) => (
                   <ContextArea
                     items={[
@@ -135,7 +199,7 @@ export function TaskEditor(props: { controller: WorkspaceController; task: Worke
                   </ContextArea>
                 )}
               </For>
-              <Show when={historyMore()}>
+              <Show when={historyMore() && !historyError()}>
                 <button class="history-load" disabled={historyBusy()} onClick={() => void loadHistory()}>
                   <Show when={historyBusy()} fallback={'Load older activity'}>
                     {'Loading…'}
@@ -151,6 +215,7 @@ export function TaskEditor(props: { controller: WorkspaceController; task: Worke
               {
                 id: 'browse',
                 label: 'Browse workspace files…',
+                disabled: !connected() || browsing(),
                 run: () => void browseFiles(),
               },
               {
@@ -172,14 +237,45 @@ export function TaskEditor(props: { controller: WorkspaceController; task: Worke
                   {'Changed files'}
                 </Show>
               </span>
-              <button class="text-button" onClick={() => void browseFiles()}>
-                Browse all…
+              <button
+                class="text-button"
+                disabled={!connected() || browsing()}
+                onClick={() => void browseFiles()}
+              >
+                <Show when={browsing()} fallback="Browse all…">
+                  Loading files…
+                </Show>
               </button>
             </div>
+            <Show when={filesLoading()}>
+              <p class="preview-hint" role="status">
+                Loading changed files…
+              </p>
+            </Show>
+            <Show when={filesError()}>
+              <div class="read-error">
+                <p class="error" role="alert">
+                  Could not load changed files. {filesError()}
+                </p>
+                <button
+                  type="button"
+                  disabled={!connected() || filesLoading()}
+                  onClick={() => void retryFiles()}
+                >
+                  Retry files
+                </button>
+              </div>
+            </Show>
             <For
               each={files()}
               fallback={
-                <p class="preview-hint">No file edits yet. Existing files are available in Browse all.</p>
+                <Show when={!filesLoading() && !filesError()}>
+                  <p class="preview-hint">
+                    <Show when={connected()} fallback="Reconnect to load files.">
+                      No changed files yet. Browse all to view existing files.
+                    </Show>
+                  </p>
+                </Show>
               }
             >
               {(fileEntry) => (
@@ -191,27 +287,25 @@ export function TaskEditor(props: { controller: WorkspaceController; task: Worke
                     }}
                     onClick={() => preview(fileEntry.path)}
                   >
-                    <Icon name="file" size={15} />
+                    <Icon name="file" />
                     <span>{fileEntry.path}</span>
                     <small>
                       <Show when={fileEntry.status === 'rolled_back'} fallback={fileEntry.bytes + ' B'}>
                         {'restored'}
                       </Show>
                     </small>
-                    <Icon name="arrow" size={13} />
+                    <Icon name="right" />
                   </button>
                 </ContextArea>
               )}
             </For>
           </ContextArea>
-          <Show
-            when={file()}
-            fallback={<p class="preview-hint">Choose a file to preview it or select code for a change.</p>}
-          >
+          <Show when={file()}>
             {(path) => (
               <FileViewer
                 workerId={task().id}
                 path={path()}
+                focusRequest={output.previewRequest()}
                 rpc={rpc}
                 request={(result) => sendFollowup(task().id, result)}
                 copy={copy}
@@ -223,6 +317,6 @@ export function TaskEditor(props: { controller: WorkspaceController; task: Worke
           </Show>
         </Show>
       </section>
-    </>
+    </details>
   );
 }

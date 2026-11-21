@@ -30,6 +30,8 @@ type NativeHostDependencies = {
 const quietMethods = new Set([
   'state',
   'worker.files',
+  'worker.previewStatus',
+  'project.appRuns',
   'worker.handoffSeen',
   'worker.bridgeLoad',
   'worker.bridgeSave',
@@ -168,7 +170,9 @@ export class NativeHost {
     const quiet = method.startsWith('terminal.') || quietMethods.has(method);
     let timeoutMs = 30000;
 
-    if (method.startsWith('system.reset')) {
+    if (method === 'worker.previewStart') {
+      timeoutMs = 360000;
+    } else if (method.startsWith('system.reset')) {
       timeoutMs = 180000;
     } else if (method === 'project.pickFolder') {
       timeoutMs = 130000;

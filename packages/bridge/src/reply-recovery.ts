@@ -1,8 +1,11 @@
 import { z } from 'zod';
 import { identifierSchema } from './schemas/primitives.js';
 import { readReplyJSON } from '../../protocol/src/reply-json.js';
+import { formatSetupCommand } from '../../protocol/src/setup-command.js';
 import { parseProposalEnvelope, proposalEnvelopeSchema } from '../../protocol/src/proposal.js';
 import type { ProposalEnvelope } from '../../protocol/src/proposal.js';
+import type { Worker } from '../../protocol/src/index.js';
+import type { TaskProgress } from './progress.js';
 
 /** Hash the validated payload without normalizing characters in source strings.
  * Property ordering outside file contents is immaterial; every content byte is.
@@ -19,6 +22,26 @@ export function boundReply(raw: string, workerId: string, projectId: string): Pr
     throw new Error('This reply belongs to a different task or project. Nothing was imported.');
   }
   return reply;
+}
+
+export function assertFreshReplyExchange(
+  worker: Worker,
+  replyTo: string | undefined,
+  progress: TaskProgress | null,
+): void {
+  if (worker.control?.mode !== 'fresh') {
+    return;
+  }
+  if (
+    !replyTo ||
+    worker.control.retiredExchanges.includes(replyTo) ||
+    !progress ||
+    !['commit_intent', 'waiting_reply'].includes(progress.stage) ||
+    !progress.lastReceipt?.expectsReplyTo ||
+    progress.lastReceipt.exchangeId !== replyTo
+  ) {
+    throw new Error('Select the reply to the current request in this task’s chat.');
+  }
 }
 
 export const replyHeadersSchema = proposalEnvelopeSchema
@@ -77,12 +100,16 @@ export function actionSummary(envelope: ProposalEnvelope): string[] {
         return 'Edit ' + action.path;
       case 'read':
         return 'Read ' + action.path;
+      case 'skill':
+        return 'Read bundled skill: ' + action.name;
       case 'list':
         return 'List ' + action.path;
       case 'search':
         return 'Search project';
       case 'command':
         return 'Request command: ' + action.profileId + ' (approval rules apply)';
+      case 'setupCommand':
+        return 'Ask to run ' + formatSetupCommand(action.command);
       case 'finish':
         return 'Request goal verification';
       case 'ask':

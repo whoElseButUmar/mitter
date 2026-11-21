@@ -828,3 +828,81 @@ test('reset preserves both missing-exit and waiter-disposal failures without fab
   await manager.reset();
   assert.deepEqual(native.listenerCounts(), { data: 0, exit: 0 });
 });
+
+test('manual setup rejects the wrong worktree and a decision cancelled during PTY loading', async (t) => {
+  const root = await temporaryDirectory(t);
+  const entry = snapshot(root);
+  entry.workers.push({ id: 'worker', projectId: 'project' });
+  const started = Promise.withResolvers();
+  const loading = Promise.withResolvers();
+  let spawns = 0;
+  const manager = new TerminalManager(
+    () => entry,
+    () => {
+      started.resolve();
+      return loading.promise;
+    },
+  );
+  t.after(() => manager.reset());
+  const controller = new AbortController();
+  const options = {
+    root,
+    workerId: 'worker',
+    projectId: 'project',
+    signal: controller.signal,
+    onFinish: assert.fail,
+  };
+  const attempt = manager.startManualSetup(options);
+  await started.promise;
+  controller.abort();
+  loading.resolve({
+    spawn() {
+      spawns++;
+      return fakePty();
+    },
+  });
+  await assert.rejects(attempt, { name: 'AbortError' });
+  await assert.rejects(
+    manager.startManualSetup({ ...options, root: root + '/other', signal: new AbortController().signal }),
+    /folder changed/,
+  );
+  assert.equal(spawns, 0);
+});
+
+test('a completed setup terminal can yield its slot while live project shells remain available', async (t) => {
+  const root = await temporaryDirectory(t);
+  const entry = snapshot(root);
+  entry.workers.push({ id: 'worker', projectId: 'project' });
+  const ptys = [];
+  const manager = new TerminalManager(
+    () => entry,
+    async () => ({
+      spawn() {
+        const pty = fakePty();
+        ptys.push(pty);
+        return pty;
+      },
+    }),
+  );
+  t.after(() => manager.reset());
+  const existing = await createTerminal(manager);
+  const options = {
+    root,
+    workerId: 'worker',
+    projectId: 'project',
+    signal: new AbortController().signal,
+    onFinish() {},
+  };
+  const first = await manager.startManualSetup(options);
+  for (let i = 0; i < 6; i++) {
+    await createTerminal(manager);
+  }
+  await assert.rejects(manager.startManualSetup(options), /maximum 8/);
+  ptys[1].emitExit({ exitCode: 0 });
+  const replacement = await manager.startManualSetup(options);
+  const ids = (await manager.dispatch('terminal.list', { clientId: 'view', projectId: 'project' })).map(
+    (row) => row.id,
+  );
+  assert.equal(ids.length, 8);
+  assert.ok(ids.includes(existing.id) && ids.includes(replacement) && !ids.includes(first));
+});

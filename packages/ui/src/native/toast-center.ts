@@ -191,6 +191,13 @@ export class ToastCenter {
     return entry.id;
   }
 
+  dismissKey(key: string): void {
+    const entry = this.entries.find((item) => item.key === key);
+    if (entry) {
+      this.dismiss(entry.id);
+    }
+  }
+
   dismiss(id: string): void {
     if (this.disposed) {
       return;

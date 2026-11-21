@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { readerRevisionSchema } from '../../../protocol/src/schemas/reader-diagnostic.js';
 import { ASSISTANT_READER_VERSION, domRequestSchema } from '../dom/types.js';
 import { pageStateSchema } from './page-state.js';
 
@@ -36,6 +37,7 @@ export const pageHelloSchema = z
   .object({
     version: z.literal(PAGE_CHANNEL).describe('The installed page-message protocol.'),
     reader: z.literal(PAGE_READER).describe('The installed DOM reader version.'),
+    readerRevision: readerRevisionSchema.optional(),
     instanceId: z
       .string()
       .min(1)

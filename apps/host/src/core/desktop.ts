@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { z } from 'zod';
 import path from 'node:path';
 import { canonicalRoot } from './workspace.js';
+import { canonicalProjectParent } from './project-folders.js';
 import type { FolderPickerResult } from '../../../../packages/protocol/src/rpc.js';
 export { folderPickerResultSchema } from '../../../../packages/protocol/src/rpc.js';
 import { isRecord, errorMessage, hasErrorCode } from './types.js';
@@ -12,14 +13,21 @@ export type DesktopCommand = {
   args: string[];
 };
 
-export function folderDialogCommands(platform = process.platform): DesktopCommand[] {
+export function folderDialogCommands(
+  platform = process.platform,
+  purpose: 'project' | 'parent' = 'project',
+): DesktopCommand[] {
+  let prompt = 'Choose a project folder for Miter';
+  if (purpose === 'parent') {
+    prompt = 'Choose where to create the new Miter project folder';
+  }
   if (platform === 'darwin') {
     return [
       {
         program: '/usr/bin/osascript',
         args: [
           '-e',
-          'set selectedFolder to choose folder with prompt "Choose a project ' + 'folder for Miter"',
+          'set selectedFolder to choose folder with prompt "' + prompt + '"',
           '-e',
           'return POSIX path of selectedFolder',
         ],
@@ -42,8 +50,9 @@ export function folderDialogCommands(platform = process.platform): DesktopComman
           '-STA',
           '-Command',
           'Add-Type -AssemblyName System.Windows.Forms; $d = New-Object ' +
-            'System.Windows.Forms.FolderBrowserDialog; $d.Description = "Choose a ' +
-            'project folder for Miter"; if ($d.ShowDialog() -eq ' +
+            'System.Windows.Forms.FolderBrowserDialog; $d.Description = "' +
+            prompt +
+            '"; if ($d.ShowDialog() -eq ' +
             '[System.Windows.Forms.DialogResult]::OK) { [Console]::OutputEncoding = ' +
             '[System.Text.Encoding]::UTF8; [Console]::Write($d.SelectedPath) }; ' +
             '$d.Dispose()',
@@ -55,11 +64,11 @@ export function folderDialogCommands(platform = process.platform): DesktopComman
   return [
     {
       program: 'zenity',
-      args: ['--file-selection', '--directory', '--title=Choose a Miter project folder'],
+      args: ['--file-selection', '--directory', '--title=' + prompt],
     },
     {
       program: 'kdialog',
-      args: ['--getexistingdirectory', process.env.HOME || '/', '--title', 'Choose a Miter project folder'],
+      args: ['--getexistingdirectory', process.env.HOME || '/', '--title', prompt],
     },
   ];
 }
@@ -94,14 +103,15 @@ export function desktopExec(command: DesktopCommand): Promise<string> {
 const folderSelectionSchema = z
   .string()
   .describe(
-    'Literal UTF-8 folder-picker output; trimming and canonical filesystem checks follow validation.',
+    'Literal UTF-8 folder-picker output; only a Unix transport newline is removed before canonical filesystem checks.',
   );
 
 export async function pickFolder(
   execute: (command: DesktopCommand) => Promise<unknown> = desktopExec,
   platform = process.platform,
+  purpose: 'project' | 'parent' = 'project',
 ): Promise<FolderPickerResult> {
-  for (const command of folderDialogCommands(platform)) {
+  for (const command of folderDialogCommands(platform, purpose)) {
     try {
       const parsed = folderSelectionSchema.safeParse(await execute(command));
 
@@ -109,18 +119,25 @@ export async function pickFolder(
         throw new Error('The folder picker returned an invalid selection.', { cause: parsed.error });
       }
 
-      const selected = parsed.data.trim();
-
-      if (!selected) {
+      if (!parsed.data.trim()) {
         return {
           cancelled: true,
         };
       }
 
-      return {
-        root: await canonicalRoot(selected),
-        cancelled: false,
-      };
+      // Native Unix choosers append one output newline; spaces can belong to the folder name.
+      let selected = parsed.data;
+      if (platform !== 'win32') {
+        selected = selected.replace(/\r?\n$/, '');
+      }
+
+      let root;
+      if (purpose === 'parent') {
+        root = await canonicalProjectParent(selected);
+      } else {
+        root = await canonicalRoot(selected);
+      }
+      return { root, cancelled: false };
     } catch (error) {
       if (hasErrorCode(error, 'ENOENT')) {
         continue;

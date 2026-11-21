@@ -5,8 +5,8 @@ type FrameScheduler = {
 
 export function createAnimationFrames(
   scheduler: FrameScheduler = {
-    request: requestAnimationFrame,
-    cancel: cancelAnimationFrame,
+    request: (callback) => window.requestAnimationFrame(callback),
+    cancel: (id) => window.cancelAnimationFrame(id),
   },
 ) {
   const pending = new Set<number>();

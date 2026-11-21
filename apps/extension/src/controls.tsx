@@ -68,7 +68,7 @@ export function InfoPopover(props: { label: string; title: string; children: JSX
         class="info-trigger"
       >
         {props.label}
-        <Icon name="down" size={12} />
+        <Icon name="down" />
       </button>
       <div
         ref={(element) => {

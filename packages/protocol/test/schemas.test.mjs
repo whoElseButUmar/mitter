@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { z } from 'zod';
+import metadata from '../package.json' with { type: 'json' };
 import * as protocol from '../src/index.ts';
 import * as rpc from '../src/rpc.ts';
 import { proposalEnvelopeSchema, referencedEditSchema } from '../src/proposal.ts';
@@ -60,7 +61,7 @@ test('original index runtime exports remain available alongside schemas', () => 
     assert.ok(Object.hasOwn(protocol, name), name);
   }
 
-  assert.equal(protocol.APP_VERSION, '1.0.0-rc.21');
+  assert.equal(protocol.APP_VERSION, metadata.version);
 });
 
 test('the public index exposes the same canonical RPC API and schemas', () => {

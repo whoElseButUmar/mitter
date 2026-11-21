@@ -13,8 +13,16 @@ import { ProjectForm } from '../../src/forms/ProjectForm';
 import { createFilePreview } from '../../src/ui/file-preview';
 import { createTerminalAppearance } from '../../src/ui/terminal-appearance';
 import { errorMessage } from '../../src/schemas/primitives';
-import { TaskAttentionFixture } from './task-attention.fixture';
+import { TaskAttentionFixture, type TaskViewScenario } from './task-attention.fixture';
 import { createDomReaderFixture } from './dom-reader.fixture';
+import { createTaskStartFixture } from './task-start.fixture';
+import { createAppFoundationFixture } from './app-foundation.fixture';
+import { createSetupFixture } from './setup.fixture';
+import { createProjectHomeFixture } from './project-home.fixture';
+import { createProjectFormFixture } from './project-form.fixture';
+import { createTaskRecoveryFixture } from './task-recovery.fixture';
+import { createConfirmationFixture } from './confirmation.fixture';
+import { createFeedbackFixture } from './feedback.fixture';
 
 function deferred<Value>() {
   let callbacks: { resolve: (value: Value) => void; reject: (error: Error) => void } | undefined;
@@ -62,6 +70,9 @@ let assetRead: ReturnType<typeof deferred<typeof chunk>> | undefined;
 let appearance: ReturnType<typeof createTerminalAppearance> | undefined;
 const fontErrors: string[] = [];
 const attentionActions: string[] = [];
+let showTaskActivity: (() => void) | undefined;
+const appFoundation = createAppFoundationFixture();
+const confirmation = createConfirmationFixture();
 
 function dispose() {
   const cleanup = disposeRoot;
@@ -79,6 +90,8 @@ function closeDialog() {
   closes++;
   dispose();
 }
+
+const taskRecovery = createTaskRecoveryFixture(mount, closeDialog);
 
 function mountProject() {
   mount(() => (
@@ -105,6 +118,24 @@ function mountAttention(reason: string, receiving = false, consoleOpen = true, w
       receiving={receiving}
       consoleOpen={consoleOpen}
       workerError={workerError}
+      onAction={(name) => attentionActions.push(name)}
+    />
+  ));
+}
+
+function mountTaskState(scenario: TaskViewScenario) {
+  attentionActions.length = 0;
+  showTaskActivity = undefined;
+  mount(() => (
+    <TaskAttentionFixture
+      reason=""
+      receiving={false}
+      consoleOpen={false}
+      workerError=""
+      scenario={scenario}
+      onOutputReady={(showActivity) => {
+        showTaskActivity = showActivity;
+      }}
       onAction={(name) => attentionActions.push(name)}
     />
   ));
@@ -205,9 +236,9 @@ function inspect() {
     sameTreeLabel: !!heading?.id && heading.id === dialog?.getAttribute('aria-labelledby'),
     activeId: document.activeElement?.id ?? '',
     replacementDraft,
-    fields: [...root.querySelectorAll('input[required]')].map((input) => {
+    fields: [...root.querySelectorAll('form input')].map((input) => {
       if (!(input instanceof HTMLInputElement)) {
-        throw new Error('Expected a native required input.');
+        throw new Error('Expected a native form input.');
       }
       return {
         value: input.value,
@@ -301,6 +332,9 @@ async function checkNative(projectRoot: string) {
 }
 
 function destroy() {
+  taskRecovery.dispose();
+  confirmation.dispose();
+  appFoundation.dispose();
   dispose();
   opener.removeEventListener('click', mountProject);
   for (const id of saves.keys()) {
@@ -311,15 +345,31 @@ function destroy() {
   preview = undefined;
   appearance = undefined;
   attentionActions.length = 0;
+  showTaskActivity = undefined;
 }
 
 opener.addEventListener('click', mountProject);
 Object.assign(window, {
   mitterReleaseFixture: {
+    appFoundation,
     domReader: createDomReaderFixture(),
+    taskStart: createTaskStartFixture(mount, closeDialog),
+    taskRecovery,
+    setup: createSetupFixture(mount),
+    projectHome: createProjectHomeFixture(mount),
+    projectForm: createProjectFormFixture(mount, closeDialog),
+    confirmation,
+    feedback: createFeedbackFixture(mount),
     mountProject,
     mountReplacement,
     mountAttention,
+    mountTaskState,
+    showTaskActivity: () => {
+      if (!showTaskActivity) {
+        throw new Error('Mount a task state before opening its activity.');
+      }
+      showTaskActivity();
+    },
     attentionActions: () => [...attentionActions],
     finishSave,
     mountPreview,

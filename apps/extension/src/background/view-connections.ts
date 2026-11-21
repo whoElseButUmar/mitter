@@ -6,6 +6,7 @@ import { bindFilePreviewPort } from '../file-preview-port.js';
 import { resetStartSchema, rpcRequestSchema, uiControlSchema } from '../schemas/messages.js';
 import { documentURL, errorMessage } from '../schemas/primitives.js';
 import type { NativeRPC } from '../transport/native-host.js';
+import { APP_VERSION } from '../../../../packages/protocol/src/index.js';
 
 type ViewDependencies = {
   reset(): DataResetCoordinator;
@@ -19,6 +20,7 @@ type ViewDependencies = {
 /** Authenticated document ports, UI work tracking, and the independent reset write barrier. */
 export class ViewConnections {
   private views = new Set<chrome.runtime.Port>();
+  private readyViews = new Set<chrome.runtime.Port>();
   private resetViews = new Set<chrome.runtime.Port>();
   private auxiliaryViews = new Set<chrome.runtime.Port>();
   private portCleanups = new Map<chrome.runtime.Port, () => void>();
@@ -55,6 +57,7 @@ export class ViewConnections {
     const cleanup = this.portCleanups.get(port);
     this.portCleanups.delete(port);
     const view = this.views.delete(port);
+    this.readyViews.delete(port);
     const auxiliary = this.auxiliaryViews.delete(port);
     const reset = this.resetViews.delete(port);
 
@@ -109,13 +112,13 @@ export class ViewConnections {
   }
 
   broadcast(message: unknown): void {
-    for (const view of this.views) {
+    for (const view of this.readyViews) {
       this.post(view, message);
     }
   }
 
   ding(): void {
-    const view = [...this.views].at(-1);
+    const view = [...this.readyViews].at(-1);
 
     if (view) {
       this.post(view, { event: 'ding' });
@@ -261,6 +264,11 @@ export class ViewConnections {
     }
 
     this.views.add(port);
+    let compatible = false;
+    let initialized = false;
+    const reloadMessage =
+      'Miter could not confirm a matching view version. Open chrome://extensions, click Reload on Miter, ' +
+      'then reopen the workspace. No operation was sent.';
     const inFlight = new Set<string>();
     const onMessage = (raw: unknown): void => {
       if (!this.views.has(port)) {
@@ -270,15 +278,47 @@ export class ViewConnections {
       const control = uiControlSchema.safeParse(raw);
 
       if (control.success) {
-        if (control.data.type === 'ping') {
+        if (control.data.type === 'hello') {
+          compatible = control.data.version === APP_VERSION;
+
+          if (compatible) {
+            this.readyViews.add(port);
+          } else {
+            this.readyViews.delete(port);
+          }
+
+          this.post(port, { type: 'hello', id: control.data.id, version: APP_VERSION });
+
+          if (!compatible) {
+            this.post(port, { event: 'connection', connected: false, error: reloadMessage });
+            return;
+          }
+
+          if (!initialized) {
+            initialized = true;
+
+            if (!reset.blocked) {
+              for (const message of this.dependencies.initialMessages()) {
+                this.post(port, message);
+              }
+            }
+          }
+        } else if (control.data.type === 'ping') {
           // Liveness never touches tasks, the composer, native RPC, or permissions.
           this.post(port, { type: 'pong', id: control.data.id });
-        } else {
+          return;
+        }
+
+        if (compatible) {
           try {
             this.dependencies.connect();
           } catch (error) {
-            this.dependencies.log('host.error', errorMessage(error));
+            const detail = errorMessage(error);
+            this.dependencies.log('host.error', detail);
+            this.post(port, { event: 'connection', connected: false, error: detail });
           }
+        } else {
+          this.post(port, { event: 'connection', connected: false, error: reloadMessage });
         }
 
         return;
@@ -291,6 +331,12 @@ export class ViewConnections {
       }
 
       const message = parsed.data;
+
+      if (!compatible) {
+        this.post(port, { id: message.id, ok: false, error: reloadMessage });
+        return;
+      }
+
       let job: Promise<unknown>;
 
       try {
@@ -327,22 +373,8 @@ export class ViewConnections {
         });
     };
     this.attach(port, onMessage);
-
-    if (!reset.blocked) {
-      for (const message of this.dependencies.initialMessages()) {
-        this.post(port, message);
-      }
-    }
-
-    try {
-      this.dependencies.connect();
-    } catch (error) {
-      this.post(port, {
-        event: 'connection',
-        connected: false,
-        error: errorMessage(error),
-      });
-    }
+    // Older views do not send hello. Their existing connection handler can still explain recovery.
+    this.post(port, { event: 'connection', connected: false, error: reloadMessage });
   }
 
   quiesce(): Promise<void> {

@@ -14,11 +14,13 @@ const roleAttributes = [
 ] as const;
 
 const turnSelector =
-  'article[data-testid^="conversation-turn"],article[data-turn],article[data-turn-id],[data-message-id],[data-turn-id],[data-testid^="conversation-turn-"]';
+  'article[data-testid^="conversation-turn"],article[data-turn],article[data-turn-id],[data-message-id],[data-turn-id],[data-testid^="conversation-turn-"],' +
+  '[data-content-search-unit-key],[data-chatgpt-search-unit-key],[data-chatgpt-selection-message-id],[data-dil-message-id]';
 
 export const roleSelector =
   roleAttributes.map((attribute) => '[' + attribute + ']').join(',') +
-  ',[data-testid="user-message"],[data-testid="assistant-message"],[data-testid="user-message-content"],[data-testid="assistant-message-content"]';
+  ',[data-testid="user-message"],[data-testid="assistant-message"],[data-testid="user-message-content"],[data-testid="assistant-message-content"],' +
+  '[data-user-message-bubble="true"],[data-markdown-text-style="assistant-message"]';
 
 export function transcriptExcluded(element: HTMLElement): boolean {
   for (let ancestor: Element | null = element; ancestor; ancestor = parentAcrossShadow(ancestor)) {
@@ -46,6 +48,12 @@ export function explicitRole(element: HTMLElement): MessageRole {
     roles.add('user');
   }
   if (testId === 'assistant-message' || testId === 'assistant-message-content') {
+    roles.add('assistant');
+  }
+  if (element.getAttribute('data-user-message-bubble') === 'true') {
+    roles.add('user');
+  }
+  if (element.getAttribute('data-markdown-text-style') === 'assistant-message') {
     roles.add('assistant');
   }
   if (roles.size === 1) {
@@ -96,9 +104,22 @@ export function messageIdentity(message: HTMLElement | undefined): string {
     }
   }
   for (let node: Element | null = message || null; node; node = parentAcrossShadow(node)) {
-    const identity = node.getAttribute('data-message-id') || node.getAttribute('data-turn-id');
+    const identity =
+      node.getAttribute('data-message-id') ||
+      node.getAttribute('data-turn-id') ||
+      node.getAttribute('data-dil-message-id') ||
+      node.getAttribute('data-chatgpt-selection-message-id');
     if (identity && identity.length <= 200) {
       return identity;
+    }
+    // Search wrappers may describe multiple messages. Only one literal UUID
+    // identifies a turn; positional fallback-turn keys are not stable IDs.
+    const searchIdentity = node.getAttribute('data-chatgpt-search-message-ids');
+    if (
+      searchIdentity &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(searchIdentity)
+    ) {
+      return searchIdentity;
     }
     if (node.matches('main,body,html,[role="main"]')) {
       break;

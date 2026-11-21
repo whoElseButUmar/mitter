@@ -1,5 +1,6 @@
 import { parseRewriteRequest, structureLocally, type RewriteRequest } from '../../protocol/src/rewrite.js';
-import { createRewriteFields } from './forms/rewrite-fields.js';
+import { createRewritePanel } from './forms/rewrite-panel.js';
+import { rewriteTextSchema } from '../../protocol/src/schemas/rewrite.js';
 import { enhanceSelects } from './select.js';
 
 export type DraftRewriteOptions = {
@@ -20,60 +21,14 @@ export function mountDraftRewrite(
   let controller: AbortController | undefined;
   let original = '';
   let result = '';
-  const toggle = document.createElement('button');
-  toggle.type = 'button';
-  toggle.className = 'rewrite-toggle';
-  toggle.textContent = 'Rewrite…';
-  toggle.setAttribute('aria-expanded', 'false');
-  const panel = document.createElement('section');
-  panel.className = 'rewrite-panel';
-  panel.hidden = true;
-  panel.setAttribute('aria-label', 'Rewrite new task');
-  const fields = createRewriteFields(document);
-  const privacy = document.createElement('p');
-  privacy.className = 'muted small';
-  const preview = document.createElement('textarea');
-  preview.className = 'rewrite-preview';
-  preview.rows = 5;
-  preview.readOnly = true;
-  preview.hidden = true;
-  preview.setAttribute('aria-label', 'Rewrite preview');
+  const controls = createRewritePanel(document, 'Rewrite new task', 'Cancel rewrite');
+  const { toggle, panel, preview, cancel, generate, apply } = controls;
   const status = document.createElement('p');
   status.className = 'followup-status';
   status.setAttribute('role', 'status');
   status.hidden = true;
-  const buttons = document.createElement('div');
-  buttons.className = 'button-row end';
-  const cancel = document.createElement('button');
-  cancel.type = 'button';
-  cancel.textContent = 'Cancel rewrite';
-  const generate = document.createElement('button');
-  generate.type = 'button';
-  generate.textContent = 'Preview rewrite';
-  const apply = document.createElement('button');
-  apply.type = 'button';
-  apply.className = 'primary';
-  apply.textContent = 'Apply to draft';
-  apply.hidden = true;
-  buttons.append(cancel, generate, apply);
-  panel.append(fields.fields, privacy, preview, buttons);
   root.append(toggle, panel, status);
-  const selects = enhanceSelects(fields.fields);
-
-  function help(): void {
-    privacy.textContent =
-      'Shares only this draft in a separate ChatGPT chat. ' +
-      'Preview and Apply do not create or start a task.';
-
-    if (fields.provider.value === 'local') {
-      privacy.textContent =
-        'Adds a local template without an AI model or network request. ' +
-        'Your original wording is retained.';
-    }
-  }
-
-  fields.provider.addEventListener('change', help);
-  help();
+  const selects = enhanceSelects(controls.fields);
 
   function message(text: string): void {
     status.textContent = text;
@@ -131,8 +86,8 @@ export function mountDraftRewrite(
     try {
       const request = parseRewriteRequest({
         instruction: original,
-        mode: fields.mode.value,
-        provider: fields.provider.value,
+        mode: controls.mode.value,
+        provider: controls.provider.value,
       });
       let rewritten: string | undefined;
 
@@ -146,16 +101,12 @@ export function mountDraftRewrite(
         return;
       }
 
-      if (
-        typeof rewritten !== 'string' ||
-        !rewritten.trim() ||
-        rewritten.length > 4000 ||
-        rewritten.includes('\0')
-      ) {
+      const draft = rewriteTextSchema.safeParse(rewritten);
+      if (!draft.success) {
         throw new Error('The rewrite did not return a valid draft.');
       }
 
-      result = rewritten;
+      result = draft.data;
       preview.value = result;
       preview.hidden = false;
       apply.hidden = false;
@@ -211,7 +162,7 @@ export function mountDraftRewrite(
     dispose() {
       alive = false;
       controller?.abort();
-      fields.provider.removeEventListener('change', help);
+      controls.dispose();
       toggle.onclick = null;
       cancel.onclick = null;
       generate.onclick = null;

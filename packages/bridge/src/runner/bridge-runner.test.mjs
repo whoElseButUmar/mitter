@@ -114,10 +114,17 @@ test('confirmed resend outcomes conform to their schema without bypassing send o
       assert.deepEqual(result, expected);
       assert.deepEqual(bridgeAPI.bridgeResendResultSchema.parse(result), expected);
       assert.equal(harness.imports.length, 0);
-      assert.equal(harness.options.lastReceipt.exchangeId, originalExchange);
+      if (outcome === 'replyFound') {
+        assert.equal(harness.options.lastReceipt.exchangeId, originalExchange);
+      } else {
+        assert.notEqual(harness.options.lastReceipt.exchangeId, originalExchange);
+      }
       if (outcome === 'sent') {
         assert.equal(harness.commits.length, 2);
-        assert.equal(harness.commits[1].text, originalText);
+        assert.equal(
+          harness.commits[1].text,
+          buildExchangeMessage('BOOTSTRAP', harness.options.lastReceipt.exchangeId, harness.worker),
+        );
         assert.notEqual(harness.commits[1].messageId, harness.commits[0].messageId);
         assert.equal(harness.runner.status.turns, 2);
       } else {
@@ -346,6 +353,8 @@ test('late watch is read-only and resumes ordinary validation without consuming 
   assert.equal(harness.runner.status.monitoring, true);
   const watchDeadline = harness.runner.status.watchUntil;
   assert.equal(watchDeadline, harness.now() + LATE_REPLY_WATCH_MS);
+  assert.equal(harness.progress().monitoring, true);
+  assert.equal(harness.progress().watchUntil, watchDeadline);
   const usedBeforeWatch = harness.progress().activeMs;
   harness.showReply();
   harness.advance(10000);
@@ -356,6 +365,8 @@ test('late watch is read-only and resumes ordinary validation without consuming 
   await harness.runner.tick();
   assert.equal(harness.runner.status.active, true);
   assert.equal(harness.runner.status.monitoring, false);
+  assert.equal(Object.hasOwn(harness.progress(), 'monitoring'), false);
+  assert.equal(Object.hasOwn(harness.progress(), 'watchUntil'), false);
   assert.equal(harness.imports.length, 0);
   assert.equal(harness.progress().activeMs, usedBeforeWatch);
   await harness.runner.tick();
@@ -467,10 +478,54 @@ test('watch retry failures never renew the saved absolute watch deadline', async
   harness.advance(1500);
   await harness.runner.tick();
   assert.equal(harness.runner.status.watchUntil, deadline);
+  assert.equal(harness.progress().monitoring, true);
+  assert.equal(harness.progress().watchUntil, deadline);
   harness.advance(deadline - harness.now());
   await harness.runner.tick();
   assert.equal(harness.runner.status.monitoring, false);
   assert.equal(harness.runner.status.watchUntil, undefined);
+  assert.equal(Object.hasOwn(harness.progress(), 'monitoring'), false);
+  assert.equal(Object.hasOwn(harness.progress(), 'watchUntil'), false);
   assert.equal(harness.imports.length, 0);
   assert.equal(harness.commits.length, 1);
+});
+
+test('an explicit Stop clears persisted watch metadata without sending or importing', async () => {
+  const harness = createHarness();
+  await harness.runner.start();
+  await harness.runner.stop('Cannot read reply.', 'error', 'REPLY_UNREADABLE');
+  assert.equal(harness.progress().monitoring, true);
+  await harness.runner.stop('Stopped by you.');
+  assert.equal(Object.hasOwn(harness.progress(), 'monitoring'), false);
+  assert.equal(Object.hasOwn(harness.progress(), 'watchUntil'), false);
+  assert.equal(harness.imports.length, 0);
+  assert.equal(harness.commits.length, 1);
+});
+
+test('saved display metadata cannot restore a late-reply watcher or replay its send', async () => {
+  const previous = createHarness();
+  await previous.runner.start();
+  await previous.runner.stop('Cannot read reply.', 'error', 'REPLY_UNREADABLE');
+  const progress = structuredClone(previous.progress());
+  await previous.runner.stop();
+  const resumed = createHarness({
+    progress,
+    options: { resumeExisting: true },
+    view: {
+      count: 1,
+      userCount: 1,
+      lastRole: 'user',
+      lastUserText: previous.commits[0].text,
+      lastUserId: 'sent_user',
+      userIds: ['sent_user'],
+    },
+  });
+  await resumed.runner.start();
+  assert.notEqual(resumed.runner.status.monitoring, true);
+  assert.equal(resumed.runner.status.watchUntil, undefined);
+  assert.equal(Object.hasOwn(resumed.progress(), 'monitoring'), false);
+  assert.equal(Object.hasOwn(resumed.progress(), 'watchUntil'), false);
+  assert.equal(resumed.imports.length, 0);
+  assert.equal(resumed.commits.length, 0);
+  await resumed.runner.stop();
 });

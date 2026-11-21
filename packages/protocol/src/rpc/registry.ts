@@ -14,6 +14,17 @@ import {
   workspaceRollbackSchema,
 } from './files.js';
 import { folderPickerResultSchema, healthSchema, stateBackupSchema, stateBackupsSchema } from './system.js';
+import { readinessParamsSchema, readinessSchema } from './readiness.js';
+import {
+  appRunListParamsSchema,
+  appRunListResultSchema,
+  previewStatusParamsSchema,
+  previewStatusResultSchema,
+  previewStartParamsSchema,
+  previewStartResultSchema,
+  previewStopParamsSchema,
+  previewStopResultSchema,
+} from './preview.js';
 import { teamResultSchema, teamSchema } from './team.js';
 import {
   acceptResultSchema,
@@ -36,11 +47,14 @@ import {
   steerResultSchema,
   steerValidationResultSchema,
   stopResultSchema,
+  workerSetupDecisionResultSchema,
 } from './receipts.js';
 import {
   emptyRpcParamsSchema,
   epochParamsSchema,
   projectAddParamsSchema,
+  projectCreateParamsSchema,
+  projectFolderPickerParamsSchema,
   projectContextParamsSchema,
   projectParamsSchema,
   projectProfileParamsSchema,
@@ -69,6 +83,7 @@ import {
   workerRestoreFileParamsSchema,
   workerRollbackParamsSchema,
   workerRunParamsSchema,
+  workerSetupDecisionParamsSchema,
   workerSkipParamsSchema,
   workerStopParamsSchema,
   workerTeamMessageParamsSchema,
@@ -93,15 +108,21 @@ function contract<Params extends z.ZodType, Result extends z.ZodType>(
 export const coreRpcRegistry = Object.freeze({
   state: contract(emptyRpcParamsSchema, snapshotSchema),
   'system.health': contract(emptyRpcParamsSchema, healthSchema),
+  'system.readiness': contract(readinessParamsSchema, readinessSchema),
+  'project.appRuns': contract(appRunListParamsSchema, appRunListResultSchema),
+  'worker.previewStatus': contract(previewStatusParamsSchema, previewStatusResultSchema),
+  'worker.previewStart': contract(previewStartParamsSchema, previewStartResultSchema, true),
+  'worker.previewStop': contract(previewStopParamsSchema, previewStopResultSchema, true),
   'system.backups': contract(emptyRpcParamsSchema, stateBackupsSchema),
   'system.backup': contract(emptyRpcParamsSchema, stateBackupSchema, true),
   'system.verifyBackup': contract(verifyBackupParamsSchema, stateBackupSchema),
-  'project.pickFolder': contract(emptyRpcParamsSchema, folderPickerResultSchema),
+  'project.pickFolder': contract(projectFolderPickerParamsSchema, folderPickerResultSchema),
   'project.reveal': contract(projectParamsSchema, openedResultSchema, true),
   'project.read': contract(projectReadParamsSchema, fileTextSchema),
   'project.context': contract(projectContextParamsSchema, projectContextSchema, true),
   'project.rename': contract(projectRenameParamsSchema, projectSchema, true),
   'project.add': contract(projectAddParamsSchema, projectSchema, true),
+  'project.create': contract(projectCreateParamsSchema, projectSchema, true),
   'project.profile': contract(projectProfileParamsSchema, projectSchema, true),
   'worker.create': contract(workerCreateParamsSchema, workerSchema, true),
   'settings.update': contract(settingsUpdateParamsSchema, settingsSchema, true),
@@ -139,6 +160,7 @@ export const coreRpcRegistry = Object.freeze({
   'worker.pause': contract(epochParamsSchema, pauseResultSchema, true),
   'worker.cancel': contract(epochParamsSchema, cancelResultSchema, true),
   'worker.approve': contract(workerApproveParamsSchema, approveResultSchema, true),
+  'worker.setupDecision': contract(workerSetupDecisionParamsSchema, workerSetupDecisionResultSchema, true),
   'worker.skip': contract(workerSkipParamsSchema, skipResultSchema, true),
   'worker.rollback': contract(workerRollbackParamsSchema, workspaceRollbackSchema, true),
   'worker.accept': contract(workerAcceptParamsSchema, acceptResultSchema, true),

@@ -78,6 +78,43 @@ export function normalizeReplySyntax(source: string): string {
   return output.join('');
 }
 
+const replyFenceOpening = /^(```|\\`\\`\\`)(?:json)?[ \t]*(?:\\)?\r?\n/;
+
+function completeReplyFenceBody(raw: string): string | undefined {
+  const opening = replyFenceOpening.exec(raw);
+  const marker = opening?.[1];
+
+  if (!opening || marker === undefined || !raw.endsWith(marker)) {
+    return;
+  }
+
+  const closingStart = raw.length - marker.length;
+
+  if (closingStart < opening[0].length || raw[closingStart - 1] !== '\n') {
+    return;
+  }
+
+  // Keep the final linebreak: its optional preceding backslash is transport
+  // whitespace handled by normalizeReplySyntax, never part of a quoted value.
+  const body = raw.slice(opening[0].length, closingStart);
+
+  if (/^[ \t]*(?:```|\\`\\`\\`)/m.test(body)) {
+    return;
+  }
+
+  return body;
+}
+
+/** One complete explicit outer fence, including singly escaped literal fences.
+ * This is transport evidence only; JSON and envelope validation still follow. */
+export function hasCompleteReplyFence(input: string): boolean {
+  if (typeof input !== 'string' || exceedsHandoffBytes(input)) {
+    return false;
+  }
+
+  return completeReplyFenceBody(input.trim()) !== undefined;
+}
+
 /** Observation only: an open JSON container may still be streaming. This never
  * repairs input or grants import authority; the full parser still gates import. */
 export function isIncompleteReplyJSON(input: string): boolean {
@@ -87,14 +124,16 @@ export function isIncompleteReplyJSON(input: string): boolean {
 
   let raw = input.trim();
 
-  if (raw.startsWith('```')) {
-    const start = /^```(?:json)?[ \t]*\r?\n/.exec(raw);
+  const opening = replyFenceOpening.exec(raw);
 
-    if (!start) {
-      return false;
+  if (opening) {
+    const fencedBody = completeReplyFenceBody(raw);
+
+    if (fencedBody !== undefined) {
+      raw = fencedBody;
+    } else {
+      raw = raw.slice(opening[0].length);
     }
-
-    raw = raw.slice(start[0].length).replace(/\r?\n```$/, '');
   }
 
   raw = normalizeReplySyntax(raw).trim();
@@ -159,8 +198,7 @@ export function readReplyJSON(input: string): unknown {
   }
 
   let raw = input.trim();
-  const fence = /^```(?:json)?\s*\n([\s\S]*?)\n```$/.exec(raw);
-  const fencedBody = fence?.[1];
+  const fencedBody = completeReplyFenceBody(raw);
 
   if (fencedBody !== undefined) {
     raw = fencedBody;
@@ -205,7 +243,7 @@ export function isReadOnlyReply(value: unknown): boolean {
     return (
       isRecord(action) &&
       typeof action.type === 'string' &&
-      ['read', 'list', 'search', 'diff'].includes(action.type)
+      ['read', 'list', 'search', 'diff', 'skill'].includes(action.type)
     );
   });
 }

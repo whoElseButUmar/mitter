@@ -110,8 +110,33 @@ export type VerificationIntent = z.infer<typeof verificationIntentSchema>;
 
 export const checkResultSchema = z
   .object({
-    check: checkSchema.describe('The configured check that was performed.'),
+    check: z
+      .union([
+        checkSchema,
+        z
+          .strictObject({
+            type: z.literal('quality').describe('An automatic host-owned project completion check.'),
+            name: z
+              .enum([
+                'skills',
+                'components',
+                'syntax',
+                'tests',
+                'browser',
+                'lighthouse',
+                'snapshot',
+                'dev-server',
+              ])
+              .describe('The built-in quality rule that produced this evidence.'),
+          })
+          .describe('A mandatory quality check; this is not a worker-supplied command.'),
+      ])
+      .describe('The configured or automatic check that was performed.'),
     ok: z.boolean().describe('Whether this check passed.'),
+    finding: z
+      .string()
+      .optional()
+      .describe('A bounded summary of actionable failures when detail is a structured report.'),
     detail: z
       .union([commandResultSchema, z.string()])
       .optional()
@@ -121,18 +146,33 @@ export const checkResultSchema = z
 
 export type CheckResult = z.infer<typeof checkResultSchema>;
 
-export const verificationResultSchema = z
+const verificationEvidenceSchema = z
   .object({
-    ok: z.boolean().describe('Whether every configured check passed.'),
     results: z.array(checkResultSchema).describe('Check evidence in command-first order.'),
     requiresHumanAcceptance: z
       .literal(false)
       .describe('Explicit finish no longer requires a separate acceptance click.'),
-    verification: z
-      .enum(['passed', 'not-run'])
-      .describe('Whether automated checks were configured for this finish.'),
     summary: z.string().describe('The summary supplied by the explicit finish action.'),
   })
+  .describe('Observed completion checks and the requested completion summary.');
+
+export const verificationResultSchema = z
+  .discriminatedUnion('ok', [
+    verificationEvidenceSchema
+      .extend({
+        ok: z.literal(true).describe('All configured completion checks passed.'),
+        verification: z
+          .enum(['passed', 'not-run'])
+          .describe('Whether checks passed or no completion checks were configured.'),
+      })
+      .describe('Successful completion evidence, with no failed checks.'),
+    verificationEvidenceSchema
+      .extend({
+        ok: z.literal(false).describe('At least one configured completion check failed.'),
+        verification: z.literal('failed').describe('The checks ran and did not verify completion.'),
+      })
+      .describe('Failed completion evidence that requires a fresh repair proposal.'),
+  ])
   .describe('Completion-check evidence; failed checks do not authorize completion.');
 
 export type VerificationResult = z.infer<typeof verificationResultSchema>;

@@ -10,6 +10,7 @@ import {
 import { createAnimationFrames } from '../../src/ui/animation-frames.ts';
 import { disposeTerminalScreen } from '../../src/ui/terminal-screen.ts';
 import { bindTerminalInput, readTerminalScreen } from '../../src/ui/terminal-session.ts';
+import { showConfirmation } from '../../src/ui/confirmation.ts';
 import { createFilePreview } from '../../src/ui/file-preview.ts';
 import { createTaskSound } from '../../src/ui/task-sound.ts';
 import { tabRowOptions } from '../../src/ui/tab-row-options.ts';
@@ -101,6 +102,7 @@ function terminalScreen() {
   const lines = [];
   const handlers = {};
   const disposed = [];
+  const lifetime = new AbortController();
   const element = new EventTarget();
   element.remove = () => disposed.push('element');
   const term = {
@@ -146,8 +148,190 @@ function terminalScreen() {
     disposed: false,
     disposables: [],
   };
-  return { screen, writes, lines, handlers, disposed };
+  return { screen, writes, lines, handlers, disposed, lifetime };
 }
+
+function confirmationDocument(context, failure) {
+  const previous = globalThis.document;
+  const dialogs = [];
+  class Element extends EventTarget {
+    children = [];
+    dataset = {};
+    isConnected = false;
+    open = false;
+    setAttribute() {}
+    append(...children) {
+      this.children.push(...children);
+      for (const child of children) {
+        child.isConnected = true;
+      }
+    }
+    showModal() {
+      if (failure) {
+        throw failure;
+      }
+      this.open = true;
+    }
+    close() {
+      this.open = false;
+      this.dispatchEvent(new Event('close'));
+    }
+    remove() {
+      this.isConnected = false;
+    }
+  }
+  globalThis.document = {
+    body: new Element(),
+    querySelector: () => dialogs.find((dialog) => dialog.isConnected),
+    createElement: (tag) => {
+      const element = new Element();
+      if (tag === 'dialog') {
+        dialogs.push(element);
+      }
+      return element;
+    },
+  };
+  context.after(() => {
+    if (previous === undefined) {
+      delete globalThis.document;
+    } else {
+      globalThis.document = previous;
+    }
+  });
+  return {
+    dialogs,
+    accept: () => dialogs.at(-1).children[2].children[1].dispatchEvent(new Event('click')),
+  };
+}
+
+function pasteInto(screen, text) {
+  const event = new Event('paste', { cancelable: true });
+  Object.defineProperty(event, 'clipboardData', { value: { getData: () => text } });
+  screen.el.dispatchEvent(event);
+  assert.equal(event.defaultPrevented, true);
+}
+
+test('confirmation opening failure rejects after cleanup instead of resolving an approval result', async (context) => {
+  const cause = new Error('Native showModal failed');
+  const document = confirmationDocument(context, cause);
+  const lifetime = new AbortController();
+  await assert.rejects(
+    showConfirmation({
+      title: 'Confirm',
+      message: 'Exact prompt',
+      confirmLabel: 'Continue',
+      signal: lifetime.signal,
+      isCurrent: () => true,
+    }),
+    (error) => {
+      assert.equal(error.cause, cause);
+      assert.match(error.message, /No action was approved/);
+      return true;
+    },
+  );
+  assert.equal(document.dialogs[0].isConnected, false);
+  assert.equal(getEventListeners(lifetime.signal, 'abort').length, 0);
+  assert.equal(getEventListeners(document.dialogs[0], 'close').length, 0);
+});
+
+test('confirmation permits only one outstanding request and denies an invalidated owner', async (context) => {
+  const document = confirmationDocument(context);
+  const lifetime = new AbortController();
+  let current = true;
+  const options = {
+    title: 'Confirm',
+    message: 'Exact prompt',
+    confirmLabel: 'Continue',
+    signal: lifetime.signal,
+    isCurrent: () => current,
+  };
+  const pending = showConfirmation(options);
+  assert.equal(await showConfirmation(options), false);
+  assert.equal(document.dialogs.length, 1);
+  current = false;
+  document.accept();
+  assert.equal(await pending, false);
+  assert.equal(getEventListeners(lifetime.signal, 'abort').length, 0);
+});
+
+test('terminal multiline paste waits for approval and sends its exact text once', async (context) => {
+  const document = confirmationDocument(context);
+  const resource = terminalScreen();
+  bindTerminalInput(resource.screen, {
+    confirmationSignal: () => resource.lifetime.signal,
+    client: { request: async () => ({}) },
+    isCurrent: () => true,
+    fail: (error) => assert.fail(String(error)),
+  });
+  const text = 'printf "first"\r\nprintf "second"\x1b';
+  pasteInto(resource.screen, text);
+  pasteInto(resource.screen, text);
+  assert.deepEqual(resource.writes, []);
+  assert.equal(document.dialogs.length, 1);
+  assert.equal(
+    document.dialogs[0].children[1].children[0].textContent,
+    'Paste multiple lines or control characters into the real shell? This may execute commands.',
+  );
+  document.accept();
+  document.accept();
+  await flush();
+  assert.deepEqual(resource.writes, [text]);
+  disposeTerminalScreen(resource.screen);
+});
+
+for (const interruption of ['selection', 'dispose', 'accepted then selection']) {
+  test('terminal paste cannot continue after ' + interruption, async (context) => {
+    const document = confirmationDocument(context);
+    const resource = terminalScreen();
+    bindTerminalInput(resource.screen, {
+      confirmationSignal: () => resource.lifetime.signal,
+      client: { request: async () => ({}) },
+      isCurrent: () => true,
+      fail: (error) => assert.fail(String(error)),
+    });
+    pasteInto(resource.screen, 'echo unsafe\n');
+    if (interruption === 'accepted then selection') {
+      document.accept();
+    }
+    if (interruption === 'dispose') {
+      disposeTerminalScreen(resource.screen);
+    } else {
+      resource.lifetime.abort();
+    }
+    document.accept();
+    await flush();
+    assert.deepEqual(resource.writes, []);
+    assert.equal(document.dialogs[0].isConnected, false);
+    disposeTerminalScreen(resource.screen);
+  });
+}
+
+test('terminal queued input is retired when selection changes and returns before a held write completes', async () => {
+  const resource = terminalScreen();
+  const waiting = Promise.withResolvers();
+  const calls = [];
+  bindTerminalInput(resource.screen, {
+    confirmationSignal: () => resource.lifetime.signal,
+    client: {
+      request: async (_method, params) => {
+        calls.push(params);
+        await waiting.promise;
+        return {};
+      },
+    },
+    isCurrent: () => true,
+    fail: (error) => assert.fail(String(error)),
+  });
+  resource.handlers.data('x'.repeat(9000));
+  await flush();
+  resource.lifetime.abort();
+  resource.lifetime = new AbortController();
+  waiting.resolve();
+  await resource.screen.tail;
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].data.length, 8192);
+  disposeTerminalScreen(resource.screen);
+});
 
 test('sandbox handshake requires a MessageEvent, the current iframe source, and the ready schema', () => {
   const target = new EventTarget();
@@ -208,6 +392,34 @@ test('sandbox parent sender rejects malformed and oversized HTML without consumi
   assert.equal(getEventListeners(target, 'message').length, 0);
 });
 
+test('the dock calls the native frame scheduler with its Window receiver', (context) => {
+  const saved = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const calls = [];
+  const receiver = {
+    requestAnimationFrame() {
+      assert.equal(this, receiver);
+      calls.push('request');
+      return 42;
+    },
+    cancelAnimationFrame(id) {
+      assert.equal(this, receiver);
+      calls.push(id);
+    },
+  };
+  Object.defineProperty(globalThis, 'window', { value: receiver, configurable: true });
+  context.after(() => {
+    if (saved) {
+      Object.defineProperty(globalThis, 'window', saved);
+    } else {
+      delete globalThis.window;
+    }
+  });
+  const frames = createAnimationFrames();
+  frames.schedule(() => {});
+  frames.dispose();
+  assert.deepEqual(calls, ['request', 42]);
+});
+
 test('animation cleanup cancels only pending frames and rejects scheduling and late callbacks', () => {
   const callbacks = new Map();
   const cancelled = [];
@@ -237,6 +449,7 @@ test('animation cleanup cancels only pending frames and rejects scheduling and l
 test('terminal disposal releases widget subscriptions, paste listener, terminal, and element exactly once', () => {
   const resource = terminalScreen();
   bindTerminalInput(resource.screen, {
+    confirmationSignal: () => resource.lifetime.signal,
     client: { request: async () => ({}) },
     isCurrent: () => true,
     fail: (error) => assert.fail(String(error)),
@@ -256,6 +469,7 @@ test('terminal input remains serialized, bounded, and does not split UTF-16 surr
   const resource = terminalScreen();
   const calls = [];
   bindTerminalInput(resource.screen, {
+    confirmationSignal: () => resource.lifetime.signal,
     client: {
       request: async (method, params) => {
         calls.push({ method, params });
@@ -288,6 +502,7 @@ test('terminal queued writes stop at disposal and a late rejection does not touc
   const pending = Promise.withResolvers();
   const calls = [];
   bindTerminalInput(resource.screen, {
+    confirmationSignal: () => resource.lifetime.signal,
     client: {
       request: (method) => {
         calls.push(method);
@@ -420,6 +635,7 @@ test('terminal cleanup continues after subscription, widget, and DOM disposal fa
   const warnings = [];
   context.mock.method(console, 'warn', (...args) => warnings.push(args));
   bindTerminalInput(resource.screen, {
+    confirmationSignal: () => resource.lifetime.signal,
     client: { request: async () => ({}) },
     isCurrent: () => true,
     fail: (error) => assert.fail(String(error)),
@@ -467,6 +683,7 @@ for (const disposition of ['live', 'removed', 'disposed']) {
     const failures = [];
     let current = true;
     bindTerminalInput(resource.screen, {
+      confirmationSignal: () => resource.lifetime.signal,
       client: {
         request: (method, params) => {
           calls.push({ method, params });
@@ -532,6 +749,7 @@ for (const disposition of ['live', 'removed', 'disposed']) {
         resource.screen.info.exited = true;
       }
       bindTerminalInput(resource.screen, {
+        confirmationSignal: () => resource.lifetime.signal,
         client: { request: async () => ({}) },
         isCurrent: () => current,
         fail: (error) => failures.push(error),
@@ -662,6 +880,7 @@ test('terminal render waits release their temporary disposable after success or 
   const resource = terminalScreen();
   const failures = [];
   bindTerminalInput(resource.screen, {
+    confirmationSignal: () => resource.lifetime.signal,
     client: { request: async () => ({}) },
     isCurrent: () => true,
     fail: (error) => assert.fail(String(error)),
@@ -703,6 +922,7 @@ test('failed terminal input is not retried and later queued input drains without
   const calls = [];
   const failures = [];
   bindTerminalInput(resource.screen, {
+    confirmationSignal: () => resource.lifetime.signal,
     client: {
       request: (method, params) => {
         calls.push({ method, params });
@@ -810,6 +1030,37 @@ test('file preview owner cleanup aborts unfinished chunk streaming without creat
   assert.equal(requests, 1);
   assert.equal(owner.preview.asset(), undefined);
   assert.equal(owner.preview.error(), '');
+});
+
+test('retrying a failed file keeps its recovery control stable until a valid empty file arrives', async () => {
+  const reads = [];
+  const owner = createRoot((dispose) => ({
+    dispose,
+    preview: createFilePreview({
+      workerId: 'worker_1',
+      path: 'empty.txt',
+      rpc: () => {
+        const pending = Promise.withResolvers();
+        reads.push(pending);
+        return pending.promise;
+      },
+    }),
+  }));
+  try {
+    reads[0].reject(new Error('File read failed.'));
+    await waitFor(() => !owner.preview.loading(), 'the failed file read');
+    assert.equal(owner.preview.error(), 'File read failed.');
+    owner.preview.setReload((value) => value + 1);
+    assert.equal(owner.preview.loading(), true);
+    assert.equal(owner.preview.error(), 'File read failed.');
+    reads[1].resolve(assetChunk('empty.txt', ''));
+    await waitFor(() => !owner.preview.loading(), 'the retried empty file');
+    assert.equal(owner.preview.error(), '');
+    assert.equal(owner.preview.asset().size, 0);
+    assert.equal(owner.preview.source(), '');
+  } finally {
+    owner.dispose();
+  }
 });
 
 function audioFixture(context) {
@@ -963,6 +1214,7 @@ test('terminal input backpressure fails closed rather than dropping excess keyst
   const errors = [];
   const calls = [];
   bindTerminalInput(resource.screen, {
+    confirmationSignal: () => resource.lifetime.signal,
     client: { request: async (method) => calls.push(method) },
     isCurrent: () => true,
     fail: (error) => errors.push(error),

@@ -22,6 +22,8 @@ import {
 import { DomReaderOfflinePage, openDomReaderOfflinePage } from './chrome-dom-reader-offline.mjs';
 import {
   assertDomReaderObservation,
+  assertDisclosureRecovery,
+  assertLongTranscriptResults,
   assertDomReaderInvalidatedRead,
   domReaderEvidenceSchema,
   domReaderEvidenceListSchema,
@@ -40,6 +42,13 @@ function waitingObservation() {
     lastUserId: 'reader-user-current',
     userIds: ['reader-user-prior', 'reader-user-current'],
     busy: true,
+    draft: false,
+    recoveryKind: null,
+    recoveryExact: false,
+    recoveryUserExact: false,
+    recoveryExchangeMatched: false,
+    recoveryConflictPreserved: false,
+    literalPayloadExact: false,
     complete: false,
     stopped: false,
     ready: true,
@@ -155,6 +164,7 @@ test('the correlated Copy code lane still requires receipt-bound waiting and res
   const waiting = {
     ...waitingObservation(),
     scenario: 'mixed-generating-correlated',
+    recoveryKind: 'unreadable_reply',
     codeReply: true,
     codeExact: true,
     copyControl: true,
@@ -169,6 +179,7 @@ test('the correlated Copy code lane still requires receipt-bound waiting and res
     const complete = {
       ...waiting,
       scenario,
+      recoveryKind: null,
       lastRole: 'assistant',
       busy: false,
       complete: true,
@@ -250,7 +261,12 @@ test('held DOM mutations discard proof and refresh current known IDs and distinc
 
 test('fresh duplicate inspection requires two full matches without losing known users or current history', () => {
   for (const scenario of ['digest-duplicate-before-user', 'digest-earlier-user-receipt']) {
-    const view = { ...invalidatedObservation(scenario), receiptState: 'ambiguous', receiptMatches: 2 };
+    const view = {
+      ...invalidatedObservation(scenario),
+      receiptState: 'ambiguous',
+      receiptMatches: 2,
+      recoveryKind: 'duplicate_send',
+    };
     assert.doesNotThrow(() => assertDomReaderObservation(view));
     for (const changed of [
       { receiptState: 'matched' },
@@ -293,9 +309,9 @@ test('fresh inspection keeps a later known user barrier instead of reusing the c
   }
 });
 
-test('retained evidence bounds include 25 scenarios, three refresh reads, and three probes', () => {
-  assert.equal(domReaderScenarioNameSchema.options.length, 25);
-  assert.equal(DOM_READER_EVIDENCE_LIMIT, 31);
+test('retained evidence bounds include 48 scenarios, six refresh reads, and three probes', () => {
+  assert.equal(domReaderScenarioNameSchema.options.length, 48);
+  assert.equal(DOM_READER_EVIDENCE_LIMIT, 57);
   const observation = waitingObservation();
   const item = { scenario: observation.scenario, phase: 'inspection', result: { ok: true, observation } };
   const maximum = Array.from({ length: DOM_READER_EVIDENCE_LIMIT }, () => item);
@@ -645,5 +661,69 @@ test('the headless permission setup grants only the declared host and closes its
   await assert.rejects(
     grantDomReaderHostPermission(refused, 'fixture-session', id),
     /Do not grant undeclared origins/,
+  );
+});
+
+test('long transcript regressions enforce bounded work and preserve missing and stopped replies', () => {
+  const good = ['current', 'missing', 'stopped'].map((scenario) => {
+    let issue = '';
+    if (scenario === 'missing') {
+      issue = 'MISSING_REPLY_TO';
+    } else if (scenario === 'stopped') {
+      issue = 'STOPPED';
+    }
+    return {
+      scenario,
+      elapsedMs: 1000,
+      matched: scenario === 'current',
+      issue,
+      styles: 219845,
+      clones: 62,
+      digests: 2,
+      retiredWithoutRead: true,
+    };
+  });
+  assert.deepEqual(assertLongTranscriptResults(good), good);
+  for (const change of [{ styles: 250000 }, { clones: 71 }, { digests: 30 }, { elapsedMs: 6000 }]) {
+    assert.throws(() => assertLongTranscriptResults([{ ...good[0], ...change }, ...good.slice(1)]));
+  }
+  assert.throws(() =>
+    assertLongTranscriptResults([good[0], good[1], { ...good[2], retiredWithoutRead: false }]),
+  );
+  assert.throws(() => assertLongTranscriptResults([good[0], { ...good[1], matched: true }, good[2]]));
+});
+
+test('disclosure regression guards reject expanded-state clicks and older ancestor promotion', () => {
+  const good = ['expanded_label', 'expanded_ancestor', 'older_ancestor', 'collapsed', 'expanded_aria'].map(
+    (scenario) => {
+      let users = 1;
+      if (scenario.endsWith('_ancestor')) {
+        users = 0;
+      }
+      let currentClicks = 0;
+      if (scenario === 'collapsed') {
+        currentClicks = 1;
+      }
+      return {
+        scenario,
+        firstCollapsed: false,
+        nextCollapsed: false,
+        firstUsers: users,
+        nextUsers: users,
+        codeExact: true,
+        currentClicks,
+        olderClicks: 0,
+      };
+    },
+  );
+  assert.deepEqual(assertDisclosureRecovery(good), good);
+  assert.throws(() =>
+    assertDisclosureRecovery([good[0], { ...good[1], currentClicks: 1 }, ...good.slice(2)]),
+  );
+  assert.throws(() =>
+    assertDisclosureRecovery([...good.slice(0, 2), { ...good[2], firstUsers: 1 }, ...good.slice(3)]),
+  );
+  assert.throws(() =>
+    assertDisclosureRecovery([...good.slice(0, 3), { ...good[3], currentClicks: 2 }, good[4]]),
   );
 });

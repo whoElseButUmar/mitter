@@ -97,6 +97,7 @@ test('registration removal, rejected flags and unbuilt installs do not create st
     'build/contracts.mjs',
     'fonts/contracts.mjs',
     'installation/registration.mjs',
+    'installation/terminal-command.mjs',
     'installation/contracts.mjs',
     'installation/bootstrap.mjs',
     'helpers/runtime.mjs',
@@ -107,7 +108,7 @@ test('registration removal, rejected flags and unbuilt installs do not create st
     await copyFile(path.join(repositoryRoot, 'scripts', filename), target);
   }
 
-  await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '1.0.0-rc.21' }));
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '1.0.0-rc.27' }));
   await mkdir(path.join(root, 'brand'));
   await writeFile(path.join(root, 'brand/extension-identity.json'), JSON.stringify(identity));
   const before = await readdir(root);
@@ -277,7 +278,7 @@ test('identity and native manifest schemas reject unsafe or broadened registrati
 test('installed metadata describes and validates the fields used by scripts', () => {
   const project = {
     name: 'mitter',
-    version: '1.0.0-rc.21',
+    version: '1.0.0-rc.27',
     packageManager: 'pnpm@12.10.1',
     mitter: { modelRuntimes: { 'node-llama-cpp': '3.22.1' } },
     scripts: { unrelated: 'ignored' },

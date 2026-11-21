@@ -3,6 +3,7 @@ import { createPopover, uiId, type PopoverHandle } from './popover.js';
 import { isElement, requireWindow } from './dom/elements.js';
 import { MenuItemSchema } from './native/schemas.js';
 import { createTypeahead, navigationIndex } from './native/keyboard.js';
+import { createIcon } from './icons.js';
 
 export { MenuItemSchema } from './native/schemas.js';
 export type MenuItem = z.infer<typeof MenuItemSchema> & { run(): void };
@@ -35,9 +36,7 @@ export function mountMenu(
     ownedTrigger.id = uiId('menu-button');
     ownedTrigger.className = 'menu-trigger';
     ownedTrigger.textContent = label;
-    const caret = document.createElement('span');
-    caret.className = 'control-caret';
-    caret.setAttribute('aria-hidden', 'true');
+    const caret = createIcon(document, 'chevronDown', 'control-caret');
     ownedTrigger.append(caret);
     trigger = ownedTrigger;
     root.append(trigger);

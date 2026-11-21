@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import { parseProfile, runCommand } from '../src/core/commands.js';
 import { RedactedOutput } from '../src/core/redaction.js';
 import { appendObservation, renderObservations, encodeObservation } from '../src/core/model-observations.js';
@@ -118,4 +119,54 @@ test('redaction handles split credentials/Unicode and observations remain ' + 'c
   const rendered = renderObservations(entries, 1000);
   assert.equal(JSON.parse(rendered).result.contentOmitted, true);
   assert.throws(() => encodeObservation(undefined), /JSON values/);
+});
+
+test('browser-launched commands find the host Node runtime with an empty PATH', async (t) => {
+  const root = await temporaryDirectory(t);
+  const originalPath = process.env.PATH;
+  process.env.PATH = '';
+  t.after(() => {
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+  });
+  await fs.writeFile(
+    path.join(root, 'runtime.cjs'),
+    "const { spawnSync } = require('node:child_process');\n" +
+      "const nested = spawnSync('node', ['--version'], { encoding: 'utf8' });\n" +
+      'console.log(JSON.stringify({ runtime: process.execPath, nested: nested.stdout.trim(), code: nested.status }));\n',
+  );
+
+  const result = await runCommand(
+    parseProfile(profile('node', ['runtime.cjs'])),
+    root,
+    path.join(root, 'scratch'),
+    new AbortController().signal,
+  );
+
+  assert.equal(result.code, 0);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    runtime: process.execPath,
+    nested: process.version,
+    code: 0,
+  });
+});
+
+test('a missing executable returns a final launch failure with useful recovery guidance', async (t) => {
+  const root = await temporaryDirectory(t);
+  const result = await runCommand(
+    profile(path.join(root, 'missing-program')),
+    root,
+    path.join(root, 'scratch'),
+    new AbortController().signal,
+  );
+
+  assert.equal(result.code, null);
+  assert.equal(result.stdout, '');
+  assert.equal(result.timedOut, false);
+  assert.equal(result.aborted, false);
+  assert.match(result.stderr, /executable path, execute permission, and project folder/);
+  assert.match(result.stderr, /No process was started/);
 });

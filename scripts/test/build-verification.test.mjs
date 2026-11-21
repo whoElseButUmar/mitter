@@ -27,6 +27,30 @@ const identity = {
 const bridgeBytes = Buffer.from(
   'globalThis.channel = "fixture-channel"; globalThis.reader = "fixture-reader";\n',
 );
+const skillAssets = [
+  'skills/caveman/SKILL.md',
+  'skills/caveman/LICENSE',
+  'skills/no-ai-slop/SKILL.md',
+  'skills/no-ai-slop/eval.md',
+  'skills/no-ai-slop/LICENSE',
+  'skills/ponytail/SKILL.md',
+  'skills/ponytail/LICENSE',
+  'skills/NOTICE.md',
+];
+
+async function ownedFiles(root, relative = '') {
+  const files = [];
+  for (const entry of await readdir(path.join(root, relative), { withFileTypes: true })) {
+    const filename = path.join(relative, entry.name);
+    files.push(filename);
+    // The fixture borrows node_modules through a symlink. Its package-manager
+    // state and other tests' temporary files are not build assets owned here.
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      files.push(...(await ownedFiles(root, filename)));
+    }
+  }
+  return files.sort();
+}
 
 async function fixtureDirectory(context) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mitter-build-verification-'));
@@ -130,6 +154,14 @@ async function verificationFixture(context) {
     await fixture.write(output + '/' + filename, bytes);
   }
 
+  for (const filename of skillAssets) {
+    const source = 'apps/extension/public/' + filename;
+
+    await fixture.copySource(source);
+    const bytes = await readFile(path.join(fixture.root, source));
+    await fixture.write(output + '/' + filename, bytes);
+  }
+
   for (const filename of ['sidepanel.html', 'workspace.html', 'file.html']) {
     await fixture.write(output + '/' + filename, '<!doctype html>\n');
   }
@@ -159,7 +191,7 @@ test('build verification succeeds without changing assets and preserves its repo
   const fixture = await verificationFixture(context);
   const fontFile = path.join(fixture.root, fixture.output, 'fonts', FONT_FILE);
   const originalFont = await readFile(fontFile);
-  const originalFiles = await readdir(fixture.root, { recursive: true });
+  const originalFiles = await ownedFiles(fixture.root);
   const result = await fixture.verifyBuild(fixture.root);
 
   assert.deepEqual(result, {
@@ -170,7 +202,7 @@ test('build verification succeeds without changing assets and preserves its repo
     pageSHA256: createHash('sha256').update(bridgeBytes).digest('hex'),
   });
   assert.deepEqual(buildVerificationSchema.parse(result), result);
-  assert.deepEqual(await readdir(fixture.root, { recursive: true }), originalFiles);
+  assert.deepEqual(await ownedFiles(fixture.root), originalFiles);
   assert.deepEqual(await readFile(fontFile), originalFont);
 });
 
@@ -267,6 +299,57 @@ test('build verification compares packaged bridge and sandbox assets byte for by
     await fixture.write(fixture.output + '/mitter-page.js', content);
     await assert.rejects(fixture.verifyBuild(fixture.root), /chat page bridge is missing or stale/);
   }
+});
+
+test('build verification requires every bundled skill document and license to match its source', async (context) => {
+  const fixture = await verificationFixture(context);
+
+  for (const filename of skillAssets) {
+    const bundled = fixture.output + '/' + filename;
+    const original = await readFile(path.join(fixture.root, bundled));
+
+    await rm(path.join(fixture.root, bundled));
+    await assert.rejects(fixture.verifyBuild(fixture.root), (error) => {
+      assert.match(error.message, /Missing or unreadable bundled skill asset/);
+      assert.ok(error.message.includes(filename));
+      assert.equal(error.cause?.code, 'ENOENT');
+
+      return true;
+    });
+
+    await fixture.write(bundled, Buffer.concat([original, Buffer.from('\nStale bundled text.\n')]));
+    await assert.rejects(fixture.verifyBuild(fixture.root), (error) => {
+      assert.match(error.message, /packaged skill asset is stale/);
+      assert.ok(error.message.includes(filename));
+
+      return true;
+    });
+    await fixture.write(bundled, original);
+  }
+
+  await fixture.verifyBuild(fixture.root);
+});
+
+test('build verification rejects missing or empty skill sources and matching empty bundles', async (context) => {
+  const fixture = await verificationFixture(context);
+
+  for (const filename of skillAssets) {
+    const source = 'apps/extension/public/' + filename;
+    const bundled = fixture.output + '/' + filename;
+    const original = await readFile(path.join(fixture.root, source));
+
+    await rm(path.join(fixture.root, source));
+    await assert.rejects(fixture.verifyBuild(fixture.root), /Missing or unreadable bundled skill asset/);
+    await fixture.write(source, '');
+    await assert.rejects(fixture.verifyBuild(fixture.root), /Empty bundled skill asset/);
+    await fixture.write(bundled, '');
+    await assert.rejects(fixture.verifyBuild(fixture.root), /Empty bundled skill asset/);
+    await fixture.write(source, original);
+    await assert.rejects(fixture.verifyBuild(fixture.root), /Empty bundled skill asset/);
+    await fixture.write(bundled, original);
+  }
+
+  await fixture.verifyBuild(fixture.root);
 });
 
 test('verification rejects matching but non-generated, imported, or privileged preview assets', async (context) => {
@@ -419,8 +502,11 @@ test('direct registration verifies a complete fixture and only writes its isolat
 
   await fixture.copyScript('register-host.mjs');
   await fixture.copyScript('installation/registration.mjs');
+  await fixture.copyScript('installation/terminal-command.mjs');
   const manifestDirectory = path.join(fixture.root, 'manifests');
-  const environment = { ...process.env, MITTER_HOME: path.join(fixture.root, 'state') };
+  const home = path.join(fixture.root, 'home');
+  await mkdir(home);
+  const environment = { ...process.env, HOME: home, MITTER_HOME: path.join(fixture.root, 'state') };
   const registered = runFixtureNode(
     fixture,
     ['scripts/register-host.mjs', '--portable', '--manifest-dir=' + manifestDirectory],

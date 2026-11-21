@@ -67,23 +67,40 @@ export function readModelRuntimePackages(project) {
 export function parseSetupArguments(args) {
   const allowedArguments = ['--build-only', '--chromium', '--help'];
   const hasUnknownArgument = args.some((argument) => {
-    return !allowedArguments.includes(argument);
+    return (
+      !allowedArguments.includes(argument) &&
+      !(argument.startsWith('--destination=') && argument.slice(14).trim() && !argument.includes('\0'))
+    );
   });
   const hasDuplicateArgument = new Set(args).size !== args.length;
 
-  if (hasUnknownArgument || hasDuplicateArgument) {
-    throw new Error('Usage: node scripts/setup.mjs [--build-only] [--chromium]');
+  const destinations = args.filter((argument) => {
+    return argument.startsWith('--destination=');
+  });
+
+  if (
+    hasUnknownArgument ||
+    hasDuplicateArgument ||
+    destinations.length > 1 ||
+    (destinations.length > 0 && args.includes('--build-only'))
+  ) {
+    throw new Error('Usage: node scripts/setup.mjs [--build-only] [--chromium] [--destination=PATH]');
   }
 
   return {
     buildOnly: args.includes('--build-only'),
     chromium: args.includes('--chromium'),
     help: args.includes('--help'),
+    destination: destinations[0]?.slice(14),
   };
 }
 
 export function supportsSetupNode(version) {
-  const [major, minor] = version.split('.').map(Number);
+  if (!/^\d+\.\d+\.\d+$/.test(version)) {
+    return false;
+  }
 
-  return Number.isInteger(major) && Number.isInteger(minor) && (major > 22 || (major === 22 && minor >= 16));
+  const [major] = version.split('.').map(Number);
+
+  return Number.isInteger(major) && major >= 26;
 }

@@ -1,18 +1,13 @@
 import type { Worker } from '../../../protocol/src/index.js';
-import { wrapMessage } from '../message-wire.js';
+import { unwrapMessage, wrapMessage } from '../message-wire.js';
 
 export function buildReportPrompt(nextPrompt: string, report: string): string {
   return `${nextPrompt}\n\nBEGIN UNTRUSTED MITTER REPORT\n${report}\nEND UNTRUSTED MITTER REPORT\n\nReturn only the next complete mitter/1 JSON object inside one fenced code block labeled json. No commentary outside the block.`;
 }
 
-/** Replace only Mitter's template example. Reports, user goals and file content
- * remain literal; they must never be rewritten to add an exchange link. */
-export function buildExchangeMessage(
-  text: string,
-  exchangeId: string,
-  worker: Pick<Worker, 'id' | 'projectId'>,
-): string {
-  const contract =
+type ExchangeWorker = Pick<Worker, 'id' | 'projectId'>;
+function replyContract(exchangeId: string, worker: ExchangeWorker): string {
+  return (
     'CURRENT REPLY CONTRACT (this exchange only)\n' +
     JSON.stringify(
       {
@@ -27,38 +22,68 @@ export function buildExchangeMessage(
     ) +
     '\nThese are required envelope headers, not a complete action batch. Add the required summary string and actions array using the action schema below. Return exactly one fenced json block. Include "replyTo": "' +
     exchangeId +
-    '" at the top level. Do not reuse a replyTo from an earlier turn. Use a new unique id. Use ordinary ASCII indentation; do not HTML-encode JSON whitespace or add Markdown backslashes at line endings. The action schema, permissions and checks are unchanged.';
-  const example = {
-    protocol: 'mitter/1',
-    id: 'REPLACE_WITH_A_NEW_UNIQUE_ID_EVERY_TURN',
-    workerId: worker.id,
-    projectId: worker.projectId,
-    summary: 'What this batch does',
-    actions: [{ type: 'list', path: '.' }],
-  };
-  // Keep replyTo in the same position as the original linked example: saved
-  // prepared messages must reconstruct byte-for-byte, including key order.
-  const linkedExample = {
-    protocol: example.protocol,
-    id: example.id,
-    replyTo: exchangeId,
-    workerId: example.workerId,
-    projectId: example.projectId,
-    summary: example.summary,
-    actions: example.actions,
-  };
-  const reportStart = text.indexOf('BEGIN UNTRUSTED MITTER REPORT');
-  let template = text;
-  let report = '';
-  if (reportStart >= 0) {
-    template = text.slice(0, reportStart);
-    report = text.slice(reportStart);
-  }
-  const linkedTemplate = template.replace(
-    JSON.stringify(example, null, 2),
-    JSON.stringify(linkedExample, null, 2),
+    '" at the top level. Do not reuse a replyTo from an earlier turn. Use a new unique id. Use ordinary ASCII indentation; do not HTML-encode JSON whitespace or add Markdown backslashes at line endings. The action schema, permissions and checks are unchanged.'
   );
-  return wrapMessage(contract + '\n\n' + linkedTemplate + report + '\n\n' + contract, exchangeId);
+}
+
+function exampleText(worker: ExchangeWorker, exchangeId?: string): string {
+  return JSON.stringify(
+    {
+      protocol: 'mitter/1',
+      id: 'REPLACE_WITH_A_NEW_UNIQUE_ID_EVERY_TURN',
+      ...(exchangeId && { replyTo: exchangeId }),
+      workerId: worker.id,
+      projectId: worker.projectId,
+      summary: 'What this batch does',
+      actions: [{ type: 'list', path: '.' }],
+    },
+    null,
+    2,
+  );
+}
+
+function replaceTemplateExample(text: string, from: string, to: string): string {
+  const reportStart = text.indexOf('BEGIN UNTRUSTED MITTER REPORT');
+  if (reportStart < 0) {
+    return text.replace(from, to);
+  }
+  return text.slice(0, reportStart).replace(from, to) + text.slice(reportStart);
+}
+
+/** Replace only Mitter's template example. Reports and file content remain literal. */
+export function buildExchangeMessage(text: string, exchangeId: string, worker: ExchangeWorker): string {
+  const contract = replyContract(exchangeId, worker);
+  const linked = replaceTemplateExample(text, exampleText(worker), exampleText(worker, exchangeId));
+  return wrapMessage(contract + '\n\n' + linked + '\n\n' + contract, exchangeId);
+}
+
+/** Reissue a reviewed message without replacing matching UUIDs in the user's
+ * goal, source code or reports. Unrecognized older contracts stay untouched. */
+export function renewExchangeMessage(
+  text: string,
+  previousId: string,
+  exchangeId: string,
+  worker: ExchangeWorker,
+): string | undefined {
+  const frame = unwrapMessage(text);
+  const oldContract = replyContract(previousId, worker);
+  if (
+    frame?.exchangeId !== previousId ||
+    !frame.payload.startsWith(oldContract + '\n\n') ||
+    !frame.payload.endsWith('\n\n' + oldContract)
+  ) {
+    return;
+  }
+  const body = frame.payload.slice(oldContract.length + 2, -oldContract.length - 2);
+  const originalExample = exampleText(worker, previousId);
+  const nextExample = exampleText(worker, exchangeId);
+  // The template example has a fixed introduction. Matching that boundary
+  // also preserves literal examples quoted in the goal or as a file excerpt.
+  const intro =
+    'For THIS ChatGPT handoff, wrap the actions in exactly this envelope instead of the simpler local-model shape:\n';
+  const reviewed = replaceTemplateExample(body, intro + originalExample, intro + nextExample);
+  const contract = replyContract(exchangeId, worker);
+  return wrapMessage(contract + '\n\n' + reviewed + '\n\n' + contract, exchangeId);
 }
 
 export function buildCorrectionPrompt(
@@ -86,4 +111,15 @@ export function buildMissingResponsePrompt(nextPrompt: string): string {
 
 MISSING RESPONSE RECOVERY
 The previous exchange was sent, but no complete response remains readable. Miter did not import any actions for that pending exchange. Earlier accepted batches remain applied. Do not repeat them. Inspect the current project with a small read/list batch before proposing more changes. Use a NEW reply id and this message's CURRENT REPLY CONTRACT. Return one complete fenced json block.`;
+}
+
+export function buildReplyRecoveryPrompt(report: string, duplicateSend: boolean): string {
+  let diagnosis = 'The previous response could not be read as one complete, literal JSON reply.';
+  if (duplicateSend) {
+    diagnosis = 'The previous request appears more than once in the chat, so its replies are ambiguous.';
+  }
+  return `${report}
+
+REPLY RECOVERY
+${diagnosis} That exchange is retired. Only this message's CURRENT REPLY CONTRACT can authorize the next batch. Earlier accepted work is recorded in the report above and remains applied. Do not repeat successful actions or reuse earlier reply IDs. Inspect the current project with a small read/list batch before proposing more changes. Return one complete fenced json block with a NEW id and the CURRENT replyTo. Use ordinary ASCII indentation and JSON.stringify-equivalent escaping inside strings; do not HTML-encode whitespace or escape Markdown fences.`;
 }

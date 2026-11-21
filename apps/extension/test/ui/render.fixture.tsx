@@ -1,5 +1,5 @@
 import { renderToString } from 'solid-js/web';
-import type { Worker } from '../../../../packages/protocol/src/index';
+import type { CompletionRecord, Worker } from '../../../../packages/protocol/src/index';
 import type { BridgeStatus } from '../../../../packages/bridge/src/runner/types';
 import { TaskRunnerControls } from '../../src/views/TaskRunnerControls';
 import { TerminalAppearance } from '../../src/components/TerminalAppearance';
@@ -11,7 +11,7 @@ import { ProjectForm } from '../../src/forms/ProjectForm';
 import { TeamPanel } from '../../src/TeamPanel';
 import type { Project } from '../../../../packages/protocol/src/index';
 import { DEFAULT_TERMINAL_PREFERENCES } from '../../../../packages/terminal/src/appearance';
-import { TaskAttentionFixture } from '../browser/task-attention.fixture';
+import { TaskAttentionFixture, type TaskViewScenario } from '../browser/task-attention.fixture';
 
 type RunnerState = {
   bridge?: BridgeStatus;
@@ -39,19 +39,39 @@ export function renderRunner(task: Worker, state: RunnerState = {}) {
   ));
 }
 
-export function renderAttention(reason: string, receiving = false, workerError = '') {
+export function renderAttention(
+  reason: string,
+  receiving = false,
+  workerError = '',
+  completion?: CompletionRecord,
+) {
   return renderToString(() => (
     <TaskAttentionFixture
       reason={reason}
       receiving={receiving}
       consoleOpen={true}
       workerError={workerError}
+      completion={completion}
       onAction={() => {}}
     />
   ));
 }
 
-export function renderAppearance(ready = true) {
+export function renderTaskState(scenario: TaskViewScenario, lowerBound = false) {
+  return renderToString(() => (
+    <TaskAttentionFixture
+      reason=""
+      receiving={false}
+      consoleOpen={false}
+      workerError=""
+      scenario={scenario}
+      lowerBound={lowerBound}
+      onAction={() => {}}
+    />
+  ));
+}
+
+export function renderAppearance(ready = true, error = '') {
   return renderToString(() => (
     <TerminalAppearance
       prefs={() => DEFAULT_TERMINAL_PREFERENCES}
@@ -59,7 +79,7 @@ export function renderAppearance(ready = true) {
       systemFonts={() => []}
       ready={() => ready}
       fontBusy={() => false}
-      error={() => ''}
+      error={() => error}
       apply={async () => {}}
       fail={() => {}}
       importTheme={async () => {}}

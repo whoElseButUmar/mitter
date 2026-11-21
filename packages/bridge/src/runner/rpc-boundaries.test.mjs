@@ -230,6 +230,58 @@ test('valid admission rejection retains bounded read/replan correction and user-
   });
 });
 
+test('an excluded dependency read after setup gets a bounded correction before import', async (context) => {
+  const rejected = [{ type: 'read', path: 'node_modules/pdf-lib/package.json' }];
+  const rejection = {
+    valid: false,
+    issue: {
+      stage: 'precondition',
+      code: 'EXCLUDED_PATH',
+      actionIndex: 0,
+      field: 'path',
+      message: 'Sensitive or excluded path.',
+    },
+  };
+  const report = 'Manual setup finished. pnpm add pdf-lib exited with code 0.';
+  async function showNext(harness, id, actions) {
+    harness.showReply({ id, actions });
+    await harness.runner.tick();
+    harness.advance(1800);
+    await harness.runner.tick();
+  }
+  for (const outcome of ['corrected', 'still excluded']) {
+    await context.test(outcome, async () => {
+      const harness = createHarness();
+      replaceRpcResult(harness, 'worker.report', report);
+      replaceRpcResult(harness, 'worker.validateReply', rejection);
+      await importReply(harness, { actions: rejected });
+      assert.equal(harness.progress().formatRepairs, 1);
+      assert.equal(harness.imports.length, 0);
+      assert.equal(harness.events.includes('worker.run'), false);
+      assert.equal(harness.commits.length, 2);
+      assert.ok(harness.commits[1].text.includes(report));
+      assert.match(harness.commits[1].text, /Omit the excluded path/);
+      assert.doesNotMatch(harness.commits[1].text, /node_modules\/pdf-lib/);
+      if (outcome === 'corrected') {
+        replaceRpcResult(harness, 'worker.validateReply', { valid: true });
+        const allowed = [{ type: 'read', path: 'package.json' }];
+        await showNext(harness, 'fresh_project_read', allowed);
+        assert.equal(harness.imports.length, 1);
+        assert.deepEqual(JSON.parse(harness.imports[0].text).actions, allowed);
+        assert.equal(harness.events.filter((event) => event === 'worker.run').length, 1);
+      } else {
+        await showNext(harness, 'second_excluded_read', rejected);
+        await showNext(harness, 'third_excluded_read', rejected);
+        assert.equal(harness.commits.length, 3);
+        assert.equal(harness.progress().formatRepairs, 2);
+        assert.equal(harness.imports.length, 0);
+        assert.equal(harness.events.includes('worker.run'), false);
+        assert.match(harness.runner.status.reason, /EXCLUDED_PATH.*Two correction attempts/);
+      }
+    });
+  }
+});
+
 test('malformed late-watch admission stays read-only and retains the absolute deadline', async (context) => {
   for (const [name, result] of [
     ['missing valid', {}],
@@ -253,7 +305,12 @@ test('malformed late-watch admission stays read-only and retains the absolute de
       assert.equal(harness.runner.status.watchUntil, deadline);
       assert.equal(harness.imports.length, 0);
       assert.equal(harness.commits.length, 1);
-      assert.deepEqual(harness.progress(), saved);
+      assert.deepEqual(harness.progress(), {
+        ...saved,
+        revision: saved.revision + 1,
+        updatedAt: saved.updatedAt + 1800,
+        readerDiagnostic: { reason: 'validation_rejected' },
+      });
     });
   }
 });

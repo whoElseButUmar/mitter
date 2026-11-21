@@ -7,12 +7,15 @@ import {
 } from '../schemas/local-results.js';
 import { coreRpcRegistry, parseRpcResult } from '../../../../packages/protocol/src/rpc.js';
 import { progressRpcRegistry } from '../schemas/native-rpc.js';
+import { previewFailures } from '../preview-failures.js';
+import { CompletedPreviews } from './completed-previews.js';
 import { ReplyTickets } from './reply-tickets.js';
 import { errorMessage } from '../schemas/primitives.js';
 import { waitFor, chatOrigins } from './storage-reset.js';
 import { validateWorkspaceAction } from '../../../../packages/ui/src/workspace.js';
 import { DraftRewrites } from './draft-rewrites.js';
 import {
+  assertFreshReplyExchange,
   boundReply,
   replyDigest,
   actionSummary,
@@ -25,9 +28,19 @@ import {
   type Worker,
 } from '../../../../packages/protocol/src/index.js';
 import { PageTransport, PageBridgeError } from '../../../../packages/bridge/src/page-transport.js';
-import type { ChatLink } from '../../../../packages/bridge/src/chat-links.js';
+import {
+  bootstrapDraftSchema,
+  matchesBootstrapDraft,
+  type BootstrapDraft,
+} from '../../../../packages/bridge/src/bootstrap-draft.js';
+import { answeredDraftLimit, type ChatLink } from '../../../../packages/bridge/src/chat-links.js';
+import { chatgptProvider } from '../../../../packages/bridge/src/connections/providers.js';
 import { ChatConnections, chatChoice } from './chat-connections.js';
-import { messageDigest, type OutboundReceipt } from '../../../../packages/bridge/src/message-wire.js';
+import {
+  messageDigest,
+  unwrapMessage,
+  type OutboundReceipt,
+} from '../../../../packages/bridge/src/message-wire.js';
 import { WorkspaceStore } from '../../../../packages/ui/src/workspace-store.js';
 import { displayTaskName } from '../../../../packages/protocol/src/task-brief.js';
 import { Diagnostics } from '../../../../packages/bridge/src/diagnostics.js';
@@ -78,7 +91,12 @@ import {
   pageRequestSchema,
   pageHelloRequestSchema,
 } from '../../../../packages/bridge/src/transport/messages.js';
-import { taskProgressSchema } from '../../../../packages/bridge/src/progress.js';
+import {
+  isActiveReplyWait,
+  isUnsentBootstrap,
+  matchesWaitingReply,
+  taskProgressSchema,
+} from '../../../../packages/bridge/src/progress.js';
 
 type TaskDependencies = {
   rpc: NativeRPC;
@@ -158,6 +176,16 @@ function canUseChat(worker: Worker): boolean {
   );
 }
 
+function canReattachReply(worker: Worker): boolean {
+  return (
+    canUseChat(worker) &&
+    !worker.queue.length &&
+    !worker.teamPaused &&
+    worker.control?.mode !== 'stopped' &&
+    ['idle', 'review'].includes(worker.state)
+  );
+}
+
 function requireChatStartWorker(fresh: Snapshot, workerId: string): Worker {
   if (fresh.runtime.version !== APP_VERSION) {
     throw new Error('Reload Miter after completing setup so the host and extension versions match.');
@@ -192,6 +220,19 @@ export function createTaskController(dependencies: TaskDependencies) {
       );
     }
   };
+  const completedPreviews = new CompletedPreviews(
+    rpc,
+    () => dependencies.blocked() || disposed,
+    (url) => chrome.tabs.create({ url }),
+    (workerId, expectedRun, message) => {
+      const write = previewFailures.save(workerId, expectedRun, message).catch((error) => {
+        diagnostics.add('preview.feedback.error', errorMessage(error));
+      });
+      diagnostics.add('preview.open.error', message);
+      broadcast({ event: 'taskNotification', data: { workerId, kind: 'warning', message } });
+      return write;
+    },
+  );
   const runners = new Map<string, BridgeRunner>();
   const runnerBoundaries = new WeakMap<BridgeRunner, TaskBoundary>();
   const startedChats = new WeakMap<BridgeRunner, StartedChat>();
@@ -200,7 +241,14 @@ export function createTaskController(dependencies: TaskDependencies) {
   const controlBusy = new Set<string>();
   const continuing = new Set<string>();
   const startRevisions = new Map<string, number>();
+  const replyRecoveryChecks = new Map<string, { revision: number; retryAt: number }>();
+  let browserStartedAt: number | undefined;
+  const startupDestinationsHandled = new Set<string>();
+  // Session restore can announce and close a tab before links or the native
+  // snapshot arrive. Remember its visible conversation only through startup.
+  const restoringTabUrls = new Map<number, string>();
   let admissionGeneration = 0;
+  let notificationOpenRevision = 0;
   const startGuard = (workerId: string) => {
     const revision = startRevisions.get(workerId) ?? 0;
 
@@ -215,6 +263,7 @@ export function createTaskController(dependencies: TaskDependencies) {
 
   const replyTickets = new ReplyTickets();
   let snapshot: Snapshot | undefined;
+  let hostConnection = Symbol('host connection');
   const log = (kind: string, message: string) => diagnostics.add(kind, message);
   const tabLiveness = new ChatTabLiveness(chrome.tabs, chrome.storage.session, log);
   const syncTabLiveness = (): Promise<void> => {
@@ -248,7 +297,7 @@ export function createTaskController(dependencies: TaskDependencies) {
   const bridgeStates = (): BridgeStatus[] => {
     const states = [...runners.values()].map((runner) => ({ ...runner.status }));
 
-    // Saved metadata is not a running session. A reload never restarts sends.
+    // A link alone is history. Only an exact active host checkpoint restores its runner.
     for (const [workerId, link] of links.entries()) {
       const worker = snapshot?.workers.find((worker) => worker.id === workerId);
 
@@ -263,13 +312,20 @@ export function createTaskController(dependencies: TaskDependencies) {
       }
 
       const saved = snapshot?.bridgeProgress?.find((progress) => progress.workerId === workerId);
+      const reattaching = starting.has(workerId) && replyRecoveryChecks.has(workerId);
+      let phase = 'stopped';
+      let reason = 'Progress saved. Resume continues in the same chat.';
+      if (reattaching) {
+        phase = 'reconnecting';
+        reason = 'Checking the saved ChatGPT reply…';
+      }
       states.push({
         workerId,
         tabId: link.id,
         url: link.url,
-        active: false,
-        phase: 'stopped',
-        reason: 'Progress saved. Resume continues in the same chat.',
+        active: reattaching,
+        phase,
+        reason,
         turns: saved?.turns ?? 0,
         maxTurns: saved?.maxTurns ?? link.maxTurns ?? 15,
         startedAt: saved?.startedAt ?? link.updatedAt ?? 0,
@@ -313,7 +369,12 @@ export function createTaskController(dependencies: TaskDependencies) {
       }
     }
   };
-  const saveReceipt = async (workerId: string, tabId: number, receipt: OutboundReceipt) => {
+  const saveReceipt = async (
+    workerId: string,
+    tabId: number,
+    receipt: OutboundReceipt,
+    expectedRun: TaskBoundary,
+  ) => {
     const link = links.get(workerId);
 
     if (!link || link.id !== tabId) {
@@ -323,6 +384,7 @@ export function createTaskController(dependencies: TaskDependencies) {
     links.set(workerId, {
       ...link,
       lastReceipt: receipt,
+      receiptRun: expectedRun,
       updatedAt: Date.now(),
     });
     await links.flush(true);
@@ -357,14 +419,203 @@ export function createTaskController(dependencies: TaskDependencies) {
   const rewrites = new DraftRewrites(pageTransport, syncTabLiveness);
   const chats = new ChatConnections({
     rpc,
-    page: pageTransport,
     snapshot: () => snapshot,
     sessions: () => [...runners.values()].map((runner) => runner.status),
-    rewriteTabs: () => rewrites.activeTabIds,
     log,
   });
   const links = chats.links;
-  const loadedLinks = links.ready.then(publish);
+  const loadedLinks = links.ready.then(() => {
+    reattachWaitingReplies();
+    publish();
+  });
+
+  async function disableReplyRecovery(workerId: string): Promise<void> {
+    startRevisions.set(workerId, (startRevisions.get(workerId) ?? 0) + 1);
+    await links.ready;
+    const link = links.get(workerId);
+    if (link?.lastReceipt) {
+      links.set(workerId, { ...link, receiptRun: null });
+      await links.flush(true);
+    }
+  }
+
+  function reattachWaitingReplies(): void {
+    if (!snapshot || snapshot.runtime.version !== APP_VERSION || disposed || dependencies.blocked()) {
+      return;
+    }
+    for (const summary of snapshot.bridgeProgress ?? []) {
+      const { workerId, revision } = summary;
+      if (
+        revision === undefined ||
+        !isActiveReplyWait(summary) ||
+        runners.has(workerId) ||
+        runBusy(workerId)
+      ) {
+        continue;
+      }
+      const previous = replyRecoveryChecks.get(workerId);
+      if (previous?.revision === revision && previous.retryAt > Date.now()) {
+        continue;
+      }
+      const worker = snapshot.workers.find((item) => item.id === workerId);
+      const link = links.get(workerId);
+      let boundary = link?.receiptRun;
+      if (boundary === undefined) {
+        boundary = link?.automaticStart;
+      }
+      if (
+        !worker ||
+        !canReattachReply(worker) ||
+        !link ||
+        !boundary ||
+        !matchesTaskBoundary(taskBoundary(worker), boundary) ||
+        link.projectId !== worker.projectId ||
+        link.newChat ||
+        link.bindingPending ||
+        !link.lastReceipt?.expectsReplyTo ||
+        !link.lastReceipt.exchangeId ||
+        worker.control?.retiredExchanges.includes(link.lastReceipt.exchangeId)
+      ) {
+        continue;
+      }
+      replyRecoveryChecks.set(workerId, { revision, retryAt: Date.now() + 15000 });
+      void reattachReply(worker, link, boundary, revision).catch((error) =>
+        log('bridge.reattach.pending', errorMessage(error)),
+      );
+    }
+  }
+
+  async function reattachReply(
+    worker: Worker,
+    link: ChatLink,
+    expectedRun: TaskBoundary,
+    revision: number,
+  ): Promise<void> {
+    const workerId = worker.id;
+    const owner = Symbol('waiting reply');
+    const admission = admitTask(workerId, expectedRun);
+    starting.set(workerId, owner);
+    let reserved: number | undefined;
+    publish();
+    try {
+      await dependencies.ready();
+      admission.check();
+      if (!(await chrome.permissions.contains({ origins: chatOrigins }))) {
+        return;
+      }
+      const loaded = await rpc('worker.bridgeLoad', { workerId, expectedRun }, bridgeLoadSchema);
+      admission.check();
+      if (
+        !matchesWaitingReply(loaded.progress, revision, link.url, link.lastReceipt) ||
+        loaded.progress?.goalHash !== (await messageDigest(worker.goal))
+      ) {
+        return;
+      }
+      const fresh = await admission.verify();
+      const current = fresh.workers.find((item) => item.id === workerId);
+      const checkpoint = fresh.bridgeProgress?.find((item) => item.workerId === workerId);
+      const savedLink = links.get(workerId);
+      if (
+        fresh.runtime.version !== APP_VERSION ||
+        !current ||
+        !canReattachReply(current) ||
+        current.projectId !== worker.projectId ||
+        current.goal !== worker.goal ||
+        !checkpoint ||
+        checkpoint.revision !== revision ||
+        !isActiveReplyWait(checkpoint) ||
+        savedLink?.id !== link.id ||
+        savedLink.url !== link.url ||
+        savedLink.receiptRun === null ||
+        savedLink.lastReceipt?.exchangeId !== link.lastReceipt?.exchangeId
+      ) {
+        return;
+      }
+      const open = await chats.openReplyTabs(link);
+      admission.check();
+      let candidate = open[0];
+      if (!candidate) {
+        if (
+          browserStartedAt === undefined ||
+          !link.lastReceipt ||
+          link.lastReceipt.at > browserStartedAt ||
+          Date.now() - browserStartedAt > 120000 ||
+          startupDestinationsHandled.has(workerId)
+        ) {
+          if (replyRecoveryChecks.has(workerId)) {
+            replyRecoveryChecks.set(workerId, { revision, retryAt: Infinity });
+          }
+          return;
+        }
+        // Chrome may publish restored windows after onStartup. Only browser startup
+        // may reopen an absent conversation, once, after that restoration grace.
+        const restoreAfter = browserStartedAt + 10000;
+        if (Date.now() < restoreAfter) {
+          replyRecoveryChecks.set(workerId, { revision, retryAt: restoreAfter });
+          return;
+        }
+        startupDestinationsHandled.add(workerId);
+        candidate = await chrome.tabs.create({ url: link.url, active: false });
+        admission.check();
+      }
+      if (open.length > 1 || candidate.id === undefined) {
+        return;
+      }
+      const tab = chatChoice({ id: candidate.id, url: candidate.pendingUrl || candidate.url });
+      if (!tab || tab.url !== link.url || tab.newChat) {
+        return;
+      }
+      chats.reserve(workerId, tab);
+      reserved = tab.id;
+      if (browserStartedAt !== undefined) {
+        startupDestinationsHandled.add(workerId);
+      }
+      if (tab.id !== link.id) {
+        links.set(workerId, { ...savedLink, id: tab.id, updatedAt: Date.now() });
+        await links.flush(true);
+        admission.check();
+      }
+      const destination = await chrome.tabs.get(tab.id);
+      admission.check();
+      if (chatChoice({ id: tab.id, url: destination.pendingUrl || destination.url })?.url !== link.url) {
+        return;
+      }
+      if (destination.discarded || destination.status === 'unloaded') {
+        // Restored background tabs can remain unloaded until selected. Load only
+        // this verified destination without activating the user's window.
+        await chrome.tabs.reload(tab.id);
+        admission.check();
+      }
+      const runner = createRunner(current, {
+        workerId,
+        projectId: current.projectId,
+        tabId: tab.id,
+        url: tab.url,
+        expectedRun,
+        token: crypto.randomUUID(),
+        maxTurns: Math.min(20, checkpoint.maxTurns),
+        maxMinutes: Math.min(60, checkpoint.maxMinutes),
+        previousProgress: checkpoint,
+        lastReceipt: link.lastReceipt,
+        waitingReplyRevision: revision,
+      });
+      runners.set(workerId, runner);
+      completedPreviews.arm(current);
+      publish();
+      log('bridge.reattach', 'Reconnecting to an outstanding reply in its saved conversation.');
+      try {
+        await runner.start();
+      } catch (error) {
+        if (runners.get(workerId) === runner) {
+          runners.delete(workerId);
+        }
+        throw error;
+      }
+    } finally {
+      releaseStart(workerId, owner, reserved);
+      publish();
+    }
+  }
 
   function admitTask(
     workerId: string,
@@ -375,9 +626,16 @@ export function createTaskController(dependencies: TaskDependencies) {
     const originalRunner = runners.get(workerId);
     const originalSnapshot = snapshot;
     const generation = admissionGeneration;
+    const connection = hostConnection;
     const checkStart = startGuard(workerId);
     const check = (): void => {
       checkStart();
+
+      if (connection !== hostConnection) {
+        throw new Error(
+          'The local host connection changed. This task admission was superseded. Review its saved state before continuing.',
+        );
+      }
 
       if (runners.get(workerId) !== originalRunner) {
         throw new Error('The task’s conversation changed. Review the current task before continuing.');
@@ -599,6 +857,7 @@ export function createTaskController(dependencies: TaskDependencies) {
         current.projectId !== projectId ||
         current.goal !== goal ||
         current.mode !== mode ||
+        (options.waitingReplyRevision !== undefined && !canReattachReply(current)) ||
         JSON.stringify(current.queue[0]) !== batch
       ) {
         superseded = true;
@@ -628,6 +887,76 @@ export function createTaskController(dependencies: TaskDependencies) {
       if (!link || link.id !== tabId || chatStartURL(link.url, true) !== destination) {
         throw new PageBridgeError('NAVIGATED', 'The saved chat destination changed during startup.');
       }
+    };
+
+    let staleDraftAuthorization: { proof: BootstrapDraft; previous: Worker } | undefined;
+    const retainedDrafts = (link: ChatLink | undefined): BootstrapDraft[] => {
+      const drafts = link?.answeredDrafts ?? [];
+      const first = link?.confirmedBootstrapDraft;
+      if (first && !drafts.some((draft) => draft.exchangeId === first.exchangeId)) {
+        return [first, ...drafts];
+      }
+      return drafts;
+    };
+    const stillRetained = (proof: BootstrapDraft): boolean =>
+      retainedDrafts(links.get(proof.workerId)).some(
+        (draft) => JSON.stringify(draft) === JSON.stringify(proof),
+      );
+    const draftOwner = (proof: BootstrapDraft, expected?: Worker, source = snapshot): Worker | undefined => {
+      const previous = source?.workers.find((current) => current.id === proof.workerId);
+      if (
+        !previous ||
+        previous.projectId !== proof.projectId ||
+        (expected &&
+          (previous.goal !== expected.goal ||
+            previous.runId !== expected.runId ||
+            (previous.control?.epoch ?? 0) !== (expected.control?.epoch ?? 0)))
+      ) {
+        return;
+      }
+
+      const ownerLink = links.get(previous.id);
+      // ChatGPT can restore an answered composer into a different new tab while
+      // the original conversation is still running. Its native import is final.
+      if (
+        ownerLink &&
+        ownerLink.id !== tabId &&
+        !ownerLink.newChat &&
+        new URL(ownerLink.url).pathname.startsWith('/c/') &&
+        ownerLink.answeredDrafts?.some((draft) => JSON.stringify(draft) === JSON.stringify(proof))
+      ) {
+        return previous;
+      }
+
+      if (
+        previous.queue.length !== 0 ||
+        previous.pending ||
+        previous.followups?.some(
+          (followup) => !['completed', 'cancelled', 'superseded'].includes(followup.status),
+        ) ||
+        runners.get(previous.id)?.status.active ||
+        runners.get(previous.id)?.status.monitoring ||
+        starting.has(previous.id) ||
+        continuing.has(previous.id) ||
+        controlBusy.has(previous.id) ||
+        followupArmed.has(previous.id) ||
+        followupStarting.has(previous.id) ||
+        (expected &&
+          (previous.state !== expected.state ||
+            previous.control?.mode !== expected.control?.mode ||
+            previous.activeFollowupId !== expected.activeFollowupId))
+      ) {
+        return;
+      }
+      const completed =
+        previous.state === 'complete' &&
+        (!previous.activeFollowupId || previous.completion?.followupId === previous.activeFollowupId);
+      const stopped =
+        previous.state === 'paused' && previous.control?.mode === 'stopped' && !previous.activeFollowupId;
+      if (!completed && !stopped) {
+        return;
+      }
+      return previous;
     };
 
     // Startup transfers to this runner, not the released UI admission or a replacement task.
@@ -660,6 +989,158 @@ export function createTaskController(dependencies: TaskDependencies) {
           checkWorker(fresh.workers.find((current) => current.id === workerId));
           snapshot = fresh;
         },
+        async reconnectHost() {
+          checkRunner();
+          checkStart();
+          checkAvailable();
+          const before = snapshot;
+          const connection = hostConnection;
+          const fresh = await rpc('state', {}, snapshotSchema);
+          checkRunner();
+          checkStart();
+          checkAvailable();
+          if (generation !== admissionGeneration) {
+            throw new PageBridgeError('RUN_SUPERSEDED', 'Data reset retired this host reconnect.');
+          }
+          if (connection !== hostConnection) {
+            throw new Error(
+              'The local host disconnected again during the state read. Its result was discarded.',
+            );
+          }
+          if (fresh.runtime.version !== APP_VERSION) {
+            throw new PageBridgeError(
+              'HOST_VERSION_MISMATCH',
+              'Complete setup and reload Miter so the host and extension versions match.',
+            );
+          }
+          // A newer pushed state may contain Pause/Stop. Never replace it with a late read.
+          if (snapshot === before || snapshot === undefined) {
+            snapshot = fresh;
+            broadcast({ event: 'snapshot', data: fresh });
+          }
+          return snapshot;
+        },
+        async confirmBootstrapDraft(proof) {
+          checkRunner();
+          const confirmed = bootstrapDraftSchema.parse(proof);
+          const link = links.get(workerId);
+          if (
+            !link ||
+            link.id !== tabId ||
+            confirmed.workerId !== workerId ||
+            confirmed.projectId !== projectId ||
+            JSON.stringify(link.lastReceipt?.bootstrapDraft) !== JSON.stringify(confirmed)
+          ) {
+            throw new Error('The first-message receipt changed before confirmation.');
+          }
+          if (link.confirmedBootstrapDraft) {
+            return;
+          }
+          links.set(workerId, { ...link, confirmedBootstrapDraft: confirmed });
+          await links.flush(true);
+          checkRunner();
+        },
+        async rememberAnsweredDraft(exchangeId) {
+          checkRunner();
+          const link = links.get(workerId);
+          const receipt = link?.lastReceipt;
+          if (
+            !link ||
+            link.id !== tabId ||
+            !receipt?.composerHash ||
+            receipt.exchangeId !== exchangeId ||
+            receipt.workerId !== workerId ||
+            receipt.projectId !== projectId
+          ) {
+            return;
+          }
+          const draft = bootstrapDraftSchema.parse({
+            workerId,
+            projectId,
+            exchangeId,
+            goalHash: receipt.goalHash,
+            origin: new URL(link.url).origin,
+            rawHash: receipt.composerHash,
+          });
+          const previous = link.answeredDrafts ?? [];
+          if (previous.some((entry) => entry.exchangeId === exchangeId)) {
+            return;
+          }
+          const answered = [...previous, draft];
+          const recent = answered.slice(-answeredDraftLimit);
+          // A provider can restore its first composer long after that reply was
+          // imported. Pin it only if it is itself among the acknowledged imports.
+          const bootstrap = answered.find(
+            (entry) =>
+              entry.exchangeId === link.confirmedBootstrapDraft?.exchangeId &&
+              JSON.stringify(entry) === JSON.stringify(link.confirmedBootstrapDraft),
+          );
+          if (bootstrap && !recent.includes(bootstrap)) {
+            recent[0] = bootstrap;
+          }
+          links.set(workerId, { ...link, answeredDrafts: recent });
+          await links.flush(true);
+          checkRunner();
+        },
+        async findCompletedBootstrapDraft(text) {
+          staleDraftAuthorization = undefined;
+          checkStartup();
+          if (!chats.isCreatedTab(workerId, tabId) || !chatgptProvider.origins.includes(destination)) {
+            return;
+          }
+          const frame = unwrapMessage(text);
+          if (!frame) {
+            return;
+          }
+          const candidates = [];
+          for (const [oldWorkerId, link] of links.entries()) {
+            if (oldWorkerId !== workerId) {
+              for (const proof of retainedDrafts(link)) {
+                if (
+                  proof.exchangeId === frame.exchangeId &&
+                  proof.origin === destination &&
+                  (await matchesBootstrapDraft(text, proof))
+                ) {
+                  candidates.push(proof);
+                }
+              }
+            }
+            checkStartup();
+          }
+          const proof = candidates[0];
+          if (candidates.length !== 1 || !proof) {
+            return;
+          }
+          const owner = draftOwner(proof);
+          if (!owner) {
+            return;
+          }
+          // Pin nested control data too: a later resume must not rewrite the
+          // expected epoch while this ownership check is awaiting host state.
+          const previous = structuredClone(owner);
+          if ((await messageDigest(previous.goal)) !== proof.goalHash) {
+            return;
+          }
+          checkStartup();
+          const tab = await chrome.tabs.get(tabId);
+          checkStartup();
+          if (tab.url !== destination + '/') {
+            return;
+          }
+          const fresh = await rpc('state', {}, snapshotSchema);
+          checkStartup();
+          checkWorker(fresh.workers.find((current) => current.id === workerId));
+          if (
+            !draftOwner(proof, previous, fresh) ||
+            !draftOwner(proof, previous) ||
+            !chats.isCreatedTab(workerId, tabId) ||
+            !stillRetained(proof)
+          ) {
+            return;
+          }
+          staleDraftAuthorization = { proof, previous };
+          return proof;
+        },
         loadProgress: () => rpc('worker.bridgeLoad', { workerId, expectedRun }, bridgeLoadSchema),
         saveProgress: (progress, epoch) => {
           checkRunner();
@@ -669,7 +1150,7 @@ export function createTaskController(dependencies: TaskDependencies) {
         saveReceipt: (receipt) => {
           checkRunner();
 
-          return saveReceipt(workerId, tabId, receipt);
+          return saveReceipt(workerId, tabId, receipt, expectedRun);
         },
         rpc: (method, params) => {
           checkRunner();
@@ -695,6 +1176,26 @@ export function createTaskController(dependencies: TaskDependencies) {
         publish,
         page: (pageId, action) => {
           checkRunner();
+
+          if (action.op === 'clear_draft') {
+            const authorization = staleDraftAuthorization;
+            staleDraftAuthorization = undefined;
+            const checkDraftOwner = (): void => {
+              checkStartup();
+              if (
+                !authorization ||
+                pageId !== tabId ||
+                !chats.isCreatedTab(workerId, tabId) ||
+                !draftOwner(authorization.proof, authorization.previous) ||
+                JSON.stringify(action.staleDraft) !== JSON.stringify(authorization.proof) ||
+                !stillRetained(authorization.proof)
+              ) {
+                throw new PageBridgeError('DRAFT_CONFLICT', 'The previous task changed. The draft is safe.');
+              }
+            };
+            checkDraftOwner();
+            return pageTransport.request(pageId, action, checkDraftOwner);
+          }
 
           return pageTransport.request(pageId, action);
         },
@@ -952,20 +1453,52 @@ export function createTaskController(dependencies: TaskDependencies) {
         return { resumed: false };
       }
 
-      let current = await chats.saved(workerId, true, check, conversationUrl);
+      const previous = links.get(workerId);
+      const boundary = taskBoundary(worker);
+      let current: ChatLink | undefined;
+      if (
+        boundary &&
+        previous?.newChat &&
+        previous.projectId === worker.projectId &&
+        matchesTaskBoundary(previous.automaticStart, boundary) &&
+        !previous.lastReceipt &&
+        !previous.confirmedBootstrapDraft &&
+        pendingOwner === undefined &&
+        !conversationUrl &&
+        !worker.queue.length
+      ) {
+        const saved = await rpc('worker.bridgeLoad', { workerId, expectedRun: boundary }, bridgeLoadSchema);
+        check();
+        const progress = saved.progress;
+        if (
+          saved.importedCount === 0 &&
+          progress &&
+          isUnsentBootstrap(progress) &&
+          (progress.errorCode === 'NAVIGATED' || progress.errorCode === 'DRAFT_CONFLICT') &&
+          progress.workerId === workerId &&
+          progress.projectId === worker.projectId &&
+          progress.goalHash === (await messageDigest(worker.goal))
+        ) {
+          check();
+          await startup.verify();
+          current = { ...(await chats.fresh(workerId, check)), automaticStart: boundary };
+          reserved = current.id;
+        }
+      }
+      current ??= await chats.saved(workerId, true, check, conversationUrl);
       check();
 
       if (pendingOwner !== undefined && (!current || current.newChat || current.bindingPending)) {
         return { resumed: false };
       }
 
-      if (!current && links.get(workerId)?.lastReceipt) {
+      if (!current && previous?.lastReceipt) {
         throw new Error(
           'The pending send belongs to this task’s original chat. Reopen that chat before resuming; a new blank chat will not be used. Your progress is saved.',
         );
       }
 
-      if (!current) {
+      if (!current && !previous) {
         // Legacy installs may have no saved link. Only inspect the active chat
         // after an explicit Resume click; ownership is checked by the runner.
         current = (
@@ -982,7 +1515,7 @@ export function createTaskController(dependencies: TaskDependencies) {
 
       if (!current && worker.control?.mode === 'fresh' && !links.get(workerId)) {
         // Stop before the first send has no conversation to reopen. An explicit
-        // fresh continuation may create/reuse an empty unclaimed tab, never
+        // fresh continuation may create a separate task tab, never
         // replace an existing pending conversation.
         current = await chats.fresh(workerId, check);
         reserved = current.id;
@@ -1000,7 +1533,6 @@ export function createTaskController(dependencies: TaskDependencies) {
 
       chats.reserve(workerId, current);
       reserved = current.id;
-      const previous = links.get(workerId);
       // These are initial-session hints only. The native checkpoint restores any
       // explicitly extended task budget, which can exceed the new-task form cap.
       const maxTurns = Math.min(20, previous?.maxTurns ?? runners.get(workerId)?.status.maxTurns ?? 15);
@@ -1008,6 +1540,7 @@ export function createTaskController(dependencies: TaskDependencies) {
       links.set(workerId, {
         ...current,
         projectId: worker.projectId,
+        receiptRun: boundary,
         maxTurns,
         maxMinutes,
         updatedAt: Date.now(),
@@ -1075,13 +1608,7 @@ export function createTaskController(dependencies: TaskDependencies) {
 
     const worker = fresh.workers.find((item) => item.id === workerId);
 
-    if (
-      !worker ||
-      worker.control?.mode === 'stopped' ||
-      worker.control?.mode === 'fresh' ||
-      !canUseChat(worker) ||
-      worker.queue.length
-    ) {
+    if (!worker || worker.control?.mode === 'stopped' || !canUseChat(worker) || worker.queue.length) {
       throw new Error('Resolve pending local work or review this task before selecting another reply.');
     }
 
@@ -1105,12 +1632,24 @@ export function createTaskController(dependencies: TaskDependencies) {
     const { workerId, source, text } = replyPreviewParametersSchema.parse(params);
     const check = startGuard(workerId);
     const { worker, link } = await replyContext(workerId, check);
+    const saved = await rpc(
+      'worker.bridgeLoad',
+      { workerId, expectedRun: taskBoundary(worker) },
+      bridgeLoadSchema,
+    );
+    check();
+    const receipt = saved.progress?.lastReceipt;
+    let replyTo: string | undefined;
+    if (receipt?.expectsReplyTo) {
+      replyTo = receipt.exchangeId;
+    }
     const view = await pageTransport.request(link.id, {
       op: 'reply',
       token: crypto.randomUUID(),
       url: link.url,
       workerId: worker.id,
       projectId: worker.projectId,
+      replyTo,
       expiresAt: Date.now() + 20000,
     });
 
@@ -1141,8 +1680,7 @@ export function createTaskController(dependencies: TaskDependencies) {
     }
 
     const envelope = boundReply(raw, worker.id, worker.projectId);
-    const saved = await rpc('worker.bridgeLoad', { workerId }, bridgeLoadSchema);
-    check();
+    assertFreshReplyExchange(worker, envelope.replyTo, saved.progress);
 
     if (
       envelope.replyTo &&
@@ -1200,7 +1738,7 @@ export function createTaskController(dependencies: TaskDependencies) {
         expiresAt,
         createdAt: Date.now(),
       },
-      worker.control?.epoch ?? 0,
+      worker.control,
     );
     log(
       'bridge.reply.preview',
@@ -1267,6 +1805,7 @@ export function createTaskController(dependencies: TaskDependencies) {
         workerId: worker.id,
         projectId: worker.projectId,
         replyId: ticket.envelope.id,
+        replyTo: ticket.envelope.replyTo,
         expiresAt: Date.now() + 20000,
       });
 
@@ -1285,6 +1824,15 @@ export function createTaskController(dependencies: TaskDependencies) {
       }
 
       checkTicket();
+      if (worker.control?.mode === 'fresh') {
+        const saved = await rpc(
+          'worker.bridgeLoad',
+          { workerId: worker.id, expectedRun: taskBoundary(worker) },
+          bridgeLoadSchema,
+        );
+        checkTicket();
+        assertFreshReplyExchange(worker, ticket.envelope.replyTo, saved.progress);
+      }
 
       // A clipboard choice is explicitly selected by the user. It intentionally
       // does not require the broken role/ancestor reader to find the same text.
@@ -1446,8 +1994,14 @@ export function createTaskController(dependencies: TaskDependencies) {
 
       // Start on an existing exchange is continuation, even when the UI is
       // stale or the first conversation is still being assigned its URL.
-      if (existing?.lastReceipt || existing?.lastImportedId) {
-        selected = await chats.saved(workerId, true, check, existing.conversationUrl);
+      const previousLink = links.get(workerId);
+      const requiresSavedChat =
+        checkpoint.importedCount > 0 ||
+        !!previousLink?.lastReceipt ||
+        !!previousLink?.confirmedBootstrapDraft ||
+        (!!existing && !isUnsentBootstrap(existing));
+      if (requiresSavedChat) {
+        selected = await chats.saved(workerId, true, check, existing?.conversationUrl);
 
         if (!selected) {
           throw new Error(
@@ -1485,6 +2039,9 @@ export function createTaskController(dependencies: TaskDependencies) {
         },
         cleanupRequested: false,
       };
+      if (params.newChat === true && params.tabId === undefined && !requiresSavedChat) {
+        selected.automaticStart = started.identity.expectedRun;
+      }
       const runner = createRunner(worker, {
         workerId,
         projectId: worker.projectId,
@@ -1501,7 +2058,6 @@ export function createTaskController(dependencies: TaskDependencies) {
       runners.set(workerId, runner);
       startedChats.set(runner, started);
       links.set(workerId, {
-        ...links.get(workerId),
         ...selected,
         projectId: worker.projectId,
         maxTurns,
@@ -1633,7 +2189,11 @@ export function createTaskController(dependencies: TaskDependencies) {
       }
 
       admission = admitTask(reviewed.workerId, reviewed.expectedRun);
-    } else if (['worker.import', 'worker.run', 'worker.resume', 'worker.approve'].includes(method)) {
+    } else if (
+      ['worker.import', 'worker.run', 'worker.resume', 'worker.approve', 'worker.setupDecision'].includes(
+        method,
+      )
+    ) {
       forwardedTask = forwardedTaskParametersSchema.parse(params);
       let intent: 'continue' | 'delivery' = 'continue';
 
@@ -1757,12 +2317,13 @@ export function createTaskController(dependencies: TaskDependencies) {
         followupArmed.delete(workerId);
         const runner = runners.get(workerId);
 
-        if (runner?.status.active) {
+        const disabled = disableReplyRecovery(workerId);
+        if (runner?.status.active || runner?.status.monitoring) {
           await runner.stop('Paused by you. Resume keeps the current plan.');
         } else {
           await rpc('worker.pause', { ...params, workerId });
         }
-
+        await disabled;
         return { paused: true };
       }
 
@@ -1905,19 +2466,24 @@ export function createTaskController(dependencies: TaskDependencies) {
       }
 
       case 'bridge.openChat': {
-        const selected = await chats.saved(
-          workerParametersSchema.parse(params).workerId,
-          true,
-          checkAvailable,
-        );
-        checkAvailable();
+        const workerId = workerParametersSchema.parse(params).workerId;
+        const current = snapshot?.workers.find((worker) => worker.id === workerId);
+        const check = admitTask(workerId, taskBoundary(current)).check;
+        let tabId = await chats.signInTab(workerId, check);
 
-        if (!selected) {
+        if (tabId === undefined) {
+          tabId = (await chats.saved(workerId, true, check))?.id;
+        }
+        check();
+
+        if (tabId === undefined) {
           throw new Error('No saved conversation yet. Start the task first.');
         }
 
-        await chrome.tabs.update(selected.id, { active: true });
-        const tab = await chrome.tabs.get(selected.id);
+        await chrome.tabs.update(tabId, { active: true });
+        check();
+        const tab = await chrome.tabs.get(tabId);
+        check();
 
         if (tab.windowId !== undefined) {
           await chrome.windows.update(tab.windowId, { focused: true });
@@ -1943,7 +2509,7 @@ export function createTaskController(dependencies: TaskDependencies) {
         }
 
         const tab = await chrome.tabs.create({
-          url: 'https://chatgpt.com/',
+          url: chatgptProvider.startUrl + '/',
           active: true,
         });
 
@@ -1953,8 +2519,9 @@ export function createTaskController(dependencies: TaskDependencies) {
 
         return {
           id: tab.id,
+          providerId: chatgptProvider.id,
           title: 'New ChatGPT chat',
-          url: 'https://chatgpt.com',
+          url: chatgptProvider.startUrl,
           newChat: true,
         };
       }
@@ -1962,7 +2529,7 @@ export function createTaskController(dependencies: TaskDependencies) {
       case 'bridge.stop': {
         const { workerId } = workerParametersSchema.parse(params);
         followupArmed.delete(workerId);
-        void runners.get(workerId)?.stop();
+        await Promise.all([disableReplyRecovery(workerId), runners.get(workerId)?.stop()]);
 
         return { stopped: true };
       }
@@ -1970,7 +2537,7 @@ export function createTaskController(dependencies: TaskDependencies) {
       case 'worker.cancel': {
         const { workerId } = workerParametersSchema.parse(params);
         followupArmed.delete(workerId);
-        await runners.get(workerId)?.stop('Stopped by you');
+        await Promise.all([disableReplyRecovery(workerId), runners.get(workerId)?.stop('Stopped by you')]);
         break;
       }
       case 'worker.rollback':
@@ -1982,7 +2549,7 @@ export function createTaskController(dependencies: TaskDependencies) {
         }
 
         const { workerId } = workerParametersSchema.parse(params);
-        await runners.get(workerId)?.stop('Stopped by you');
+        await Promise.all([disableReplyRecovery(workerId), runners.get(workerId)?.stop('Stopped by you')]);
         break;
       }
       case 'worker.import': {
@@ -2018,35 +2585,55 @@ export function createTaskController(dependencies: TaskDependencies) {
         );
       }
 
-      params = { ...params, epoch };
+      if (method === 'worker.run' || method === 'worker.resume') {
+        completedPreviews.arm(worker);
+      }
+      if (method !== 'worker.setupDecision') {
+        params = { ...params, epoch };
+      }
     }
 
     return rpc(method, params);
   }
 
   async function openNotification(workerId: string): Promise<void> {
+    const revision = ++notificationOpenRevision;
+    const generation = admissionGeneration;
+    const check = () => {
+      checkAvailable();
+      if (revision !== notificationOpenRevision || generation !== admissionGeneration) {
+        throw new Error('This notification was superseded. Open the task from Miter.');
+      }
+    };
+    check();
     const current = snapshot ?? (await rpc('state', {}, snapshotSchema));
+    check();
 
     if (!current.workers.some((worker) => worker.id === workerId)) {
       throw new Error('The notified task no longer exists.');
     }
 
     await workspace.dispatch({ type: 'open', kind: 'task', id: workerId }, catalog(current));
+    check();
     const workspaceURL = chrome.runtime.getURL('workspace.html');
     const target = workspaceURL + '?task=' + encodeURIComponent(workerId);
     const opened = (await chrome.tabs.query({ url: workspaceURL + '*' })).find(
       (tab) => tab.id !== undefined && (tab.url || tab.pendingUrl || '').split(/[?#]/)[0] === workspaceURL,
     );
+    check();
     let tab: chrome.tabs.Tab | undefined;
 
     if (opened?.id !== undefined) {
       tab = await chrome.tabs.update(opened.id, { url: target, active: true });
+      check();
 
       if (!tab) {
         tab = await chrome.tabs.get(opened.id);
+        check();
       }
     } else {
       tab = await chrome.tabs.create({ url: target, active: true });
+      check();
     }
 
     if (tab?.id === undefined) {
@@ -2112,20 +2699,27 @@ export function createTaskController(dependencies: TaskDependencies) {
       }
 
       snapshot = next;
+      if (next.runtime.version === APP_VERSION) {
+        completedPreviews.update(next);
+      }
+      reattachWaitingReplies();
       notifications.snapshot(next);
       broadcast({ event: 'snapshot', data: next });
       publish();
       syncWorkspace(next);
     },
     disconnected(): void {
-      snapshot = undefined;
-
+      hostConnection = Symbol('host connection');
       for (const runner of runners.values()) {
-        void runner.stop(
-          'The local host disconnected. Your files are saved; reconnect before resuming.',
-          'error',
-        );
+        if (!runner.hostDisconnected()) {
+          void runner.stop(
+            'The local host disconnected during an operation. Its outcome needs checking. Open Setup to reconnect, then Resume the saved task; nothing was replayed.',
+            'error',
+            'HOST_DISCONNECTED',
+          );
+        }
       }
+      snapshot = undefined;
     },
     async stop(): Promise<void> {
       invalidateStarts();
@@ -2143,7 +2737,12 @@ export function createTaskController(dependencies: TaskDependencies) {
         45000,
       );
       await rewrites.quiesce();
-      await Promise.all([workspace.quiesce(), links.quiesce(), notifications.quiesce()]);
+      await Promise.all([
+        workspace.quiesce(),
+        links.quiesce(),
+        notifications.quiesce(),
+        completedPreviews.quiesce(),
+      ]);
     },
     releaseResources(): Promise<void> {
       return waitFor(tabLiveness.releaseAll(), 'Chat tab resource policy', 15000);
@@ -2156,23 +2755,61 @@ export function createTaskController(dependencies: TaskDependencies) {
       continuing.clear();
       controlBusy.clear();
       startRevisions.clear();
+      replyRecoveryChecks.clear();
+      startupDestinationsHandled.clear();
+      restoringTabUrls.clear();
+      browserStartedAt = undefined;
       chats.clearReservations();
       replyTickets.clear();
       followupStarting.clear();
       notifications.clear();
+      completedPreviews.clear();
       snapshot = undefined;
       diagnostics.clear();
     },
-    tabRemoved(tabId: number): void {
+    browserStartup(): void {
+      browserStartedAt = Date.now();
+      replyRecoveryChecks.clear();
+      reattachWaitingReplies();
+    },
+    tabRemoved(tabId: number, info?: chrome.tabs.OnRemovedInfo): void {
+      chats.forgetCreatedTab(tabId);
       pageTransport.forget(tabId);
 
+      const closedUrl = restoringTabUrls.get(tabId);
+      restoringTabUrls.delete(tabId);
+      if (info && !info.isWindowClosing) {
+        // Even before the first recovery tick, an explicitly closed task tab
+        // must stay closed on this and subsequent browser starts.
+        void links.ready
+          .then(async () => {
+            if (disposed || dependencies.blocked()) {
+              return;
+            }
+            for (const [workerId, link] of links.entries()) {
+              if (
+                link.receiptRun !== null &&
+                link.lastReceipt &&
+                (link.id === tabId || link.url === closedUrl)
+              ) {
+                await disableReplyRecovery(workerId);
+              }
+            }
+          })
+          .catch((error) => log('bridge.storage.error', errorMessage(error)));
+      }
       for (const runner of runners.values()) {
         if (runner.status.tabId === tabId) {
+          if (info?.isWindowClosing && runner.detachWaitingReply()) {
+            runners.delete(runner.status.workerId);
+            publish();
+            continue;
+          }
           void runner.stop('The task’s chat was closed. Reopen a chat before resuming.');
         }
       }
     },
-    tabUpdated(tabId: number, change: chrome.tabs.OnUpdatedInfo): void {
+    tabUpdated(tabId: number, change: chrome.tabs.OnUpdatedInfo, tab?: chrome.tabs.Tab): void {
       if (change.status === 'loading') {
         pageTransport.forget(tabId);
       }
@@ -2182,6 +2819,9 @@ export function createTaskController(dependencies: TaskDependencies) {
       }
 
       if (change.url !== undefined) {
+        if (!chatgptProvider.origins.some((origin) => change.url === origin + '/')) {
+          chats.forgetCreatedTab(tabId);
+        }
         const current = chatChoice({ id: tabId, url: change.url });
 
         for (const runner of runners.values()) {
@@ -2195,6 +2835,25 @@ export function createTaskController(dependencies: TaskDependencies) {
               'error',
               'NAVIGATED',
             );
+          }
+        }
+      }
+
+      if (change.status === 'complete' || change.url !== undefined) {
+        const restored = chatChoice({ id: tabId, url: change.url || tab?.pendingUrl || tab?.url });
+        if (browserStartedAt !== undefined && Date.now() - browserStartedAt <= 120000) {
+          if (restored && !restored.newChat) {
+            restoringTabUrls.set(tabId, restored.url);
+          } else if (change.url !== undefined) {
+            restoringTabUrls.delete(tabId);
+          }
+        } else {
+          restoringTabUrls.clear();
+        }
+        for (const [workerId] of replyRecoveryChecks) {
+          const link = links.get(workerId);
+          if (link && (link.id === tabId || restored?.url === link.url)) {
+            replyRecoveryChecks.delete(workerId);
           }
         }
       }
@@ -2213,6 +2872,7 @@ export function createTaskController(dependencies: TaskDependencies) {
         return;
       }
 
+      reattachWaitingReplies();
       for (const runner of runners.values()) {
         void runner.tick().catch((error) => log('bridge.tick.error', errorMessage(error)));
       }

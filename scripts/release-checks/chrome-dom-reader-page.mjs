@@ -22,6 +22,7 @@ export const DOM_READER_PAGE_SOURCE = `(() => {
   let mutations = 0;
   let clicks = 0;
   let inputs = 0;
+  let frameLoaded = false;
   const clicked = () => { clicks++; };
   const input = () => { inputs++; };
   const button = (label) => {
@@ -104,10 +105,33 @@ export const DOM_READER_PAGE_SOURCE = `(() => {
     mount(plan) {
       destroy();
       current = plan;
+      frameLoaded = false;
       const main = document.createElement('main');
       const transcript = document.createElement('section');
       for (const [index, turn] of plan.turns.entries()) {
-        transcript.append(renderTurn(turn, index));
+        const element = renderTurn(turn, index);
+        if (plan.name.startsWith('roleless-code-unanchored-') &&
+            ['reader-user-current', 'reader-duplicate-prior'].includes(turn.id)) {
+          const label = document.createElement('div');
+          label.textContent = 'A nonmatching wrapper around the literal sent bubble.';
+          element.prepend(label);
+          if (plan.name === 'roleless-code-unanchored-quote') {
+            const quoted = document.createElement('blockquote');
+            quoted.append(element.querySelector('[data-message-content]'));
+            element.append(quoted);
+          }
+        }
+        if (plan.name === 'recovery-hidden-response' && turn.id === 'reader-response') {
+          element.hidden = true;
+        }
+        if (plan.name === 'recovery-duplicate-known-conflicting' && turn.id === 'reader-response') {
+          const conflicting = document.createElement('pre');
+          const code = document.createElement('code');
+          code.textContent = '{"protocol":"mitter/1","id":"reader_conflicting_reply","actions":[]}';
+          conflicting.append(code);
+          element.querySelector('[data-message-content]').append(conflicting);
+        }
+        transcript.append(element);
       }
       main.append(transcript);
       if (plan.padding) {
@@ -127,22 +151,45 @@ export const DOM_READER_PAGE_SOURCE = `(() => {
         frame.setAttribute('sandbox', '');
         frame.referrerPolicy = 'no-referrer';
         frame.title = 'Opaque synthetic receipt decoy';
+        frame.addEventListener('load', () => {
+          frameLoaded = current === plan && frame.isConnected;
+        }, { once: true });
         frame.srcdoc = '<!doctype html>' + inner.documentElement.outerHTML;
         main.append(frame);
       }
       const form = document.createElement('form');
       form.addEventListener('submit', (event) => event.preventDefault());
-      const composer = document.createElement('textarea');
+      const resendDraft = ['roleless-resend-draft', 'roleless-composer-only'].includes(plan.name);
+      let composer = document.createElement('textarea');
+      if (resendDraft) {
+        composer = document.createElement('div');
+        composer.setAttribute('contenteditable', 'true');
+        composer.setAttribute('role', 'textbox');
+        composer.textContent = plan.draft;
+      } else {
+        composer.value = plan.draft;
+      }
       composer.id = 'prompt-textarea';
-      composer.value = plan.draft;
       const submit = button('Send');
-      submit.id = 'composer-submit-button';
+      if (plan.name !== 'mixed-generating-modern-stop') {
+        submit.id = 'composer-submit-button';
+      }
       if (plan.generating) {
         submit.setAttribute('aria-label', 'Stop');
         submit.textContent = 'Stop';
       }
       form.append(composer, submit);
-      main.append(form);
+      const hiddenStop = button('Stop');
+      hiddenStop.hidden = true;
+      const disabledStop = button('Stop');
+      disabledStop.disabled = true;
+      const unavailableStop = button('Stop');
+      unavailableStop.setAttribute('aria-disabled', 'true');
+      form.append(hiddenStop, disabledStop, unavailableStop);
+      const composerWrapper = document.createElement('div');
+      composerWrapper.append(form);
+      main.append(composerWrapper);
+      main.append(button('Stop'));
       document.body.replaceChildren(main);
       mutations = 0;
       clicks = 0;
@@ -259,11 +306,14 @@ export const DOM_READER_PAGE_SOURCE = `(() => {
       const frame = document.querySelector('iframe');
       let frameOpaque = true;
       if (frame instanceof HTMLIFrameElement) {
-        frameOpaque = frame.contentDocument === null && frame.getAttribute('sandbox') === '';
+        // An opaque initial about:blank is not proof that srcdoc has loaded.
+        frameOpaque = frameLoaded && frame.contentDocument === null && frame.getAttribute('sandbox') === '';
       }
       return {
         mutations, clicks, inputs,
-        draftExact: composer instanceof HTMLTextAreaElement && composer.value === current?.draft,
+        draftExact: composer instanceof HTMLTextAreaElement
+          ? composer.value === current?.draft
+          : composer instanceof HTMLElement && composer.textContent === current?.draft,
         automationControls: document.querySelectorAll('#mitter-automation-control').length,
         mainWorldEndpoint: typeof globalThis.__mitterPageEndpointV4 !== 'undefined',
         frames: document.querySelectorAll('iframe').length,

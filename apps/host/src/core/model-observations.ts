@@ -31,6 +31,21 @@ export const encodeObservation = (value: unknown): string => {
   return encoded;
 };
 
+/** Keep compact JSON readable through ChatGPT's rich-text renderer. Quote
+ * escapes, URLs, inline code, Markdown links and entities can change in the
+ * visible echo. JSON.parse restores their original text. */
+export function escapeChatJSON(encoded: string): string {
+  return encoded.replace(/\\["\\]|[/`]|\](?=\()|&(?=(?:#\d+|#x[\da-f]+|[a-z][\da-z]*);)/gi, (token) => {
+    return (
+      '\\u' +
+      token
+        .charCodeAt(token.length - 1)
+        .toString(16)
+        .padStart(4, '0')
+    );
+  });
+}
+
 export function actionRecord(action: Action): unknown {
   if (action.type === 'write') {
     return {
@@ -165,10 +180,11 @@ export function renderObservations(observations: string[], budget = OBSERVATION_
       };
     }
 
-    let record = encodeObservation(value);
+    // Account for the transport spelling before applying the whole-record budget.
+    let record = escapeChatJSON(encodeObservation(value));
 
     if (record.length + 2 > remaining) {
-      record = encodeObservation(compact(value));
+      record = escapeChatJSON(encodeObservation(compact(value)));
     }
 
     if (record.length + 2 > remaining) {

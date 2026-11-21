@@ -2,6 +2,7 @@ import { ContextArea } from './ContextArea';
 import { APP_VERSION } from '../../../packages/protocol/src/index';
 import { For, createMemo } from 'solid-js';
 import type { DebugEntry } from '../../../packages/bridge/src/diagnostics';
+import { TooltipButton } from './components/TooltipButton';
 import { Icon } from './icons';
 
 export function DebugConsole(props: {
@@ -46,13 +47,11 @@ export function DebugConsole(props: {
           <span class="muted">{props.entries.length} entries</span>
           <div class="spacer" />
           <button onClick={() => props.copy(plain())}>
-            <Icon name="copy" size={13} />
+            <Icon name="copy" />
             Copy all
           </button>
           <button onClick={props.clear}>Clear</button>
-          <button class="icon-button" aria-label="Close console" onClick={props.close}>
-            <Icon name="close" size={14} />
-          </button>
+          <TooltipButton class="icon-button" label="Close console" icon="close" onClick={props.close} />
         </header>
         <div class="debug-lines" tabindex="0">
           <For

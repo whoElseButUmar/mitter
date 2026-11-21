@@ -213,9 +213,17 @@ export async function runCommand(
     recursive: true,
   });
   signal.throwIfAborted();
+  // Chrome does not inherit shell initialization (including nvm). Keep the
+  // registered host's Node runtime available to commands and their child tools.
+  const executablePaths = [path.dirname(process.execPath)];
+
+  if (process.env.PATH) {
+    executablePaths.push(process.env.PATH);
+  }
+
   // No inherited API keys, NODE_OPTIONS, PYTHONPATH, or credential-bearing environment.
   const env: NodeJS.ProcessEnv = {
-    PATH: process.env.PATH,
+    PATH: executablePaths.join(path.delimiter),
     HOME: scratch,
     USERPROFILE: scratch,
     TMPDIR: scratch,
@@ -235,6 +243,10 @@ export async function runCommand(
 
   let program = profile.program;
   let args = [...profile.args]; // Windows npm/pnpm .cmd files need a shell. We refuse that implicit fallback.
+
+  if (program === 'node' || (process.platform === 'win32' && /^node(?:\.exe)?$/i.test(program))) {
+    program = process.execPath;
+  }
 
   if (process.platform === 'win32' && /^(npm|pnpm|yarn)(\.cmd)?$/i.test(program)) {
     throw new Error(
@@ -340,6 +352,26 @@ export async function runCommand(
       if (!settled) {
         settled = true;
         clean();
+
+        // A missing PID proves launch failed. Retain that failure as a final
+        // result so acknowledgement recovery never mistakes it for a process
+        // whose side effects are unknown or automatically retries the action.
+        if (child.pid === undefined) {
+          resolve({
+            code: null,
+            stdout: '',
+            stderr:
+              'Could not start the registered program "' +
+              profile.program +
+              '". Check its executable path, execute permission, and project folder. ' +
+              'No process was started. ' +
+              error.message,
+            timedOut: false,
+            aborted: false,
+          });
+          return;
+        }
+
         reject(error);
       }
     });

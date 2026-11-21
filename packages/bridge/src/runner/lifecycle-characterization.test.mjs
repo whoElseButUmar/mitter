@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createHarness } from './fixtures.mjs';
+import { createHarness, replaceRpcResult } from './fixtures.mjs';
 
 const { buildExchangeMessage, buildReportPrompt } = await import('./prompts.ts');
 
@@ -22,7 +22,7 @@ test('fresh local worker states finish or wait without consulting the chat reade
     ['blocked', 'error', 'Test refusal.'],
     ['paused', 'error', 'Test refusal.'],
     ['cancelled', 'error', 'Test refusal.'],
-    ['complete', 'complete', 'Finished — no automated checks configured'],
+    ['complete', 'complete', 'Finished. Verification not recorded.'],
   ]) {
     await context.test(state, async () => {
       const harness = createHarness();
@@ -58,6 +58,112 @@ test('fresh local worker states finish or wait without consulting the chat reade
       assert.equal(harness.imports.length, 1);
       assert.equal(harness.commits.length, 1);
       await harness.runner.settled();
+    });
+  }
+});
+
+test('an automatic setup request waits for manual entry and sends the command outcome once', async () => {
+  const harness = createHarness();
+  const setup = {
+    type: 'setupCommand',
+    command: ['npm', 'init', '-y'],
+    purpose: 'Create a Node project.',
+    effects: 'Writes package.json.',
+  };
+  await harness.runner.start();
+  harness.showReply({ actions: [setup] });
+  await harness.runner.tick();
+  harness.advance(1800);
+  await harness.runner.tick();
+  assert.equal(harness.imports.length, 1);
+  assert.deepEqual(JSON.parse(harness.imports[0].text).actions, [setup]);
+  harness.worker.state = 'awaiting_approval';
+  harness.worker.pending = {
+    token: 'reviewed',
+    fingerprint: 'exact',
+    action: setup,
+    reason: 'Review the setup.',
+    revision: 1,
+  };
+  await harness.runner.tick();
+  assert.equal(harness.runner.status.phase, 'waiting_approval');
+  harness.worker.pending.manualSessionId = 'manual_1';
+  await harness.runner.tick();
+  assert.equal(harness.runner.status.phase, 'waiting_approval');
+  assert.equal(harness.commits.length, 1);
+  assert.equal(harness.events.includes('worker.report'), false);
+
+  harness.worker.state = 'review';
+  delete harness.worker.pending;
+  const report = 'The manual command exited with code 0. Wrote package.json.';
+  replaceRpcResult(harness, 'worker.report', report);
+  await harness.runner.tick();
+  assert.equal(harness.commits.length, 2);
+  assert.ok(harness.commits[1].text.includes(report));
+  await harness.runner.tick();
+  assert.equal(harness.imports.length, 1);
+  assert.equal(harness.commits.length, 2);
+  assert.equal(harness.events.filter((event) => event === 'worker.report').length, 1);
+});
+
+test('completion reasons use fresh host evidence rather than configured checks alone', async (context) => {
+  const configuredCheck = { type: 'exists', path: 'index.html' };
+  const passed = {
+    version: 1,
+    verification: 'passed',
+    summary: 'All five completion checks passed.',
+    checked: 5,
+    evidence: {
+      source: 'passed',
+      domain: 'passed',
+      browser: 'not-run',
+      detail: 'Source and domain tests passed; rendered browser behavior was not checked.',
+    },
+    at: 100000,
+  };
+  for (const [name, completion, checks, reason] of [
+    ['built-in checks', passed, [], 'Finished. Applicable checks passed.'],
+    [
+      'checks not run',
+      { version: 1, verification: 'not-run', summary: 'Done.', checked: 0, at: 100000 },
+      [configuredCheck],
+      'Finished. No completion checks configured.',
+    ],
+    [
+      'legacy acceptance',
+      { version: 1, verification: 'legacy-accepted', summary: 'Accepted.', checked: 0, at: 100000 },
+      [configuredCheck],
+      'Finished. Previously accepted by you.',
+    ],
+    ['legacy checks', undefined, [configuredCheck], 'Finished. Applicable checks passed.'],
+    ['missing evidence', undefined, [], 'Finished. Verification not recorded.'],
+  ]) {
+    await context.test(name, async () => {
+      const harness = createHarness();
+      await acceptReply(harness);
+      const rpc = harness.dependencies.rpc;
+      harness.dependencies.rpc = async (method, params) => {
+        const result = await rpc(method, params);
+        if (method === 'state') {
+          const snapshot = structuredClone(result);
+          snapshot.workers[0].state = 'complete';
+          snapshot.workers[0].completion = completion;
+          snapshot.workers[0].checks = checks;
+          return snapshot;
+        }
+        return result;
+      };
+      const before = harness.events.length;
+      await harness.runner.tick();
+      await harness.runner.settled();
+      assert.equal(harness.runner.status.phase, 'complete');
+      assert.equal(harness.runner.status.reason, reason);
+      assert.equal(harness.progress().reason, reason);
+      assert.equal(harness.runner.status.active, false);
+      assert.equal(harness.worker.state, 'executing');
+      assert.equal(harness.events.slice(before).includes('page:inspect'), false);
+      assert.equal(harness.imports.length, 1);
+      assert.equal(harness.commits.length, 1);
     });
   }
 });
@@ -191,7 +297,7 @@ test('prompt loading remains sequential and preserves literal bootstrap and repo
       harness.worker,
     ),
   );
-  assert.equal(harness.events.filter((event) => event === 'worker.prompt').length, 2);
+  assert.equal(harness.events.filter((event) => event === 'worker.prompt').length, 3);
   assert.equal(harness.imports.length, 1);
 });
 
@@ -447,7 +553,7 @@ test('structural and direct-code diagnostic keys retain reply identity across re
   const harness = createHarness({
     view: {
       assistantReadStats: {
-        extractor: 'logical-pre/4-user-turn/6-discovery/3-code-reply/5-send/2-control/1',
+        extractor: 'logical-pre/5-user-turn/8-discovery/8-code-reply/6-send/3-control/2',
         preElements: 1,
         visiblePreElements: 1,
         nestedWrappers: 0,
@@ -486,4 +592,37 @@ test('structural and direct-code diagnostic keys retain reply identity across re
   assert.equal(logs.filter((entry) => entry.kind === 'bridge.reply.code').length, 2);
   assert.equal(logs.filter((entry) => entry.kind === 'bridge.user.disclosure').length, 1);
   assert.equal(logs.filter((entry) => entry.kind === 'bridge.location').length, 1);
+});
+
+test('a setup wait excludes only host-measured human time and retains the original turn and active-time limits', async () => {
+  const harness = createHarness({ options: { maxMinutes: 1 } });
+  await acceptReply(harness);
+  const turns = harness.runner.status.turns;
+  harness.worker.state = 'awaiting_approval';
+  harness.worker.setupWaitMs = 0;
+  await harness.runner.tick();
+  assert.equal(harness.runner.status.phase, 'waiting_approval');
+  const used = harness.runner.status.activeMs;
+
+  harness.advance(360_000);
+  harness.worker.setupWaitMs = 360_000;
+  await harness.runner.tick();
+  assert.equal(harness.runner.status.active, true);
+  assert.equal(harness.runner.status.activeMs, used);
+
+  // Chrome was suspended when the user ran the command. Half this interval was real process time.
+  harness.advance(20_000);
+  harness.worker.setupWaitMs += 10_000;
+  harness.worker.state = 'executing';
+  await harness.runner.tick();
+  assert.equal(harness.runner.status.active, true);
+  assert.equal(harness.runner.status.activeMs, used + 10_000);
+  assert.equal(harness.runner.status.turns, turns);
+  assert.equal(harness.imports.length, 1);
+
+  harness.advance(60_000 - used - 10_000);
+  await harness.runner.tick();
+  assert.equal(harness.runner.status.errorCode, 'TIME_LIMIT');
+  assert.equal(harness.progress().activeMs, 60_000);
+  assert.equal(harness.commits.length, 1);
 });

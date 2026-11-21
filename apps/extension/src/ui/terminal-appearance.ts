@@ -135,7 +135,7 @@ export function createTerminalAppearance(
   }
 
   async function loadFont(family: string, bytes: Uint8Array<ArrayBuffer>) {
-    if (!alive) {
+    if (!alive || faces.has(family)) {
       return;
     }
     const face = new FontFace(family, bytes);
@@ -340,17 +340,19 @@ export function createTerminalAppearance(
     }
   }
 
-  async function restore() {
+  async function restore(initial = false) {
     const restoringRevision = preferenceRevision;
-    try {
-      await loadBundledFont();
-    } catch {
-      if (alive) {
-        fail(
-          Error(
-            'The bundled FiraCode Nerd Font Mono could not load. A safe monospace fallback is active. Rebuild the extension with prepare:font to restore it.',
-          ),
-        );
+    if (initial) {
+      try {
+        await loadBundledFont();
+      } catch {
+        if (alive) {
+          fail(
+            Error(
+              'The bundled FiraCode Nerd Font Mono could not load. A safe monospace fallback is active. Rebuild the extension with prepare:font to restore it.',
+            ),
+          );
+        }
       }
     }
     if (!alive) {
@@ -394,6 +396,12 @@ export function createTerminalAppearance(
       return;
     }
     setFonts(valid);
+    for (const [family, face] of faces) {
+      if (family !== BUNDLED_FONT && !valid.some((font) => font.family === family)) {
+        document.fonts.delete(face);
+        faces.delete(family);
+      }
+    }
     if (
       preferences.fontFamily.startsWith('MiterFont_') &&
       !valid.some((font) => font.family === preferences.fontFamily)
@@ -434,10 +442,15 @@ export function createTerminalAppearance(
           useSystemFonts: false,
         });
       }
+    } else {
+      setSystemFonts([]);
     }
     if (alive) {
       if (preferenceRevision === restoringRevision) {
         setPrefs(preferences);
+        if (!initial) {
+          changed(preferences);
+        }
       }
       setReady(true);
     }
@@ -445,7 +458,7 @@ export function createTerminalAppearance(
 
   const initialized = new Promise<void>((resolve) => {
     onMount(() => {
-      void restore()
+      void restore(true)
         .catch((event) => {
           if (alive) {
             fail(
@@ -461,8 +474,38 @@ export function createTerminalAppearance(
   });
   let fontOperations = initialized;
 
+  const storageChanged = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
+    if (!alive || area !== 'local' || (!Object.hasOwn(changes, PREF) && !Object.hasOwn(changes, FONTS))) {
+      return;
+    }
+    // Read the final saved state after local writes/imports settle. Applying an
+    // event's older value directly could roll back a newer optimistic change.
+    fontOperations = fontOperations
+      .catch(() => {})
+      .then(async () => {
+        while (alive) {
+          const pendingWrites = preferenceWrites;
+          await pendingWrites.catch(() => {});
+          if (!alive) {
+            return;
+          }
+          if (pendingWrites === preferenceWrites) {
+            await restore();
+            return;
+          }
+        }
+      })
+      .catch((event) => {
+        if (alive) {
+          fail(new Error('Terminal appearance could not refresh from saved settings.', { cause: event }));
+        }
+      });
+  };
+  onMount(() => chrome.storage.onChanged.addListener(storageChanged));
+
   onCleanup(() => {
     alive = false;
+    chrome.storage.onChanged.removeListener(storageChanged);
     for (const face of faces.values()) {
       try {
         document.fonts.delete(face);

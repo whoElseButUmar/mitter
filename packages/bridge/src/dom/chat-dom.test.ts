@@ -28,6 +28,7 @@ const adapter = await import('../chat-dom.ts');
 const { readAssistantMessage } = await import('./assistant-reader.ts');
 const { sendComposerMessage } = await import('./composer-operations.ts');
 const { setReceiptRole } = await import('./transcript-discovery.ts');
+const { createVisibilityReader } = await import('./page-elements.ts');
 sourceImports.deregister();
 
 function installGlobals(context: TestContext, values: Record<string, unknown>): void {
@@ -111,7 +112,7 @@ test('chat-dom retains its original runtime exports and reader version', () => {
   assert.equal(adapter.readAssistantMessage, readAssistantMessage);
   assert.equal(
     adapter.ASSISTANT_READER_VERSION,
-    'logical-pre/4-user-turn/6-discovery/3-code-reply/5-send/2-control/1',
+    'logical-pre/5-user-turn/8-discovery/8-code-reply/6-send/3-control/2',
   );
 });
 
@@ -501,3 +502,57 @@ for (const op of ['prepare', 'commit'] as const) {
     }
   });
 }
+
+test('visibility snapshots preserve descendant overrides and expire between serializations', (context) => {
+  class ElementFixture {
+    constructor(readonly parentElement: Element | null = null) {}
+    hasAttribute(): boolean {
+      return false;
+    }
+    getRootNode(): object {
+      return {};
+    }
+  }
+  installGlobals(context, { HTMLElement: ElementFixture, ShadowRoot: class {} });
+  const parent: unknown = new ElementFixture();
+  assert.ok(parent instanceof HTMLElement);
+  const child: unknown = new ElementFixture(parent);
+  assert.ok(child instanceof HTMLElement);
+  let hiddenLayout = false;
+  let reads = 0;
+  installGlobals(context, {
+    getComputedStyle: (element: Element) => {
+      reads++;
+      let visibility = 'visible';
+      let display = 'block';
+      if (element === parent) {
+        visibility = 'hidden';
+        if (hiddenLayout) {
+          display = 'none';
+        }
+      }
+      return { visibility, display, contentVisibility: 'visible' };
+    },
+  });
+  const first = createVisibilityReader();
+  assert.equal(first(child), false, 'A descendant may override inherited visibility.');
+  assert.equal(first(parent), true);
+  assert.equal(reads, 2, 'One CSS read per unique element in a synchronous snapshot.');
+  hiddenLayout = true;
+  const fresh = createVisibilityReader();
+  assert.equal(fresh(child), true, 'A fresh serialization must observe changed ancestor display.');
+  assert.equal(reads, 4);
+});
+
+test('reattaching to a waiting reply respects a pause already made in the chat', async (context) => {
+  const session = sessionFixture(true);
+  installGlobals(context, { location: new URL(request.url), __mitterSessionV4: session });
+  await assert.rejects(
+    adapter.chatDom({ ...request, op: 'inspect', token: 'replacement', preservePause: true }),
+    {
+      code: 'STOPPED',
+    },
+  );
+  assert.equal(adapter.getChatDomSession(), session);
+  assert.equal(session.stopped, true);
+});

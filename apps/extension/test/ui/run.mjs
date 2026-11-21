@@ -22,19 +22,27 @@ try {
     'workspace',
     'ownership',
     'appearance',
+    'terminal-runs',
     'shipping',
     'start-cleanup',
+    'setup',
+    'tooltip',
   ]) {
     const reactive =
       name === 'lifecycle' ||
       name === 'workspace' ||
       name === 'ownership' ||
       name === 'appearance' ||
+      name === 'terminal-runs' ||
       name === 'shipping' ||
+      name === 'setup' ||
       name === 'start-cleanup';
     const bundle = await rolldown({
       input: path.join(directory, name + '.test.mjs'),
       platform: 'node',
+      resolve: {
+        conditionNames: ['solid', 'import', 'node', 'default'],
+      },
       external: (source) => {
         if (source.startsWith('node:') || source === 'zod') {
           return true;
@@ -50,7 +58,7 @@ try {
             }
           },
           async transform(source, id) {
-            if (!id.endsWith('.tsx')) {
+            if (!id.endsWith('.tsx') && !id.endsWith('.jsx')) {
               return;
             }
             const result = await babel.transformAsync(source, {

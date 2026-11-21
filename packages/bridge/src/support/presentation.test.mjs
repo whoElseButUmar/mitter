@@ -7,9 +7,9 @@ const { taskPresentation, turnLabel, budgetExhausted } = await import('../presen
 test('completion presentation keeps verification details and wins over other states', () => {
   for (const [verification, checks, detail] of [
     ['legacy-accepted', [], 'Finished. Previously accepted by you.'],
-    ['passed', [], 'Finished. Configured checks passed.'],
-    ['not-run', [{}], 'Finished. No automated checks configured.'],
-    [undefined, [{}], 'Finished. Configured checks passed.'],
+    ['passed', [], 'Finished. Applicable checks passed.'],
+    ['not-run', [{}], 'Finished. No completion checks configured.'],
+    [undefined, [{}], 'Finished. Applicable checks passed.'],
     [undefined, [], 'Finished. Verification not recorded.'],
   ]) {
     const completed = {
@@ -27,6 +27,25 @@ test('completion presentation keeps verification details and wins over other sta
       tone: 'success',
     });
   }
+});
+
+test('a verified web task presents its final evidence even if the model proposed retrying an old audit', () => {
+  const detail = 'All scored Lighthouse categories reached 100 on desktop and mobile.';
+  const completion = {
+    verification: 'passed',
+    summary: 'Retry the desktop audit.',
+    evidence: { lighthouse: 'passed', detail },
+  };
+  const task = { ...worker, state: 'complete', completion };
+  assert.equal(taskPresentation(task).detail, detail);
+  assert.equal(completion.summary, 'Retry the desktop audit.');
+  assert.equal(
+    taskPresentation({
+      ...task,
+      completion: { ...completion, evidence: { ...completion.evidence, lighthouse: 'not-run' } },
+    }).detail,
+    'Finished. Applicable checks passed.',
+  );
 });
 
 test('presentation preserves review, stop, fresh-plan and bridge precedence', () => {

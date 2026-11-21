@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 export function isMainModule(moduleUrl) {
@@ -6,7 +7,11 @@ export function isMainModule(moduleUrl) {
     return false;
   }
 
-  return path.resolve(process.argv[1]) === fileURLToPath(moduleUrl);
+  try {
+    return realpathSync(path.resolve(process.argv[1])) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
 }
 
 export function errorMessage(error) {

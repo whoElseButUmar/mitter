@@ -85,3 +85,13 @@ test('recovery headers remain relaxed but task-bound; digests and summaries pres
   assert.equal(preferReplyRecovery('SAVED_SEND_MISMATCH'), true);
   assert.equal(preferReplyRecovery('TURN_LIMIT'), false);
 });
+
+test('validated skill actions have a read-only recovery summary', () => {
+  const skills = {
+    ...reply,
+    actions: [{ type: 'skill', name: 'app-design' }],
+  };
+  const parsed = boundReply(JSON.stringify(skills), worker.id, worker.projectId);
+  assert.deepEqual(parsed, skills);
+  assert.deepEqual(actionSummary(parsed), ['Read bundled skill: app-design']);
+});

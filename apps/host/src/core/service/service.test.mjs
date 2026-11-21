@@ -61,6 +61,37 @@ test('startup recovery keeps identity, retires stopped queues, and resets trust'
   assert.ok(store.events().some((event) => event.kind === 'recovery'));
 });
 
+test('excluded reads reject the entire batch before import and allow a fresh project read', async (context) => {
+  const { service, worker, root } = await fixture(context);
+  for (const deniedPath of ['node_modules/pdf-lib/package.json', '.env']) {
+    const envelope = makeEnvelope(worker, [
+      { type: 'write', path: 'draft.txt', content: 'pending', base: 'missing' },
+      { type: 'read', path: deniedPath },
+    ]);
+    const params = { workerId: worker.id, text: JSON.stringify(envelope) };
+    assert.deepEqual(await service.handle('worker.validateReply', params), {
+      valid: false,
+      issue: {
+        stage: 'precondition',
+        code: 'EXCLUDED_PATH',
+        field: 'path',
+        actionIndex: 1,
+        message: 'Sensitive or excluded path.',
+      },
+    });
+    await assert.rejects(service.handle('worker.import', params), /Sensitive or excluded path/);
+    assert.deepEqual(
+      await service.handle('worker.handoffSeen', { workerId: worker.id, envelopeId: envelope.id }),
+      { seen: false },
+    );
+  }
+  assert.deepEqual(worker.queue, []);
+  assert.deepEqual(worker.observations, []);
+  await assert.rejects(fs.access(path.join(root, 'draft.txt')), { code: 'ENOENT' });
+  await importBatch(service, worker, [{ type: 'read', path: 'package.json' }]);
+  assert.deepEqual(worker.queue[0].actions, [{ type: 'read', path: 'package.json' }]);
+});
+
 test('read bases bind observed versions; incomplete reads cannot authorize writes', async (context) => {
   const { service, worker, store, root } = await fixture(context);
   await fs.writeFile(path.join(root, 'file.txt'), 'original content');
@@ -229,18 +260,18 @@ test('failed commands save evidence before retiring their stale remainder', asyn
   };
   await runToBoundary(service, worker);
   await approveCurrent(service, worker);
-  assert.equal(worker.state, 'blocked');
-  assert.match(worker.error, /Command failed/);
-  assert.equal(worker.cursor, envelope.actions.length);
+  assert.equal(worker.state, 'review');
+  assert.equal(worker.error, profile.id + ': exit code 7');
+  assert.equal(worker.cursor, 0);
+  assert.deepEqual(worker.queue, []);
   assert.deepEqual(publications[0], { cursor: 0, state: 'executing' });
-  assert.deepEqual(publications.at(-1), { cursor: envelope.actions.length, state: 'blocked' });
+  assert.deepEqual(publications.at(-1), { cursor: 0, state: 'review' });
   const journal = commandJournalSchema.parse(store.get('command:' + envelope.id + '_0'));
   assert.equal(journal.status, 'finished');
   assert.equal(journal.result.code, 7);
   await assert.rejects(fs.access(path.join(root, 'must-not-run.txt')), { code: 'ENOENT' });
 
-  await runToBoundary(service, worker);
-  assert.equal(worker.state, 'review');
+  assert.throws(() => service.run(worker.id), /Import a handoff first/);
   assert.equal(await fs.readFile(path.join(root, 'runs.txt'), 'utf8'), 'run\n');
   assert.equal(worker.completion, undefined);
 });
@@ -280,6 +311,58 @@ test('finished commands recover cursor lag; invalid records stay quarantined', a
     assert.equal(await fs.readFile(path.join(root, 'runs.txt'), 'utf8'), 'run\n');
     await service.handle('worker.skip', { workerId: worker.id, confirm: true });
   }
+});
+
+test('failed process launch is recorded without quarantine or replay after a profile repair', async (context) => {
+  const { service, worker, project, root, store } = await fixture(context);
+  const profile = {
+    id: 'missing-tool',
+    label: 'Missing tool',
+    program: path.join(root, 'missing-program'),
+    args: [],
+    timeoutMs: 5000,
+  };
+  await service.handle('project.profile', { projectId: project.id, profile });
+  const first = await importBatch(service, worker, [
+    { type: 'command', profileId: profile.id },
+    { type: 'write', path: 'stale.txt', content: 'must not run', expectedHash: 'missing' },
+  ]);
+  await runToBoundary(service, worker);
+  await approveCurrent(service, worker);
+
+  const saved = commandJournalSchema.parse(store.get(`command:${first.id}_0`));
+  assert.equal(saved.status, 'finished');
+  assert.equal(saved.result.code, null);
+  assert.match(saved.result.stderr, /No process was started/);
+  assert.equal(worker.state, 'review');
+  assert.equal(worker.cursor, 0);
+  assert.deepEqual(worker.queue, []);
+  await assert.rejects(fs.access(path.join(root, 'stale.txt')), { code: 'ENOENT' });
+
+  const repaired = await registerScript(
+    service,
+    project,
+    root,
+    "require('node:fs').appendFileSync('runs.txt', 'run\\n');",
+    profile.id,
+  );
+  worker.queue = [first];
+  worker.cursor = 0;
+  worker.state = 'paused';
+  store.saveWorker(worker);
+  await runToBoundary(service, worker);
+  assert.equal(worker.state, 'review');
+  assert.match(worker.error, /^missing-tool: Could not start the registered program/);
+  assert.match(worker.error, /No process was started/);
+  assert.deepEqual(store.get(`command:${first.id}_0`), saved);
+  await assert.rejects(fs.access(path.join(root, 'runs.txt')), { code: 'ENOENT' });
+
+  await importBatch(service, worker, [{ type: 'command', profileId: repaired.id }]);
+  await runToBoundary(service, worker);
+  assert.equal(worker.state, 'awaiting_approval');
+  await approveCurrent(service, worker);
+  assert.equal(worker.state, 'review');
+  assert.equal(await fs.readFile(path.join(root, 'runs.txt'), 'utf8'), 'run\n');
 });
 
 test('edits journal before cursor advancement; queued batches precede finish', async (context) => {
@@ -335,6 +418,42 @@ test('edits journal before cursor advancement; queued batches precede finish', a
       alreadyComplete: true,
     },
   );
+});
+
+test('an exact replacement can use the same file’s reported edit hash across batches, while an external edit still conflicts', async (context) => {
+  const { service, worker, root } = await fixture(context);
+  const relative = 'message.txt';
+  await importBatch(service, worker, [
+    { type: 'write', path: relative, content: 'Hello world', base: 'missing' },
+  ]);
+  await runToBoundary(service, worker);
+
+  async function latestEditHash() {
+    const report = await service.handle('worker.report', { workerId: worker.id });
+    const records = report
+      .split('\n')
+      .filter((line) => line.startsWith('{"action":'))
+      .map((line) => JSON.parse(line));
+    const result = records.filter((record) => record.result.path === relative).at(-1)?.result;
+    assert.match(result.hash, /^[a-f0-9]{64}$/);
+    return result.hash;
+  }
+  const originalHash = await latestEditHash();
+  await importBatch(service, worker, [
+    { type: 'replace', path: relative, before: 'world', after: 'Sam', expectedHash: originalHash },
+  ]);
+  await runToBoundary(service, worker);
+  assert.equal(await fs.readFile(path.join(root, relative), 'utf8'), 'Hello Sam');
+  const appliedHash = await latestEditHash();
+  assert.notEqual(originalHash, appliedHash);
+
+  await fs.writeFile(path.join(root, relative), 'Hello Sam, updated elsewhere');
+  await importBatch(service, worker, [
+    { type: 'replace', path: relative, before: 'Sam', after: 'Alex', expectedHash: appliedHash },
+  ]);
+  await runToBoundary(service, worker);
+  assert.match(worker.error, /Edit plan needs updating/);
+  assert.equal(await fs.readFile(path.join(root, relative), 'utf8'), 'Hello Sam, updated elsewhere');
 });
 
 test('a stale later edit cannot partially commit a segment or execute its command', async (context) => {
@@ -396,6 +515,10 @@ test('finish runs commands before file checks and never reuses verification', as
   assert.equal(worker.state, 'complete');
   assert.equal(worker.completion.checked, 2);
   assert.equal(worker.completion.verification, 'passed');
+  assert.equal(
+    store.events().find((event) => event.kind === 'goal')?.message,
+    'Finished. Applicable completion checks passed.',
+  );
   const evidence = worker.observations.map((value) => JSON.parse(value)).find((value) => value.results);
   assert.ok(evidence);
   assert.deepEqual(
@@ -625,6 +748,58 @@ test('progress saves enforce revisions, retained budgets, and corrupt-record ref
     /refusing to overwrite/,
   );
   assert.deepEqual(store.get(progressKey(worker.id)), corrupt);
+});
+
+test('replacing a pending exchange and admitting its reply are mutually exclusive', async (context) => {
+  for (const first of ['replacement', 'reply']) {
+    await context.test(first, async (inner) => {
+      const { service, worker } = await fixture(inner);
+      const previous = '22222222-2222-4222-8222-222222222222';
+      const replacement = '33333333-3333-4333-8333-333333333333';
+      const save = (progress) => service.handle('worker.bridgeSave', { workerId: worker.id, progress });
+      const original = await save(
+        makeProgress(worker, {
+          stage: 'waiting_reply',
+          lastReceipt: {
+            workerId: worker.id,
+            projectId: worker.projectId,
+            goalHash: digest(worker.goal),
+            textHash: 'a'.repeat(64),
+            renderedHash: 'a'.repeat(64),
+            at: 100,
+            exchangeId: previous,
+            expectsReplyTo: true,
+          },
+        }),
+      );
+      const prepared = {
+        ...original,
+        stage: 'prepared',
+        lastReceipt: {
+          ...original.lastReceipt,
+          textHash: 'b'.repeat(64),
+          renderedHash: 'b'.repeat(64),
+          exchangeId: replacement,
+        },
+      };
+      const admit = (replyTo) => importBatch(service, worker, [{ type: 'list', path: '.' }], { replyTo });
+      if (first === 'replacement') {
+        const fresh = await save(prepared);
+        await assert.rejects(admit(previous), /already answered or replaced/);
+        await save({ ...fresh, stage: 'waiting_reply' });
+        await admit(replacement);
+        await runToBoundary(service, worker);
+        await assert.rejects(admit(previous), /already answered or replaced/);
+        await assert.rejects(admit(replacement), /already answered or replaced/);
+      } else {
+        await admit(previous);
+        await runToBoundary(service, worker);
+        await assert.rejects(save(prepared), /already been imported/);
+        const saved = await service.handle('worker.bridgeLoad', { workerId: worker.id });
+        assert.equal(saved.progress.lastReceipt.exchangeId, previous);
+      }
+    });
+  }
 });
 
 test('follow-ups respect pending exchanges and preserve budgets and history', async (context) => {

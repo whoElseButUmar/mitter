@@ -42,7 +42,12 @@ The extracted modules have narrower responsibilities:
    journal before advancing its cursor. Keep committed files if later execution fails or is stopped.
 5. Validate approval tokens, fingerprints, and project revisions. New batches do not inherit command trust.
    Started, interrupted, or malformed command records are quarantined, not replayed. Command verification
-   attempts are never treated as fresh checks when their output is cached.
+   attempts are never treated as fresh checks when their output is cached. A confirmed process-launch
+   failure is a finished failed result: it retires the stale plan without claiming unknown side effects.
+   Settled command/check failures return handoff tasks to review with bounded evidence. Their remaining
+   queues are archived using `retiredQueueSchema` under `miter.retiredQueue.failure.<run>.<batch>` before
+   clearing approval trust. This permits a fresh proposal; it never replays the failed action. Missing files
+   and false content checks are repair evidence; confinement and unknown I/O errors remain blocking errors.
 6. Drain active work and retiring model processes before closing the store or allowing reset to delete state.
    A failed drain stays fenced and can be retried.
 
@@ -50,6 +55,12 @@ The existing database version, record keys (including historical `miter.*` spell
 worker/run identity, queue IDs, and acknowledgement fingerprints remain unchanged. Valid saved records need
 no migration. Malformed command/control acknowledgements now fail explicitly without overwriting evidence
 or executing a guessed result.
+
+A consumed batch may drain directly from `queued` to `review` on Resume. Startup also recognizes the exact
+legacy `Invalid transition queued → review.` error on paused/blocked handoff tasks whose queue is already
+empty. It restores review and records a recovery event without running actions, changing run/progress
+identity, or sending a message. Pending approvals, stopped control, unrelated errors, and remaining work
+prevent this recovery.
 
 ## Validation
 
@@ -61,10 +72,13 @@ node --import ./packages/bridge/src/runner/test-source-loader.mjs --test apps/ho
 ./node_modules/.bin/tsc -p tsconfig.host.json --noEmit
 ```
 
-Tests run the real TypeScript sources through the existing bridge Rolldown loader. Service tests use native
-SQLite in memory and temporary project folders; approved test commands are local Node scripts. Regressions
+Tests run the real TypeScript sources through the existing bridge Rolldown loader. Service tests enforce
+the shared reference workflow graph and use native SQLite in memory and temporary project folders;
+approved test commands are local Node scripts. Resume regressions also run the production XState adapter.
+Regressions
 cover recovery, read binding, admission/start retries, approvals, queue/edit ordering, repair evidence,
-command quarantine, failed-command publication before plan retirement, fresh verification, progress counters,
+command quarantine, failed-command publication before plan retirement, failure review and newly approved
+repair batches, fresh verification, consumed legacy batch resume, progress counters,
 follow-ups, stop/steer concurrency, shared-lock peers, worktree/base revision linkage, durable run cleanup,
 all-task shutdown ordering, and retryable model drains. Source standards also apply to functional test files.
 

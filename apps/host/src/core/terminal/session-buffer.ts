@@ -8,6 +8,7 @@ import type { PtyProcess, PtySubscription } from './pty-adapter.js';
 export type TerminalSession = {
   info: Omit<TerminalInfo, 'owned' | 'occupied'>;
   pty: PtyProcess;
+  kill: (signal?: string) => void;
   owner: string | undefined;
   frames: TerminalFrame[];
   next: number;
@@ -87,7 +88,7 @@ export function appendTerminalOutput(session: TerminalSession, data: string): vo
     session.bytes = session.frames.reduce((bytes, frame) => bytes + frame.data.length * 2, 0);
 
     try {
-      session.pty.kill();
+      session.kill();
     } catch {
       // A kill request is not exit confirmation; reset still waits for onExit.
     }

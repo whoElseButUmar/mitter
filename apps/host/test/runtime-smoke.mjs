@@ -7,6 +7,7 @@ import { TerminalManager } from '../src/core/terminal.js';
 import { prepareNativeTerminal } from '../src/core/pty-runtime.js';
 import { snapshotSchema } from '../../../packages/protocol/src/index.js';
 import { TerminalInfoSchema, TerminalReadSchema } from '../../../packages/terminal/src/protocol.js';
+import { workerFixture } from './fixtures.mjs';
 
 // Standalone, deliberately outside the *.test.mjs unit-suite glob. No runtime state is opened.
 const clientId = 'runtime-smoke';
@@ -94,7 +95,7 @@ async function smoke() {
     const snapshot = snapshotSchema.parse({
       protocol: 'mitter/1',
       projects: [{ id: 'smoke-project', name: 'PTY smoke', root: project, profiles: [], revision: 0 }],
-      workers: [],
+      workers: [{ ...workerFixture(), projectId: 'smoke-project' }],
       events: [],
       settings: { coderModelPath: '', contextSize: 8192, maxTokens: 2048, gpu: 'auto' },
       runtime: { node: process.version, workflow: 'standalone smoke', models: 'not invoked' },
@@ -103,6 +104,12 @@ async function smoke() {
       () => snapshot,
       async () => ({
         spawn(shell, args, options) {
+          if (shell === process.execPath) {
+            return native.factory.spawn(shell, args, {
+              ...options,
+              env: { ...environment, PATH: options.env.PATH },
+            });
+          }
           // Still the real checked factory and selected shell; only isolate env and disable rc files.
           const safeArguments = startupFreeArguments(shell);
           console.log('Real PTY launch:', shell, JSON.stringify(safeArguments));
@@ -164,6 +171,92 @@ async function smoke() {
     assert.equal(exited.exitCode, 0);
     assert.throws(() => process.kill(first.pid, 0), { code: 'ESRCH' });
     ownedPids.delete(first.pid);
+
+    const manualSession = async () => {
+      const receipt = Promise.withResolvers();
+      const controller = new AbortController();
+      const id = await manager.startManualSetup({
+        projectId: 'smoke-project',
+        workerId: 'worker',
+        root: project,
+        signal: controller.signal,
+        onFinish(sessionId, result) {
+          receipt.resolve({ sessionId, ...result });
+        },
+      });
+      const info = TerminalInfoSchema.parse(
+        await manager.dispatch('terminal.attach', { clientId, sessionId: id }),
+      );
+      const session = { ...info, after: 0, text: '' };
+      ownedPids.add(info.pid);
+      void receipt.promise.then(() => ownedPids.delete(info.pid));
+      assert.equal(session.cwd, project);
+      assert.equal(session.title, 'Project setup');
+      await waitForOutput(manager, session, 'empty command prompt', (_result, text) =>
+        text.includes('Setup command ›'),
+      );
+      return { session, receipt, controller };
+    };
+    const failed = await manualSession();
+    await assert.rejects(fs.access(path.join(project, 'package.json')), { code: 'ENOENT' });
+    let manifestCommand = `printf '%s' '{"name":"project"}' > package.json`;
+    if (process.platform === 'darwin') {
+      manifestCommand = 'pnpm init --yes --no-init-package-manager > /dev/null';
+    }
+    await write(
+      failed.session,
+      `unused=human-keyboard-only; ${manifestCommand} && printf 'setup-file-created\\n'; printf 'token=do-not-share-this\\n' >&2; exit 7\r`,
+    );
+    assert.deepEqual(await failed.receipt.promise, {
+      sessionId: failed.session.id,
+      code: 7,
+      output: 'setup-file-created\ntoken=[REDACTED]',
+    });
+    assert.equal(JSON.parse(await fs.readFile(path.join(project, 'package.json'), 'utf8')).name, 'project');
+    const interactive = await manualSession();
+    await write(interactive.session, ':interactive\r');
+    await waitForOutput(manager, interactive.session, 'full terminal prompt', (_result, text) =>
+      text.includes('Full terminal mode.'),
+    );
+    await write(
+      interactive.session,
+      'test -t 0 && test -t 1 && test -t 2 && echo visible-only-in-terminal\r',
+    );
+    assert.deepEqual(await interactive.receipt.promise, {
+      sessionId: interactive.session.id,
+      code: 0,
+      output: '',
+    });
+    const cancelled = await manualSession();
+    cancelled.controller.abort();
+    const cancellation = await cancelled.receipt.promise;
+    assert.equal(cancellation.code, null);
+    assert.match(cancellation.output, /closed/);
+    const interrupted = await manualSession();
+    await write(interrupted.session, 'echo $$ > child.pid; printf "CHILD_READY\\n"; exec sleep 60\r');
+    await waitForOutput(manager, interrupted.session, 'running setup child', (_result, text) =>
+      text.includes('\nCHILD_READY\r\n'),
+    );
+    const childPid = Number(await fs.readFile(path.join(project, 'child.pid'), 'utf8'));
+    assert.ok(Number.isSafeInteger(childPid) && childPid > 0);
+    interrupted.controller.abort();
+    assert.equal((await interrupted.receipt.promise).code, null);
+    const exitDeadline = Date.now() + 3000;
+    while (Date.now() < exitDeadline) {
+      try {
+        process.kill(childPid, 0);
+      } catch (error) {
+        if (error.code !== 'ESRCH') {
+          throw error;
+        }
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.throws(() => process.kill(childPid, 0), { code: 'ESRCH' });
+    console.log(
+      'PASS: project setup waits for keyboard input, creates package.json, reports redacted program output, supports interactive tools and cancels an empty prompt.',
+    );
 
     const second = await create();
     await write(second, "stty -echo; printf '\\nPTY_RESET_READY\\n'\r");

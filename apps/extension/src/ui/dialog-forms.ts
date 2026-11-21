@@ -5,7 +5,11 @@ import {
   type Profile,
   type Project,
 } from '../../../../packages/protocol/src/index';
-import { projectContextSchema } from '../../../../packages/protocol/src/rpc.js';
+import {
+  projectContextSchema,
+  projectCreateParamsSchema,
+  type ProjectCreateParams,
+} from '../../../../packages/protocol/src/rpc.js';
 import { notificationPreferencesSchema, type NotificationPreferences } from '../schemas/messages';
 import { validateViewParams } from '../schemas/view-rpc.js';
 import type { RenameTarget } from './view-data';
@@ -87,35 +91,83 @@ type FormFeedback = {
 
 export type ProjectDraftOptions = {
   close: () => void;
-  pick: () => Promise<FolderPick>;
+  pick: (purpose?: 'project' | 'parent') => Promise<FolderPick>;
   save: (project: Pick<Project, 'name' | 'root'>) => Promise<Project>;
+  create?: (fields: ProjectCreateParams) => Promise<Project>;
+  initialMode?: 'open' | 'create';
   opened: (project: Project) => void;
 };
 
+function folderDisplayName(root: string): string {
+  let label = root.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) || 'Project';
+  label = label.slice(0, 60);
+  if (/[\uD800-\uDBFF]$/.test(label)) {
+    label = label.slice(0, -1);
+  }
+  return label;
+}
+
 export function createProjectDraft(options: ProjectDraftOptions) {
   const { busy, error, close, run } = createSubmissionLifetime(options.close);
-  const [root, writeRoot] = createSignal('');
-  const [name, writeName] = createSignal('');
+  const [mode, writeMode] = createSignal<'open' | 'create'>(options.initialMode ?? 'open');
+  const [operation, setOperation] = createSignal<'choose' | 'save'>('choose');
+  const [fields, writeFields] = createSignal({
+    open: { root: '', name: '', named: false },
+    create: { root: '', name: '', named: false },
+  });
+  const [folderName, writeFolderName] = createSignal('');
+  const root = () => fields()[mode()].root;
+  const name = () => fields()[mode()].name;
   let rootRevision = 0;
-  let nameRevision = 0;
+
+  const setMode = (value: 'open' | 'create') => {
+    if (!busy() && (value === 'open' || options.create)) {
+      rootRevision++;
+      writeMode(value);
+    }
+  };
 
   const setRoot = (value: string) => {
     rootRevision++;
-    writeRoot(value);
+    const currentMode = mode();
+    writeFields((all) => {
+      const current = all[currentMode];
+      let nextName = current.name;
+      if (currentMode === 'open' && !current.named) {
+        nextName = folderDisplayName(value);
+      }
+      return { ...all, [currentMode]: { ...current, root: value, name: nextName } };
+    });
   };
   const setName = (value: string) => {
-    nameRevision++;
-    writeName(value);
+    const currentMode = mode();
+    writeFields((all) => ({ ...all, [currentMode]: { ...all[currentMode], name: value, named: true } }));
+  };
+  const setFolderName = (value: string) => {
+    writeFolderName(value);
+    writeFields((all) => {
+      if (all.create.named) {
+        return all;
+      }
+      return { ...all, create: { ...all.create, name: folderDisplayName(value) } };
+    });
   };
 
   const choose = (): Promise<void> => {
+    if (busy()) {
+      return Promise.resolve();
+    }
+    setOperation('choose');
     const choosingRootRevision = rootRevision;
-    const choosingNameRevision = nameRevision;
+    let purpose: 'project' | 'parent' = 'project';
+    if (mode() === 'create') {
+      purpose = 'parent';
+    }
 
     return run(
       async () => {
         try {
-          return folderPickSchema.parse(await options.pick());
+          return folderPickSchema.parse(await options.pick(purpose));
         } catch (event) {
           throw new Error(
             'The folder picker could not finish. Enter a folder path or choose again. ' + errorMessage(event),
@@ -130,25 +182,60 @@ export function createProjectDraft(options: ProjectDraftOptions) {
           return;
         }
         setRoot(result.root);
-        if (choosingNameRevision === nameRevision && !name()) {
-          setName(result.root.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) || 'Project');
-        }
       },
     );
   };
 
-  const save = (): Promise<void> =>
-    run(
+  const save = (): Promise<void> => {
+    if (busy()) {
+      return Promise.resolve();
+    }
+    setOperation('save');
+    return run(
       async () => {
-        if (!root().trim() || !name().trim()) {
-          throw new Error('Enter a folder path and project name before opening the project.');
+        const creating = mode() === 'create';
+        const location = root();
+        let displayName = name().trim();
+        if (!location.trim()) {
+          throw new Error('Choose a folder first, or enter its path in Advanced options.');
+        }
+        if (!displayName) {
+          let source = location;
+          if (creating) {
+            source = folderName();
+          }
+          displayName = folderDisplayName(source);
+        }
+        let creation: ProjectCreateParams | undefined;
+        if (creating) {
+          const parsed = projectCreateParamsSchema.safeParse({
+            parentRoot: location,
+            folderName: folderName(),
+            name: displayName,
+          });
+          if (!parsed.success) {
+            throw new Error(parsed.error.issues[0]?.message || 'Check the new folder name and location.');
+          }
+          if (!options.create) {
+            throw new Error(
+              'Creating a project is unavailable in this view. Open an existing folder instead.',
+            );
+          }
+          creation = parsed.data;
         }
         try {
-          return projectSchema.parse(await options.save({ name: name().trim(), root: root() }));
+          if (creation && options.create) {
+            return projectSchema.parse(await options.create(creation));
+          }
+          return projectSchema.parse(await options.save({ name: displayName, root: location }));
         } catch (event) {
+          let recovery = 'Check the project list before repeating the action. ';
+          if (creating) {
+            recovery =
+              'The folder may already exist. Check the project list or use Open existing for that folder; no request was retried. ';
+          }
           throw new Error(
-            'Miter could not confirm that the project opened. Check the project list before repeating the action. ' +
-              errorMessage(event),
+            'Miter could not confirm that the project opened. ' + recovery + errorMessage(event),
             {
               cause: event,
             },
@@ -160,8 +247,25 @@ export function createProjectDraft(options: ProjectDraftOptions) {
         options.opened(added);
       },
     );
+  };
 
-  return { busy, error, root, setRoot, name, setName, choose, save, close };
+  return {
+    busy,
+    error,
+    root,
+    setRoot,
+    name,
+    setName,
+    mode,
+    setMode,
+    folderName,
+    setFolderName,
+    choose,
+    save,
+    close,
+    choosing: () => busy() && operation() === 'choose',
+    saving: () => busy() && operation() === 'save',
+  };
 }
 
 export type ContextDraftOptions = FormFeedback & {

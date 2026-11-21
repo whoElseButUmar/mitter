@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { batch, createRoot, createSignal } from 'solid-js';
+import { batch, createEffect, createRoot, createSignal } from 'solid-js';
 import { projectSchema, snapshotSchema } from '../../../../packages/protocol/src/index.ts';
 import { DEFAULT_SETTINGS } from '../../../../packages/protocol/src/model-settings.ts';
 import { emptyWorkspace } from '../../../../packages/ui/src/workspace.ts';
@@ -82,6 +82,77 @@ function outputOwner(rpc, events = []) {
   });
 }
 
+test('choosing the same listed file issues a new preview request with its task and path intact', async () => {
+  const owner = outputOwner(async (method) => {
+    if (method === 'worker.browse') {
+      return { root: '/project', files: ['index.html'] };
+    }
+    return [];
+  });
+  const requests = [];
+  const stopObserving = createRoot((dispose) => {
+    createEffect(() => {
+      requests.push({ request: owner.output.previewRequest(), path: owner.output.file() });
+    });
+    return dispose;
+  });
+  try {
+    await owner.output.browseFiles();
+    const listing = owner.output.fileLibrary();
+    assert.ok(listing);
+    owner.output.previewListedFile(listing, 'index.html');
+    owner.output.setExpanded(false);
+    owner.setModal('files');
+    owner.output.previewListedFile(listing, 'index.html');
+    assert.deepEqual(requests, [
+      { request: 0, path: '' },
+      { request: 1, path: 'index.html' },
+      { request: 2, path: 'index.html' },
+    ]);
+    assert.equal(owner.output.fileLibrary(), listing);
+    assert.equal(listing.workerId, 'worker_1');
+    assert.equal(owner.output.expanded(), true);
+    assert.equal(owner.output.view(), 'result');
+    assert.equal(owner.modal(), '');
+  } finally {
+    stopObserving();
+    owner.dispose();
+  }
+});
+
+test('reset and disposal retire preview requests without reviving a stale file selection', async () => {
+  const owner = outputOwner(async (method) => {
+    if (method === 'worker.browse') {
+      return { root: '/project', files: ['index.html'] };
+    }
+    return [];
+  });
+  try {
+    await owner.output.browseFiles();
+    const listing = owner.output.fileLibrary();
+    assert.ok(listing);
+    owner.output.previewListedFile(listing, 'index.html');
+    const first = owner.output.previewRequest();
+    owner.output.reset();
+    const reset = owner.output.previewRequest();
+    assert.ok(reset > first);
+    owner.output.previewListedFile(listing, 'index.html');
+    assert.equal(owner.output.previewRequest(), reset);
+    assert.equal(owner.output.file(), '');
+    owner.output.preview('index.html');
+    const next = owner.output.previewRequest();
+    assert.ok(next > reset);
+    owner.dispose();
+    const disposed = owner.output.previewRequest();
+    assert.ok(disposed > next);
+    owner.output.preview('index.html');
+    assert.equal(owner.output.previewRequest(), disposed);
+    assert.equal(owner.output.file(), '');
+  } finally {
+    owner.dispose();
+  }
+});
+
 test('changed files reject stale revisions and clear selection on disconnect without reviving after disposal', async () => {
   const reads = [];
   const owner = outputOwner((method, params) => {
@@ -149,6 +220,113 @@ test('file generations distinguish leaving a task and returning to the same ID',
       ['current.ts'],
     );
     assert.deepEqual(owner.notices, []);
+  } finally {
+    owner.dispose();
+  }
+});
+
+test('changed-file errors remain actionable and retry cannot duplicate or outlive its run', async () => {
+  const reads = [];
+  const owner = outputOwner(() => {
+    const pending = Promise.withResolvers();
+    reads.push(pending);
+    return pending.promise;
+  });
+  try {
+    assert.equal(owner.output.filesLoading(), true);
+    reads[0].reject(new Error('Files could not be read.'));
+    await flush();
+    assert.equal(owner.output.filesLoading(), false);
+    assert.equal(owner.output.filesError(), 'Files could not be read.');
+    assert.deepEqual(owner.notices, []);
+    const retry = owner.output.retryFiles();
+    await owner.output.retryFiles();
+    assert.equal(reads.length, 2);
+    assert.equal(owner.output.filesLoading(), true);
+    reads[1].resolve([{ path: 'ready.ts', status: 'changed', bytes: 5 }]);
+    await retry;
+    assert.equal(owner.output.filesError(), '');
+    assert.equal(owner.output.filesLoading(), false);
+    assert.equal(owner.output.files()[0].path, 'ready.ts');
+
+    owner.setTask(worker({ runId: 'next_run' }));
+    assert.equal(reads.length, 3);
+    owner.setTask(worker({ runId: 'newest_run' }));
+    assert.equal(reads.length, 4);
+    reads[2].reject(new Error('Previous run failed.'));
+    await flush();
+    assert.equal(owner.output.filesLoading(), true);
+    assert.equal(owner.output.filesError(), '');
+    reads[3].resolve([]);
+    await flush();
+    assert.equal(owner.output.filesLoading(), false);
+    assert.deepEqual(owner.output.files(), []);
+    owner.setConnected(false);
+    await owner.output.retryFiles();
+    assert.equal(reads.length, 4);
+    assert.equal(owner.output.filesError(), '');
+  } finally {
+    owner.dispose();
+  }
+});
+
+test('activity retry recovers the failed page and preserves the older-page cursor', async () => {
+  const pages = [];
+  const owner = outputOwner((method, params) => {
+    if (method === 'worker.files') {
+      return Promise.resolve([]);
+    }
+    const pending = Promise.withResolvers();
+    pages.push({ params, ...pending });
+    return pending.promise;
+  });
+  try {
+    owner.output.setView('activity');
+    pages[0].reject(new Error('Activity unavailable.'));
+    await flush();
+    assert.equal(owner.output.historyError(), 'Activity unavailable.');
+    const retry = owner.output.retryHistory();
+    await owner.output.retryHistory();
+    assert.equal(pages.length, 2);
+    assert.deepEqual(pages[1].params, { workerId: 'worker_1' });
+    pages[1].resolve({ events: [event(9, 'Current page')], hasMore: true, before: 9 });
+    await retry;
+    assert.equal(owner.output.historyError(), '');
+    const older = owner.output.loadHistory();
+    pages[2].reject(new Error('Older page unavailable.'));
+    await older;
+    const retryOlder = owner.output.retryHistory();
+    assert.deepEqual(pages[3].params, { workerId: 'worker_1', before: 9 });
+    pages[3].resolve({ events: [event(3, 'Older page')], hasMore: false, before: null });
+    await retryOlder;
+    assert.deepEqual(
+      owner.output.activity().map((item) => item.id),
+      [9, 3],
+    );
+    assert.equal(owner.output.historyError(), '');
+    assert.deepEqual(owner.notices, []);
+  } finally {
+    owner.dispose();
+  }
+});
+
+test('a file menu from a previous run cannot open a path in the replacement workspace', async () => {
+  const owner = outputOwner(async () => []);
+  try {
+    const menu = owner.output.fileMenu('worker_1', 'old.ts');
+    owner.setTask(worker({ runId: 'replacement_run' }));
+    menu.find((item) => item.id === 'finder').run();
+    menu.find((item) => item.id === 'preview').run();
+    assert.deepEqual(owner.actions, []);
+    assert.equal(owner.output.file(), '');
+    const current = owner.output.fileMenu('worker_1', 'current.ts');
+    current.find((item) => item.id === 'finder').run();
+    assert.deepEqual(owner.actions, [
+      {
+        method: 'worker.openFile',
+        params: { workerId: 'worker_1', path: 'current.ts', application: 'finder' },
+      },
+    ]);
   } finally {
     owner.dispose();
   }
@@ -248,7 +426,8 @@ test('history failures show the explanation without an Error prefix and release 
 
   try {
     await owner.output.loadHistory(true);
-    assert.deepEqual(owner.notices, ['History is unavailable. Reconnect, then open Activity again.']);
+    assert.equal(owner.output.historyError(), 'History is unavailable. Reconnect, then open Activity again.');
+    assert.deepEqual(owner.notices, []);
     assert.equal(owner.output.historyBusy(), false);
   } finally {
     owner.dispose();
@@ -344,7 +523,7 @@ test('history reset and owner disposal invalidate late success and failure callb
   assert.deepEqual(owner.output.activity(), []);
 });
 
-test('file browsing opens only the latest valid result and cannot reopen a dialog after reset or disposal', async () => {
+test('file browsing deduplicates current reads and cannot reopen a dialog after reset or disposal', async () => {
   const reads = [];
   const owner = outputOwner((method) => {
     if (method === 'worker.files') {
@@ -357,29 +536,175 @@ test('file browsing opens only the latest valid result and cannot reopen a dialo
   });
 
   try {
-    const previous = owner.output.browseFiles();
     const current = owner.output.browseFiles();
-    reads[1].resolve({ root: '/project', files: ['current.ts'] });
+    assert.equal(owner.output.browsing(), true);
+    await owner.output.browseFiles();
+    assert.equal(reads.length, 1);
+    reads[0].resolve({ root: '/project', files: ['current.ts'] });
     await current;
-    reads[0].resolve({ root: '/project', files: ['old.ts'] });
-    await previous;
+    assert.equal(owner.output.browsing(), false);
     assert.deepEqual(owner.output.fileLibrary(), { workerId: 'worker_1', files: ['current.ts'] });
     assert.deepEqual(owner.modals, ['files']);
 
     const resetting = owner.output.browseFiles();
     owner.output.reset();
-    reads[2].resolve({ root: '/project', files: ['before-reset.ts'] });
+    assert.equal(owner.output.browsing(), false);
+    reads[1].resolve({ root: '/project', files: ['before-reset.ts'] });
     await resetting;
     assert.deepEqual(owner.modals, ['files', '']);
 
     const closing = owner.output.browseFiles();
     owner.dispose();
-    reads[3].reject(new Error('Owner closed.'));
+    assert.equal(owner.output.browsing(), false);
+    reads[2].reject(new Error('Owner closed.'));
     await closing;
     await owner.output.browseFiles();
-    assert.equal(reads.length, 4);
+    assert.equal(reads.length, 3);
     assert.deepEqual(owner.notices, []);
     assert.deepEqual(owner.modals, ['files', '']);
+  } finally {
+    owner.dispose();
+  }
+});
+
+test('file browsing requires a connected task and its matching project before requesting files', async () => {
+  const requests = [];
+  const owner = outputOwner(async (method) => {
+    if (method === 'worker.browse') {
+      requests.push(method);
+      return { root: '/project', files: [] };
+    }
+    return [];
+  });
+  try {
+    owner.setConnected(false);
+    await owner.output.browseFiles();
+    owner.setTask(undefined);
+    owner.setConnected(true);
+    await owner.output.browseFiles();
+    owner.setTask(worker());
+    owner.setProject(undefined);
+    await owner.output.browseFiles();
+    owner.setProject({ ...project, id: 'other_project' });
+    await owner.output.browseFiles();
+    assert.deepEqual(requests, []);
+    assert.equal(owner.output.browsing(), false);
+    assert.deepEqual(owner.modals, []);
+  } finally {
+    owner.dispose();
+  }
+});
+
+for (const boundary of ['dialog', 'task', 'project', 'run', 'epoch', 'worktree', 'connection']) {
+  for (const outcome of ['success', 'failure']) {
+    test(`file browse ${outcome} cannot cross the ${boundary} boundary or clear a newer busy state`, async () => {
+      const reads = [];
+      const owner = outputOwner((method) => {
+        if (method === 'worker.files') {
+          return Promise.resolve([]);
+        }
+        assert.equal(method, 'worker.browse');
+        const pending = Promise.withResolvers();
+        reads.push(pending);
+        return pending.promise;
+      });
+      try {
+        const previous = owner.output.browseFiles();
+        if (boundary === 'dialog') {
+          owner.setModal('settings');
+          owner.setModal('');
+        } else if (boundary === 'task') {
+          owner.setTask(worker({ id: 'other_worker' }));
+          owner.setTask(worker());
+        } else if (boundary === 'project') {
+          owner.setProject({ ...project, root: '/replacement-project' });
+          owner.setProject(project);
+        } else if (boundary === 'run') {
+          owner.setTask(worker({ runId: 'replacement_run' }));
+          owner.setTask(worker());
+        } else if (boundary === 'epoch') {
+          owner.setTask(
+            worker({
+              control: {
+                version: 1,
+                mode: 'fresh',
+                epoch: 2,
+                at: 1,
+                operationId: 'fresh_operation',
+                reason: 'Replaced task',
+                retiredExchanges: [],
+              },
+            }),
+          );
+          owner.setTask(worker());
+        } else if (boundary === 'worktree') {
+          owner.setTask(worker({ worktree: { root: '/isolated', branch: 'task', baseCommit: 'base' } }));
+          owner.setTask(worker());
+        } else {
+          owner.setConnected(false);
+          owner.setConnected(true);
+        }
+        assert.equal(owner.output.browsing(), false);
+        const current = owner.output.browseFiles();
+        assert.equal(owner.output.browsing(), true);
+        if (outcome === 'failure') {
+          reads[0].reject(new Error('Retired browse failed.'));
+        } else {
+          reads[0].resolve({ root: '/project', files: ['stale.ts'] });
+        }
+        await previous;
+        assert.equal(owner.output.browsing(), true);
+        assert.equal(owner.output.fileLibrary(), undefined);
+        assert.deepEqual(owner.modals, []);
+        assert.deepEqual(owner.notices, []);
+        reads[1].resolve({ root: '/project', files: ['current.ts'] });
+        await current;
+        assert.equal(owner.output.browsing(), false);
+        assert.deepEqual(owner.output.fileLibrary(), { workerId: 'worker_1', files: ['current.ts'] });
+        assert.deepEqual(owner.modals, ['files']);
+      } finally {
+        owner.dispose();
+      }
+    });
+  }
+}
+
+test('file browsing preserves a replacement dialog and permits retry after a current failure', async () => {
+  const reads = [];
+  const owner = outputOwner((method) => {
+    if (method === 'worker.files') {
+      return Promise.resolve([]);
+    }
+    const pending = Promise.withResolvers();
+    reads.push(pending);
+    return pending.promise;
+  });
+  try {
+    const previous = owner.output.browseFiles();
+    owner.setModal('settings');
+    reads[0].resolve({ root: '/project', files: ['stale.ts'] });
+    await previous;
+    assert.equal(owner.modal(), 'settings');
+    assert.equal(owner.output.browsing(), false);
+    assert.equal(owner.output.fileLibrary(), undefined);
+    owner.setModal('');
+    const failing = owner.output.browseFiles();
+    reads[1].reject(new Error('Files are unavailable. Try again.'));
+    await failing;
+    assert.equal(owner.output.browsing(), false);
+    assert.deepEqual(owner.notices, ['Files are unavailable. Try again.']);
+    const retry = owner.output.browseFiles();
+    owner.setTask(worker({ state: 'executing' }));
+    owner.setProject({ ...project, revision: 2 });
+    assert.equal(
+      owner.output.browsing(),
+      true,
+      'Routine task/project snapshots retain current browse ownership.',
+    );
+    reads[2].resolve({ root: '/project', files: ['current.ts'] });
+    await retry;
+    assert.equal(owner.modal(), 'files');
+    assert.equal(owner.output.browsing(), false);
   } finally {
     owner.dispose();
   }
@@ -461,7 +786,8 @@ for (const recovery of ['reopening activity', 'reconnecting']) {
         await flush();
         assert.equal(pages.length, 1);
         assert.equal(owner.output.historyBusy(), false);
-        assert.equal(owner.notices.length, 1);
+        assert.equal(owner.output.historyError(), 'First page unavailable.');
+        assert.deepEqual(owner.notices, []);
 
         if (recovery === 'reopening activity') {
           owner.output.setView('result');
@@ -528,7 +854,8 @@ test('output reads validate serialized file rows before exposing them to native 
   try {
     await flush();
     assert.deepEqual(owner.output.files(), []);
-    assert.equal(owner.notices.length, 1);
+    assert.ok(owner.output.filesError());
+    assert.deepEqual(owner.notices, []);
   } finally {
     owner.dispose();
   }

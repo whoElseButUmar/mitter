@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
 import { createTaskController } from '../../src/background/task-controller.ts';
 import { parseLocalResult } from '../../src/schemas/local-results.ts';
+import { progressSummary } from '../../../../packages/bridge/src/progress.ts';
 import { messageDigest } from '../../../../packages/bridge/src/message-wire.ts';
 import { APP_VERSION } from '../../../../packages/protocol/src/index.ts';
 import {
@@ -10,7 +11,7 @@ import {
   PAGE_READER,
   pageHelloSchema,
 } from '../../../../packages/bridge/src/transport/messages.ts';
-import { LINK_STORAGE_KEY } from '../../../../packages/bridge/src/chat-links.ts';
+import { LEGACY_LINK_STORAGE_KEY, LINK_STORAGE_KEY } from '../../../../packages/bridge/src/chat-links.ts';
 import { BridgeRunner } from '../../../../packages/bridge/src/index.ts';
 import { NativeRequestTimeout } from '../../../../packages/bridge/src/native-request.ts';
 import { deferred, settle, snapshot } from './chrome-mock.mjs';
@@ -126,6 +127,10 @@ function setup(context, timerAPIs = ['setTimeout']) {
 
     if (method === 'worker.import') {
       return { queued: true };
+    }
+
+    if (method === 'worker.setupDecision') {
+      return { accepted: true };
     }
 
     if (method === 'worker.approve') {
@@ -301,6 +306,106 @@ async function until(predicate) {
   assert.fail('Expected asynchronous checkpoint was not reached.');
 }
 
+function notificationNavigation(context) {
+  const state = setup(context);
+  const workspaceURL = 'chrome-extension://extension/workspace.html';
+  const focused = [];
+  const current = {
+    ...state.current,
+    projects: [{ id: 'project', name: 'Project', root: '/project', profiles: [], revision: 1 }],
+    workers: [worker(), worker({ id: 'second-worker' })],
+  };
+  state.native(async (method) => {
+    assert.equal(method, 'state', 'Opening a notification never runs or resumes a task.');
+    return current;
+  });
+  globalThis.chrome.runtime = { getURL: (path) => 'chrome-extension://extension/' + path };
+  globalThis.chrome.windows = { update: async (id, changes) => focused.push({ id, changes }) };
+  const tab = { id: 8, windowId: 4, url: workspaceURL };
+  state.tabs.set(tab.id, tab);
+  globalThis.chrome.tabs.query = async () => [tab];
+  return { ...state, workspaceURL, tab, focused };
+}
+
+test('notification clicks open the exact task and focus its workspace without task execution', async (context) => {
+  const state = notificationNavigation(context);
+  await state.tasks.openNotification('second-worker');
+  assert.deepEqual(state.updates, [
+    { id: 8, changes: { url: state.workspaceURL + '?task=second-worker', active: true } },
+  ]);
+  assert.deepEqual(state.focused, [{ id: 4, changes: { focused: true } }]);
+  assert.deepEqual(state.creations, []);
+  assert.equal(
+    state.calls.every((call) => call.method === 'state'),
+    true,
+  );
+});
+
+for (const boundary of ['reset', 'dispose']) {
+  test(`notification tab lookup cannot activate or focus after ${boundary}`, async (context) => {
+    const state = notificationNavigation(context);
+    const query = deferred();
+    let queried = false;
+    globalThis.chrome.tabs.query = () => {
+      queried = true;
+      return query.promise;
+    };
+    const opening = state.tasks.openNotification('worker');
+    await until(() => queried);
+    if (boundary === 'reset') {
+      state.blocked(true);
+    } else {
+      state.tasks.dispose();
+    }
+    const rejected = assert.rejects(opening, /reset|superseded/);
+    query.resolve([state.tab]);
+    await rejected;
+    assert.deepEqual(state.updates, []);
+    assert.deepEqual(state.creations, []);
+    assert.deepEqual(state.focused, []);
+  });
+}
+
+test('a slower notification click cannot focus its task after a newer click', async (context) => {
+  const state = notificationNavigation(context);
+  const first = deferred();
+  let queries = 0;
+  globalThis.chrome.tabs.query = () => {
+    queries++;
+    if (queries === 1) {
+      return first.promise;
+    }
+    return Promise.resolve([state.tab]);
+  };
+  const previous = state.tasks.openNotification('worker');
+  await until(() => queries === 1);
+  await state.tasks.openNotification('second-worker');
+  const rejected = assert.rejects(previous, /superseded/);
+  first.resolve([state.tab]);
+  await rejected;
+  assert.deepEqual(state.updates, [
+    { id: 8, changes: { url: state.workspaceURL + '?task=second-worker', active: true } },
+  ]);
+  assert.equal(state.focused.length, 1);
+});
+
+test('a notification tab update already sent cannot focus its window after disposal', async (context) => {
+  const state = notificationNavigation(context);
+  const update = deferred();
+  let updated = false;
+  globalThis.chrome.tabs.update = () => {
+    updated = true;
+    return update.promise;
+  };
+  const opening = state.tasks.openNotification('worker');
+  await until(() => updated);
+  state.tasks.dispose();
+  const rejected = assert.rejects(opening, /reset|superseded/);
+  update.resolve(state.tab);
+  await rejected;
+  assert.deepEqual(state.focused, []);
+});
+
 function mockChatLifecycle(context) {
   const runners = [];
   const stopped = [];
@@ -320,6 +425,59 @@ const reviewed = { workerId: 'worker', expectedRun: { runId: 'run', epoch: 7 } }
 const start = { ...reviewed, consent: true, newChat: true };
 const rewrite = { instruction: 'Keep the exact draft.', mode: 'clarity', provider: 'chatgpt' };
 
+for (const url of ['https://chatgpt.com/auth/login', undefined]) {
+  test(
+    'Open chat focuses the exact live task sign-in tab without sending or creating anything: ' + url,
+    async (context) => {
+      const state = setup(context);
+      mockChatLifecycle(context);
+      state.tasks.update(state.current);
+      const started = await state.tasks.request('bridge.start', start);
+      const tab = state.tabs.get(started.tabId);
+      tab.url = url;
+      tab.windowId = 73;
+      const focused = [];
+      chrome.windows = { update: async (id, changes) => focused.push({ id, changes }) };
+      await settle();
+      state.calls.length = 0;
+      state.updates.length = 0;
+      const count = state.creations.length;
+
+      assert.deepEqual(await state.tasks.request('bridge.openChat', { workerId: 'worker' }), {
+        opened: true,
+      });
+      assert.deepEqual(state.updates, [{ id: started.tabId, changes: { active: true } }]);
+      assert.deepEqual(focused, [{ id: 73, changes: { focused: true } }]);
+      assert.equal(state.creations.length, count);
+      assert.deepEqual(state.pages, []);
+      assert.deepEqual(state.calls, []);
+    },
+  );
+}
+
+test('Open chat cannot focus a live sign-in lookup after its task run changes', async (context) => {
+  const state = setup(context);
+  mockChatLifecycle(context);
+  state.tasks.update(state.current);
+  const started = await state.tasks.request('bridge.start', start);
+  await settle();
+  const read = deferred();
+  chrome.tabs.get = () => read.promise;
+  state.updates.length = 0;
+  const opening = state.tasks.request('bridge.openChat', { workerId: 'worker' });
+  await settle();
+  state.worker(worker({ runId: 'replacement' }));
+  state.tasks.update(state.current);
+  const rejected = assert.rejects(opening, /earlier task run/);
+  read.resolve({ id: started.tabId });
+  await rejected;
+  assert.equal(
+    state.updates.some((update) => update.changes.active),
+    false,
+  );
+  assert.deepEqual(state.pages, []);
+});
+
 function mutationParams(method) {
   if (method === 'worker.import') {
     return { text: 'literal handoff' };
@@ -332,13 +490,14 @@ function mutationParams(method) {
   return {};
 }
 
-function linkedReply(state) {
+function linkedReply(state, replyTo) {
   const link = { id: 7, url: 'https://chatgpt.com/c/conversation', title: 'Task chat', newChat: false };
-  state.stored[LINK_STORAGE_KEY] = { version: 2, links: { worker: link } };
+  state.stored[LEGACY_LINK_STORAGE_KEY] = { version: 2, links: { worker: link } };
   state.tabs.set(link.id, { ...link, autoDiscardable: true });
   const envelope = {
     protocol: 'mitter/1',
     id: 'selected-reply',
+    replyTo,
     workerId: 'worker',
     projectId: 'project',
     summary: 'Exact selected reply',
@@ -367,7 +526,7 @@ function linkedReply(state) {
     }
 
     if (method === 'worker.bridgeLoad') {
-      return { progress: null, importedCount: 0 };
+      return state.defaultNative(method, params);
     }
 
     if (method === 'worker.bridgeSave') {
@@ -426,6 +585,22 @@ for (const lifecycle of ['reset', 'dispose']) {
     assert.deepEqual(state.pages, []);
   });
 }
+
+test('a host disconnect fences an admitted start still waiting for browser permission', async (context) => {
+  const state = setup(context);
+  const permission = deferred();
+  state.permission(permission.promise);
+  const request = state.tasks.request('bridge.start', start);
+  await until(() => state.permissionChecks === 1);
+  state.tasks.disconnected();
+  const calls = state.calls.length;
+  const rejected = assert.rejects(request, /superseded/);
+  permission.resolve(true);
+  await rejected;
+  assert.equal(state.calls.length, calls);
+  assert.deepEqual(state.creations, []);
+  assert.deepEqual(state.pages, []);
+});
 
 test('a reply preview waiting for permission cannot mint a ticket after Stop', async (context) => {
   const state = setup(context);
@@ -518,6 +693,114 @@ test('an exact live reply ticket imports once with its approved epoch and source
   assert.equal(state.calls.filter((call) => call.method === 'worker.import').length, 1);
 });
 
+test('Use reply after steering accepts only the pending exchange in the reviewed epoch', async (context) => {
+  const exchangeId = 'aa000000-0000-4000-8000-000000000001';
+  const otherId = 'aa000000-0000-4000-8000-000000000002';
+  const goalHash = await messageDigest(worker().goal);
+  const receipt = {
+    workerId: 'worker',
+    projectId: 'project',
+    goalHash,
+    textHash: 'b'.repeat(64),
+    renderedHash: 'c'.repeat(64),
+    exchangeId,
+    expectsReplyTo: true,
+    at: 1,
+  };
+  const pending = progress({ goalHash, stage: 'waiting_reply', turns: 1, lastReceipt: receipt });
+  await context.test('a chat with historical replies searches only the pending exchange', async (child) => {
+    const state = setup(child);
+    const { view } = linkedReply(state, exchangeId);
+    state.checkpoint({ progress: pending, importedCount: 0 });
+    state.page(async (_tab, request) => {
+      if (request.replyTo === exchangeId) {
+        return view;
+      }
+      return { ...view, codeReply: undefined, codeReplyIssue: 'AMBIGUOUS_REPLIES' };
+    });
+    const preview = await state.tasks.request('bridge.replyPreview', { workerId: 'worker', source: 'chat' });
+    assert.equal(preview.summary, 'Exact selected reply');
+    assert.equal(
+      state.calls.some((call) => call.method === 'worker.import'),
+      false,
+    );
+  });
+  function fresh(child, replyTo, checkpoint, retiredExchanges = []) {
+    const state = setup(child);
+    const { params } = linkedReply(state, replyTo);
+    state.worker(
+      worker({ state: 'paused', control: { ...worker().control, mode: 'fresh', retiredExchanges } }),
+    );
+    state.checkpoint({ progress: checkpoint, importedCount: 0 });
+    return { state, params };
+  }
+  for (const [name, replyTo, checkpoint, retired] of [
+    ['missing nonce', undefined, pending],
+    ['older nonce', otherId, pending],
+    ['retired nonce', exchangeId, pending, [exchangeId]],
+    ['no checkpoint', exchangeId, null],
+    ['no receipt', exchangeId, progress({ goalHash, stage: 'waiting_reply' })],
+    ['completed exchange', exchangeId, { ...pending, stage: 'report_due' }],
+  ]) {
+    await context.test(name, async (child) => {
+      const { state, params } = fresh(child, replyTo, checkpoint, retired);
+      await assert.rejects(
+        state.tasks.request('bridge.replyPreview', params),
+        /reply to the current request/,
+      );
+      assert.equal(
+        state.calls.some((call) => call.method === 'worker.import'),
+        false,
+      );
+    });
+  }
+  for (const reason of [
+    'changed receipt',
+    'completed exchange',
+    'changed epoch',
+    'active again',
+    'accepted',
+  ]) {
+    await context.test(reason + ' at confirmation', async (child) => {
+      const { state, params } = fresh(child, exchangeId, pending);
+      const preview = await state.tasks.request('bridge.replyPreview', params);
+      const apply = { workerId: 'worker', ticket: preview.ticket, confirm: true };
+      if (reason === 'changed receipt') {
+        state.checkpoint({
+          progress: { ...pending, lastReceipt: { ...receipt, exchangeId: otherId } },
+          importedCount: 0,
+        });
+      } else if (reason === 'completed exchange') {
+        state.checkpoint({ progress: { ...pending, stage: 'local_batch' }, importedCount: 0 });
+      } else if (reason === 'changed epoch') {
+        state.worker(worker({ control: { ...worker().control, mode: 'fresh', epoch: 8 } }));
+      } else if (reason === 'active again') {
+        state.worker(worker());
+      }
+      if (reason === 'accepted') {
+        await state.tasks.request('bridge.replyApply', apply);
+        const imports = state.calls.filter((call) => call.method === 'worker.import');
+        assert.equal(imports.length, 1);
+        assert.equal(JSON.parse(imports[0].params.text).replyTo, exchangeId);
+        assert.deepEqual(imports[0].params.expectedRun, reviewed.expectedRun);
+        assert.equal(state.calls.filter((call) => call.method === 'worker.run').length, 1);
+        assert.ok(
+          state.calls
+            .filter((call) => call.method === 'worker.bridgeLoad')
+            .every((call) => call.params.expectedRun?.epoch === 7),
+        );
+        await assert.rejects(state.tasks.request('bridge.replyApply', apply), /expired/);
+      } else {
+        await assert.rejects(state.tasks.request('bridge.replyApply', apply), /current request|changed/);
+        assert.equal(
+          state.calls.some((call) => call.method === 'worker.import' || call.method === 'worker.bridgeSave'),
+          false,
+        );
+      }
+    });
+  }
+});
+
 test('reply confirmation fences an epoch replacement while the exact page recheck is pending', async (context) => {
   const state = setup(context);
   const { params, view } = linkedReply(state);
@@ -589,6 +872,28 @@ test('legacy mutations without an epoch use fresh host epochs without publishing
   );
 });
 
+test('an attached chat waiting for setup accepts only the reviewed run and preserves the exact choice', async (context) => {
+  const state = setup(context);
+  const { runners } = mockChatLifecycle(context);
+  state.tasks.update(state.current);
+  await state.tasks.request('bridge.start', start);
+  const runner = runners[0];
+  runner.status.phase = 'waiting_approval';
+  runner.status.active = true;
+  const params = {
+    workerId: 'worker',
+    expectedRun: { runId: 'run', epoch: 7 },
+    token: 'user_reviewed',
+    decision: 'instead',
+    instruction: 'Use the existing package.json.',
+  };
+  await state.tasks.request('worker.setupDecision', params);
+  assert.deepEqual(state.calls.at(-1), { method: 'worker.setupDecision', params });
+  state.worker(worker({ runId: 'replacement', control: { ...worker().control, epoch: 8 } }));
+  await assert.rejects(state.tasks.request('worker.setupDecision', params), /earlier task run|changed/);
+  assert.equal(state.calls.filter(({ method }) => method === 'worker.setupDecision').length, 1);
+});
+
 function pendingBatch(overrides = {}) {
   return {
     protocol: 'mitter/1',
@@ -630,7 +935,7 @@ async function queuedChat(state, missing) {
   }
 
   if (missing !== 'saved link' && missing !== 'fresh saved link') {
-    state.stored[LINK_STORAGE_KEY] = { version: 2, links: { worker: link } };
+    state.stored[LEGACY_LINK_STORAGE_KEY] = { version: 2, links: { worker: link } };
     state.tabs.set(link.id, { ...link, autoDiscardable: true });
   }
 
@@ -1230,6 +1535,182 @@ function observeRealStartup(context) {
     return completion;
   });
   return starts;
+}
+
+async function waitingChat(context) {
+  const state = setup(context);
+  const starts = observeRealStartup(context);
+  let outgoingText = '';
+  let view = {
+    url: 'https://chatgpt.com',
+    count: 0,
+    userCount: 0,
+    lastRole: '',
+    assistantId: '',
+    assistantText: '',
+    lastUserText: '',
+    busy: false,
+    complete: false,
+    draft: false,
+    draftText: '',
+    stopped: false,
+    ready: true,
+  };
+  state.native((method, params) => {
+    if (method === 'worker.bridgeSave') {
+      const saved = structuredClone({ ...params.progress, revision: params.progress.revision + 1 });
+      state.checkpoint({ progress: saved, importedCount: 0 });
+      return saved;
+    }
+    return state.defaultNative(method, params);
+  });
+  state.page(async (_tabId, action) => {
+    if (action.op === 'prepare') {
+      outgoingText = action.text;
+      return { ...view, outcome: 'prepared', renderedDraftText: outgoingText, composerSession: 'document' };
+    }
+    if (action.op === 'commit') {
+      view = {
+        ...view,
+        count: 1,
+        userCount: 1,
+        lastRole: 'user',
+        lastUserText: outgoingText,
+        lastUserId: 'sent_user',
+        userIds: ['sent_user'],
+      };
+      return { ...view, outcome: 'clicked' };
+    }
+    return structuredClone(view);
+  });
+  await state.tasks.request('bridge.start', start);
+  await starts[0].completion;
+  const runner = starts[0].runner;
+  assert.equal(runner.status.phase, 'waiting_reply');
+  assert.equal(state.pages.filter(({ message }) => message.action?.op === 'commit').length, 1);
+  state.runner = runner;
+  return state;
+}
+
+test('a controller host reconnect reads state and checkpoint without replaying a send or local work', async (context) => {
+  const state = await waitingChat(context);
+  const callsBefore = state.calls.length;
+  const pagesBefore = state.pages.length;
+  state.tasks.disconnected();
+  assert.equal(state.runner.status.phase, 'reconnecting');
+  await state.runner.tick();
+  assert.equal(state.runner.status.phase, 'waiting_reply');
+  assert.equal(state.runner.status.active, true);
+  assert.deepEqual(
+    state.calls.slice(callsBefore).map((call) => call.method),
+    ['state', 'worker.bridgeLoad'],
+  );
+  assert.equal(state.pages.length, pagesBefore);
+});
+
+test('a newer pushed Pause is not overwritten by a late host reconnect snapshot', async (context) => {
+  const state = await waitingChat(context);
+  const waiting = deferred();
+  const original = structuredClone(state.current);
+  state.native(async (method, params) => {
+    if (method === 'state') {
+      return waiting.promise;
+    }
+    return state.defaultNative(method, params);
+  });
+  state.tasks.disconnected();
+  const callsBefore = state.calls.length;
+  const pagesBefore = state.pages.length;
+  const reconnecting = state.runner.tick();
+  await until(() => state.calls.length > callsBefore);
+  state.worker(worker({ state: 'paused' }));
+  state.tasks.update(state.current);
+  waiting.resolve(original);
+  await reconnecting;
+  assert.equal(state.runner.status.active, false);
+  assert.equal(state.runner.status.errorCode, 'RUN_SUPERSEDED');
+  assert.equal(
+    state.broadcasts.filter((message) => message.event === 'snapshot').at(-1).data.workers[0].state,
+    'paused',
+  );
+  assert.deepEqual(
+    state.pages.slice(pagesBefore).map(({ message }) => message.action?.op),
+    ['stop'],
+  );
+  assert.equal(
+    state.calls.slice(callsBefore).some((call) => call.method === 'worker.bridgeLoad'),
+    false,
+  );
+});
+
+test('a second host disconnect retires an already-resolved state read before its continuation', async (context) => {
+  const state = await waitingChat(context);
+  const waiting = deferred();
+  const original = structuredClone(state.current);
+  state.native(async (method, params) => {
+    if (method === 'state') {
+      return waiting.promise;
+    }
+    return state.defaultNative(method, params);
+  });
+  state.tasks.disconnected();
+  const callsBefore = state.calls.length;
+  const pagesBefore = state.pages.length;
+  const snapshotsBefore = state.broadcasts.filter((message) => message.event === 'snapshot').length;
+  const reconnecting = state.runner.tick();
+  await until(() => state.calls.length > callsBefore);
+  waiting.resolve(original);
+  state.tasks.disconnected();
+  await reconnecting;
+  assert.equal(state.runner.status.active, true);
+  assert.equal(state.runner.status.phase, 'reconnecting');
+  assert.equal(state.broadcasts.filter((message) => message.event === 'snapshot').length, snapshotsBefore);
+  assert.equal(state.pages.length, pagesBefore);
+  assert.deepEqual(
+    state.calls.slice(callsBefore).map((call) => call.method),
+    ['state'],
+  );
+});
+
+for (const interrupted of ['pause', 'reset', 'version']) {
+  test('a held reconnect cannot continue after ' + interrupted, async (context) => {
+    const state = await waitingChat(context);
+    const waiting = deferred();
+    const original = structuredClone(state.current);
+    state.native(async (method, params) => {
+      if (method === 'state') {
+        return waiting.promise;
+      }
+      return state.defaultNative(method, params);
+    });
+    state.tasks.disconnected();
+    const callsBefore = state.calls.length;
+    const pagesBefore = state.pages.length;
+    const reconnecting = state.runner.tick();
+    await until(() => state.calls.length > callsBefore);
+    if (interrupted === 'pause') {
+      await state.tasks.request('bridge.pause', reviewed);
+    } else if (interrupted === 'reset') {
+      await state.tasks.stop();
+      state.tasks.clear();
+    } else {
+      original.runtime.version = 'different';
+    }
+    waiting.resolve(original);
+    await reconnecting;
+    assert.equal(state.runner.status.active, false);
+    if (interrupted === 'version') {
+      assert.equal(state.runner.status.errorCode, 'HOST_VERSION_MISMATCH');
+    }
+    assert.deepEqual(
+      state.pages.slice(pagesBefore).map(({ message }) => message.action?.op),
+      ['stop'],
+    );
+    assert.equal(
+      state.calls.slice(callsBefore).some((call) => call.method === 'worker.bridgeLoad'),
+      false,
+    );
+  });
 }
 
 function holdStartup(state, starts, stage) {
@@ -2573,7 +3054,7 @@ test('a late cleanup preflight cannot overwrite a published replacement task bou
 
 test('owned cleanup holds start capacity until its original runner finishes stopping', async (context) => {
   const state = setup(context);
-  mockChatLifecycle(context);
+  context.mock.method(BridgeRunner.prototype, 'start', async () => {});
   const admitted = await state.tasks.request('bridge.start', start);
   const stopping = deferred();
   let stopped = false;
@@ -2940,6 +3421,91 @@ test('a final Start admission timeout retains identity and cannot replay a send 
     tabId: 101,
   });
   assert.equal(starting.mock.callCount(), 1);
+  assert.equal(state.creations.length, 1);
+});
+
+function savedStartTab(state, automaticStart) {
+  const link = {
+    id: 7,
+    providerId: 'chatgpt',
+    projectId: 'project',
+    url: 'https://chatgpt.com',
+    title: 'Original chat',
+    newChat: true,
+    bindingPending: true,
+    automaticStart,
+  };
+  state.stored[LINK_STORAGE_KEY] = { version: 3, links: { worker: link } };
+  state.tabs.set(link.id, { ...link, autoDiscardable: true });
+}
+
+for (const errorCode of ['DRAFT_CONFLICT', 'NAVIGATED']) {
+  test('Resume moves a never-staged automatic run to a separate tab after ' + errorCode, async (context) => {
+    const state = setup(context);
+    savedStartTab(state, reviewed.expectedRun);
+    const lifecycle = mockChatLifecycle(context);
+    const checkpoint = progress({ stage: 'ready', errorCode, goalHash: await messageDigest(worker().goal) });
+    state.checkpoint({ progress: checkpoint, importedCount: 0 });
+    const response = await state.tasks.request('bridge.resume', reviewed);
+    assert.equal(response.resumed, true);
+    assert.equal(response.status.tabId, 101);
+    assert.equal(lifecycle.runners[0].options.resumeExisting, true);
+    assert.deepEqual(state.creations, [{ url: 'https://chatgpt.com/', active: false }]);
+    assert.equal(
+      state.pages.some(({ tabId }) => tabId === 7),
+      false,
+    );
+    assert.equal(
+      state.updates.some(({ id }) => id === 7),
+      false,
+    );
+    await settle();
+    assert.deepEqual(state.stored[LINK_STORAGE_KEY].links.worker.automaticStart, reviewed.expectedRun);
+  });
+}
+
+for (const [label, choice, changes, importedCount] of [
+  ['explicit or unmarked legacy choice', undefined, {}, 0],
+  ['different automatic run', { runId: 'earlier', epoch: 7 }, {}, 0],
+  ['prepared draft', reviewed.expectedRun, { stage: 'prepared' }, 0],
+  ['commit intent', reviewed.expectedRun, { stage: 'commit_intent' }, 0],
+  ['inexact count', reviewed.expectedRun, { lowerBound: true }, 0],
+  ['reserved send', reviewed.expectedRun, { turns: 1 }, 0],
+  ['accepted local batch', reviewed.expectedRun, {}, 1],
+  ['different goal', reviewed.expectedRun, { goalHash: 'c'.repeat(64) }, 0],
+]) {
+  test('Resume preserves the original destination for ' + label, async (context) => {
+    const state = setup(context);
+    savedStartTab(state, choice);
+    mockChatLifecycle(context);
+    state.checkpoint({
+      progress: progress({
+        stage: 'ready',
+        errorCode: 'DRAFT_CONFLICT',
+        goalHash: await messageDigest(worker().goal),
+        ...changes,
+      }),
+      importedCount,
+    });
+    const response = await state.tasks.request('bridge.resume', reviewed);
+    assert.equal(response.status.tabId, 7);
+    assert.deepEqual(state.creations, []);
+  });
+}
+
+test('new-chat intent persists with its run while an explicitly chosen empty tab stays pinned', async (context) => {
+  const state = setup(context);
+  const lifecycle = mockChatLifecycle(context);
+  const first = await state.tasks.request('bridge.start', start);
+  await settle();
+  assert.deepEqual(state.stored[LINK_STORAGE_KEY].links.worker.automaticStart, reviewed.expectedRun);
+  lifecycle.runners[0].status.active = false;
+  state.tabs.set(7, { id: 7, url: 'https://chatgpt.com/', autoDiscardable: true });
+  const chosen = await state.tasks.request('bridge.start', { ...reviewed, consent: true, tabId: 7 });
+  await settle();
+  assert.notEqual(first.tabId, chosen.tabId);
+  assert.equal(chosen.tabId, 7);
+  assert.equal(state.stored[LINK_STORAGE_KEY].links.worker.automaticStart, undefined);
   assert.equal(state.creations.length, 1);
 });
 
@@ -3548,4 +4114,790 @@ test('rewrite concurrency, cancellation, liveness, and reset retain both active 
   assert.deepEqual(state.calls, []);
   state.tasks.clear();
   await assert.rejects(state.tasks.request('rewrite.read', { id: first.id }), /expired/);
+});
+
+test('stale draft cleanup requires one retained exact proof and a freshly complete prior task', async (context) => {
+  const { rawDraftDigest } = await import('../../../../packages/bridge/src/bootstrap-draft.ts');
+  const { wrapMessage } = await import('../../../../packages/bridge/src/message-wire.ts');
+  const { LINK_STORAGE_KEY } = await import('../../../../packages/bridge/src/chat-links.ts');
+  const previous = worker({ id: 'old_worker', state: 'complete', runId: 'old_run' });
+  const exchangeId = 'a05c70de-2fa8-471d-82f0-df6cdf8b64b4';
+  const text = wrapMessage('The previous exact task.', exchangeId);
+  const proof = {
+    workerId: previous.id,
+    projectId: previous.projectId,
+    exchangeId,
+    goalHash: await messageDigest(previous.goal),
+    origin: 'https://chatgpt.com',
+    rawHash: await rawDraftDigest(text),
+  };
+  const state = setup(context);
+  const lifecycle = mockChatLifecycle(context);
+  state.current.workers.push(previous);
+  state.stored[LINK_STORAGE_KEY] = {
+    version: 3,
+    links: {
+      old_worker: {
+        providerId: 'chatgpt',
+        id: 7,
+        url: 'https://chatgpt.com/c/old',
+        title: 'Old task',
+        newChat: false,
+        projectId: previous.projectId,
+        confirmedBootstrapDraft: proof,
+      },
+    },
+  };
+  await state.tasks.request('bridge.start', start);
+  const runner = lifecycle.runners[0];
+  const find = runner.dependencies.findCompletedBootstrapDraft;
+  assert.deepEqual(await find(text), proof);
+  assert.equal(await find(text + '\n'), undefined);
+  previous.state = 'idle';
+  assert.equal(await find(text), undefined);
+  previous.state = 'complete';
+  assert.deepEqual(await find(text), proof);
+  previous.activeFollowupId = 'finished_followup';
+  state.tasks.update(state.current);
+  assert.equal(await find(text), undefined, 'A retained follow-up needs its own completion record.');
+  previous.completion = {
+    version: 1,
+    verification: 'passed',
+    summary: 'Follow-up finished.',
+    checked: 1,
+    at: 1,
+    followupId: 'different_followup',
+  };
+  assert.equal(await find(text), undefined, 'Another follow-up’s completion does not authorize cleanup.');
+  previous.completion.followupId = previous.activeFollowupId;
+  state.tasks.update(state.current);
+  assert.deepEqual(await find(text), proof, 'A completed retained follow-up can recover its exact draft.');
+  previous.activeFollowupId = 'new_followup';
+  previous.completion.followupId = previous.activeFollowupId;
+  state.tasks.update(state.current);
+  await assert.rejects(
+    async () =>
+      runner.dependencies.page(runner.options.tabId, {
+        op: 'clear_draft',
+        staleDraft: proof,
+        text,
+        token: runner.options.token,
+        url: 'https://chatgpt.com',
+        expiresAt: Number.MAX_SAFE_INTEGER,
+      }),
+    /previous task changed/,
+  );
+  assert.equal(
+    state.pages.some(({ message }) => message.action?.op === 'clear_draft'),
+    false,
+  );
+});
+
+test('late completed-task state cannot clear after the prior task starts a new followup', async (context) => {
+  const { rawDraftDigest } = await import('../../../../packages/bridge/src/bootstrap-draft.ts');
+  const { wrapMessage } = await import('../../../../packages/bridge/src/message-wire.ts');
+  const { LINK_STORAGE_KEY } = await import('../../../../packages/bridge/src/chat-links.ts');
+  const previous = worker({ id: 'old_worker', state: 'complete', runId: 'old_run' });
+  const exchangeId = 'a05c70de-2fa8-471d-82f0-df6cdf8b64b4';
+  const text = wrapMessage('The previous exact task.', exchangeId);
+  const proof = {
+    workerId: previous.id,
+    projectId: previous.projectId,
+    exchangeId,
+    goalHash: await messageDigest(previous.goal),
+    origin: 'https://chatgpt.com',
+    rawHash: await rawDraftDigest(text),
+  };
+  const state = setup(context);
+  const lifecycle = mockChatLifecycle(context);
+  state.current.workers.push(previous);
+  state.stored[LINK_STORAGE_KEY] = {
+    version: 3,
+    links: {
+      old_worker: {
+        providerId: 'chatgpt',
+        id: 7,
+        url: 'https://chatgpt.com/c/old',
+        title: 'Old task',
+        newChat: false,
+        projectId: previous.projectId,
+        confirmedBootstrapDraft: proof,
+      },
+    },
+  };
+  await state.tasks.request('bridge.start', start);
+  const waiting = deferred();
+  const original = structuredClone(state.current);
+  state.native(async (method, params) => {
+    if (method === 'state') {
+      return waiting.promise;
+    }
+    return state.defaultNative(method, params);
+  });
+  const callsBefore = state.calls.length;
+  const finding = lifecycle.runners[0].dependencies.findCompletedBootstrapDraft(text);
+  await until(() => state.calls.length > callsBefore);
+  previous.state = 'waiting_model';
+  previous.activeFollowupId = 'followup';
+  state.tasks.update(state.current);
+  waiting.resolve(original);
+  assert.equal(await finding, undefined);
+  assert.equal(
+    state.pages.some(({ message }) => message.action?.op === 'clear_draft'),
+    false,
+  );
+});
+
+async function stoppedDraftFixture(context, { confirmed = true, oldRunner = false, answered = false } = {}) {
+  const { rawDraftDigest } = await import('../../../../packages/bridge/src/bootstrap-draft.ts');
+  const { wrapMessage } = await import('../../../../packages/bridge/src/message-wire.ts');
+  const { LINK_STORAGE_KEY } = await import('../../../../packages/bridge/src/chat-links.ts');
+  const previous = worker({ id: 'old_worker', runId: 'old_run' });
+  const exchangeId = 'a05c70de-2fa8-471d-82f0-df6cdf8b64b4';
+  const text = wrapMessage('The previous exact task.', exchangeId);
+  const proof = {
+    workerId: previous.id,
+    projectId: previous.projectId,
+    exchangeId,
+    goalHash: await messageDigest(previous.goal),
+    origin: 'https://chatgpt.com',
+    rawHash: await rawDraftDigest(text),
+  };
+  const state = setup(context);
+  const lifecycle = mockChatLifecycle(context);
+  state.current.workers.push(previous);
+  state.page(async () => ({
+    url: 'https://chatgpt.com',
+    ready: true,
+    count: 0,
+    userCount: 0,
+    lastRole: '',
+    assistantId: '',
+    assistantText: '',
+    lastUserText: '',
+    complete: false,
+    draftText: '',
+    draft: false,
+    stopped: false,
+    busy: false,
+    outcome: 'cleared',
+  }));
+  const link = {
+    providerId: 'chatgpt',
+    id: 7,
+    url: 'https://chatgpt.com/c/old',
+    title: 'Old task',
+    newChat: false,
+    projectId: previous.projectId,
+  };
+  if (confirmed) {
+    link.confirmedBootstrapDraft = proof;
+  }
+  if (answered) {
+    link.answeredDrafts = [proof];
+  }
+  state.stored[LINK_STORAGE_KEY] = { version: 3, links: { old_worker: link } };
+  if (oldRunner) {
+    await state.tasks.request('bridge.start', {
+      workerId: previous.id,
+      expectedRun: { runId: previous.runId, epoch: previous.control.epoch },
+      consent: true,
+      newChat: true,
+    });
+  }
+  previous.state = 'paused';
+  previous.control.mode = 'stopped';
+  state.tasks.update(state.current);
+  await state.tasks.request('bridge.start', start);
+  // Keep the pushed object's nested control identity live for the mutation
+  // races below; a shallow authorization copy must not move with this epoch.
+  state.tasks.update(state.current);
+  const runner = lifecycle.runners.at(-1);
+  const clear = () =>
+    runner.dependencies.page(runner.options.tabId, {
+      op: 'clear_draft',
+      staleDraft: proof,
+      text,
+      token: runner.options.token,
+      url: 'https://chatgpt.com',
+      expiresAt: Number.MAX_SAFE_INTEGER,
+    });
+  return {
+    state,
+    lifecycle,
+    previous,
+    proof,
+    text,
+    runner,
+    clear,
+    find: runner.dependencies.findCompletedBootstrapDraft,
+  };
+}
+
+test('an explicitly stopped owner permits one exact confirmed draft cleanup without resuming it', async (context) => {
+  const { state, previous, proof, text, find, clear } = await stoppedDraftFixture(context);
+  assert.deepEqual(await find(text), proof);
+  await clear();
+  assert.equal(state.pages.filter(({ message }) => message.action?.op === 'clear_draft').length, 1);
+  await assert.rejects(async () => clear(), /previous task changed/);
+  assert.equal(previous.state, 'paused');
+  assert.equal(previous.control.mode, 'stopped');
+  assert.equal(
+    state.calls.some(({ method, params }) => method === 'worker.resume' && params.workerId === previous.id),
+    false,
+  );
+  assert.equal(await find(text + '\n'), undefined, 'A changed draft has no exact retained proof.');
+  assert.equal(await find('An unrelated user draft'), undefined);
+});
+
+test('stopped draft recovery rejects paused, pending, queued, and unfinished follow-up owners', async (context) => {
+  const { state, previous, proof, text, find } = await stoppedDraftFixture(context);
+  for (const mode of ['active', 'fresh']) {
+    previous.control.mode = mode;
+    state.tasks.update(state.current);
+    assert.equal(await find(text), undefined);
+  }
+  previous.control.mode = 'stopped';
+  previous.activeFollowupId = 'unfinished';
+  state.tasks.update(state.current);
+  assert.equal(await find(text), undefined);
+  delete previous.activeFollowupId;
+  previous.followups = [{ id: 'queued', instruction: 'Next work', status: 'queued', createdAt: 0 }];
+  state.tasks.update(state.current);
+  assert.equal(await find(text), undefined);
+  delete previous.followups;
+  const action = { type: 'write', path: 'file.txt', content: 'Pending', expectedHash: 'missing' };
+  previous.pending = { token: 'pending', fingerprint: 'pending', action, reason: 'Review', revision: 0 };
+  state.tasks.update(state.current);
+  assert.equal(await find(text), undefined);
+  delete previous.pending;
+  previous.queue.push({
+    protocol: 'mitter/1',
+    id: 'queued',
+    workerId: previous.id,
+    projectId: previous.projectId,
+    summary: 'Queued',
+    actions: [action],
+  });
+  state.tasks.update(state.current);
+  assert.equal(await find(text), undefined);
+  previous.queue.length = 0;
+  state.tasks.update(state.current);
+  assert.deepEqual(await find(text), proof);
+});
+
+test('stopped draft recovery still requires confirmed proof and an inactive prior runner', async (context) => {
+  const { state, lifecycle, proof, text, find } = await stoppedDraftFixture(context, { oldRunner: true });
+  const previousRunner = lifecycle.runners[0];
+  previousRunner.status.active = true;
+  assert.equal(await find(text), undefined);
+  previousRunner.status.active = false;
+  previousRunner.status.monitoring = true;
+  assert.equal(await find(text), undefined);
+  previousRunner.status.monitoring = false;
+  assert.deepEqual(await find(text), proof);
+  assert.equal(
+    state.pages.some(({ message }) => message.action?.op === 'clear_draft'),
+    false,
+  );
+});
+
+test('an unconfirmed stopped task cannot authorize clearing a matching user draft', async (context) => {
+  const { state, text, find } = await stoppedDraftFixture(context, { confirmed: false });
+  assert.equal(await find(text), undefined);
+  assert.equal(
+    state.pages.some(({ message }) => message.action?.op === 'clear_draft'),
+    false,
+  );
+});
+
+test('a new chat recovers only an exact answered draft from a paused conversation', async (context) => {
+  const { state, previous, proof, text, find, clear } = await stoppedDraftFixture(context, {
+    confirmed: false,
+    answered: true,
+  });
+  previous.control.mode = 'fresh';
+  state.tasks.update(state.current);
+  assert.equal(await find(text + '\n'), undefined);
+  assert.deepEqual(await find(text), proof);
+  await clear();
+  assert.equal(state.pages.filter(({ message }) => message.action?.op === 'clear_draft').length, 1);
+  assert.equal(previous.state, 'paused');
+});
+
+test('a long-running conversation pins the first imported composer but never promotes an unanswered first send', async (context) => {
+  const { rawDraftDigest } = await import('../../../../packages/bridge/src/bootstrap-draft.ts');
+  const { wrapMessage } = await import('../../../../packages/bridge/src/message-wire.ts');
+  for (const firstImported of [true, false]) {
+    let label = 'first message only echoed';
+    if (firstImported) {
+      label = 'first reply imported';
+    }
+    await context.test(label, async (subtest) => {
+      const state = setup(subtest);
+      const lifecycle = mockChatLifecycle(subtest);
+      await state.tasks.request('bridge.start', start);
+      const owner = state.current.workers[0];
+      const old = lifecycle.runners[0];
+      const goalHash = await messageDigest(owner.goal);
+      const first = {
+        workerId: owner.id,
+        projectId: owner.projectId,
+        exchangeId: crypto.randomUUID(),
+        goalHash,
+        rawHash: '',
+        origin: 'https://chatgpt.com',
+      };
+      const text = wrapMessage('An exact older bootstrap.', first.exchangeId);
+      first.rawHash = await rawDraftDigest(text);
+      const receipt = {
+        workerId: owner.id,
+        projectId: owner.projectId,
+        goalHash,
+        at: 1,
+        exchangeId: first.exchangeId,
+        composerHash: first.rawHash,
+        textHash: first.rawHash,
+        renderedHash: first.rawHash,
+      };
+      await old.dependencies.saveReceipt({ ...receipt, bootstrapDraft: first });
+      await old.dependencies.confirmBootstrapDraft(first);
+      if (firstImported) {
+        await old.dependencies.rememberAnsweredDraft(first.exchangeId);
+      }
+      old.status.url = 'https://chatgpt.com/c/in-progress';
+      old.status.active = true;
+      old.dependencies.publish(old.status);
+      for (let turn = 2; turn <= 20; turn++) {
+        const exchangeId = crypto.randomUUID();
+        const composerHash = await rawDraftDigest(wrapMessage('Turn ' + turn, exchangeId));
+        await old.dependencies.saveReceipt({ ...receipt, exchangeId, composerHash });
+        await old.dependencies.rememberAnsweredDraft(exchangeId);
+      }
+      const persisted = state.stored[LINK_STORAGE_KEY].links[owner.id];
+      assert.deepEqual(persisted.confirmedBootstrapDraft, first);
+      assert.equal(persisted.answeredDrafts.length, 8);
+      assert.equal(
+        persisted.answeredDrafts.some((proof) => proof.exchangeId === first.exchangeId),
+        firstImported,
+      );
+
+      const next = worker({ id: 'next-task', runId: 'next-run' });
+      state.current.workers.push(next);
+      state.tasks.update(state.current);
+      await state.tasks.request('bridge.start', {
+        ...start,
+        workerId: next.id,
+        expectedRun: { runId: next.runId, epoch: next.control.epoch },
+      });
+      const checking = lifecycle.runners.at(-1);
+      const found = await checking.dependencies.findCompletedBootstrapDraft(text);
+      if (firstImported) {
+        assert.deepEqual(found, first);
+      } else {
+        assert.equal(found, undefined);
+      }
+      assert.equal(await checking.dependencies.findCompletedBootstrapDraft(text + ' '), undefined);
+    });
+  }
+});
+
+test('a different new tab can discard a copied answered exchange while its owner keeps working', async (context) => {
+  const { state, previous, proof, text, find, clear } = await stoppedDraftFixture(context, {
+    confirmed: false,
+    answered: true,
+  });
+  previous.state = 'executing';
+  previous.control.mode = 'active';
+  state.tasks.update(state.current);
+  assert.equal(await find(text.replace('exact task', 'edited task') + ' user note'), undefined);
+  assert.deepEqual(await find(text), proof);
+  await clear();
+  assert.equal(previous.state, 'executing');
+  assert.equal(state.pages.filter(({ message }) => message.action?.op === 'clear_draft').length, 1);
+});
+
+for (const change of ['resume', 'replace run', 'change epoch']) {
+  const mutate = (previous) => {
+    if (change === 'resume') {
+      previous.control.mode = 'active';
+    } else if (change === 'replace run') {
+      previous.runId = 'replacement';
+    } else {
+      previous.control.epoch++;
+    }
+  };
+  test(`late stopped-owner state cannot authorize cleanup after ${change}`, async (context) => {
+    const { state, previous, text, find } = await stoppedDraftFixture(context);
+    const waiting = deferred();
+    const original = structuredClone(state.current);
+    state.native(async (method, params) => {
+      if (method === 'state') {
+        return waiting.promise;
+      }
+      return state.defaultNative(method, params);
+    });
+    const callsBefore = state.calls.length;
+    const finding = find(text);
+    await until(() => state.calls.length > callsBefore);
+    mutate(previous);
+    state.tasks.update(state.current);
+    waiting.resolve(original);
+    assert.equal(await finding, undefined);
+  });
+
+  test(`authorized stopped draft remains safe after ${change} before clear`, async (context) => {
+    const { state, previous, proof, text, find, clear } = await stoppedDraftFixture(context);
+    assert.deepEqual(await find(text), proof);
+    mutate(previous);
+    state.tasks.update(state.current);
+    await assert.rejects(async () => clear(), /previous task changed/);
+    assert.equal(
+      state.pages.some(({ message }) => message.action?.op === 'clear_draft'),
+      false,
+    );
+  });
+}
+
+test('resuming the old owner during the clear handshake prevents the composer mutation', async (context) => {
+  const { state, previous, proof, text, find, clear } = await stoppedDraftFixture(context);
+  assert.deepEqual(await find(text), proof);
+  const waiting = deferred();
+  const entered = deferred();
+  const send = chrome.tabs.sendMessage;
+  context.mock.method(chrome.tabs, 'sendMessage', async (...args) => {
+    if (args[1].kind === 'hello') {
+      entered.resolve();
+      await waiting.promise;
+    }
+    return send(...args);
+  });
+  const clearing = clear();
+  const rejected = assert.rejects(clearing, /previous task changed/);
+  await entered.promise;
+  previous.control.epoch++;
+  state.tasks.update(state.current);
+  waiting.resolve();
+  await rejected;
+  assert.equal(
+    state.pages.some(({ message }) => message.action?.op === 'clear_draft'),
+    false,
+  );
+});
+
+async function coldReply(context, { task = {}, checkpoint = {}, link = {}, receipt = {}, currentTab } = {}) {
+  const goalHash = await messageDigest(worker().goal);
+  const url = 'https://chatgpt.com/c/saved-print-chat';
+  const run = { runId: 'run', epoch: 7 };
+  const sent = {
+    workerId: 'worker',
+    projectId: 'project',
+    goalHash,
+    exchangeId: '653b3789-5236-4b0d-af9f-f0c30a41ef45',
+    expectsReplyTo: true,
+    at: 100,
+    turn: 2,
+    textHash: 'b'.repeat(64),
+    renderedHash: 'b'.repeat(64),
+  };
+  const saved = progress({
+    turns: 2,
+    goalHash,
+    revision: 12,
+    phase: 'waiting_reply',
+    reason: 'Waiting for ChatGPT',
+    stage: 'waiting_reply',
+    conversationUrl: url,
+    lastReceipt: sent,
+    ...checkpoint,
+  });
+  const state = setup(context);
+  state.worker(worker({ state: 'review', ...task }));
+  state.current.bridgeProgress = [progressSummary(saved)];
+  state.checkpoint({ importedCount: 1, progress: saved });
+  const connection = {
+    providerId: 'chatgpt',
+    id: 9,
+    url,
+    title: 'Print job',
+    newChat: false,
+    projectId: 'project',
+    automaticStart: run,
+    lastReceipt: { ...sent, ...receipt },
+    ...link,
+  };
+  state.page(async () => ({
+    url,
+    count: 1,
+    userCount: 1,
+    lastRole: 'user',
+    assistantId: '',
+    assistantText: '',
+    lastUserText: '',
+    busy: true,
+    complete: false,
+    draft: false,
+    draftText: '',
+    stopped: false,
+    ready: true,
+  }));
+  state.stored[LINK_STORAGE_KEY] = { version: 3, links: { worker: connection } };
+  state.tabs.set(connection.id, { id: connection.id, url: currentTab ?? url, autoDiscardable: true });
+  return { state, saved, connection };
+}
+
+test('a cold background reattaches exactly one runner without opening or sending to a chat', async (context) => {
+  const { state, saved } = await coldReply(context);
+  state.tasks.update(state.current);
+  state.tasks.tick();
+  state.tasks.tick();
+  await until(() => state.calls.filter((call) => call.method === 'worker.prompt').length === 2);
+  await setImmediate();
+  assert.deepEqual(state.pages, []);
+  const status = await state.tasks.request('bridge.list', {});
+  assert.equal(status[0].active, true);
+  assert.equal(status[0].phase, 'waiting_reply');
+  state.tasks.tick();
+  await until(() => state.pages.some((page) => page.message.action?.op === 'inspect'));
+  const reads = state.pages.flatMap((page) => page.message.action ?? []);
+  assert.deepEqual(
+    reads.map((read) => read.op),
+    ['inspect'],
+  );
+  assert.equal(reads[0].receipt.exchangeId, saved.lastReceipt.exchangeId);
+  assert.equal(reads[0].preservePause, true);
+  assert.deepEqual(state.creations, []);
+  assert.equal(state.permissionChecks, 1);
+});
+
+for (const [reason, change] of [
+  ['intentional pause', { checkpoint: { phase: 'stopped' } }],
+  ['explicit pause saved before shutdown', { link: { receiptRun: null } }],
+  ['stopped worker', { task: { state: 'paused' } }],
+  ['setup approval', { task: { state: 'awaiting_approval' } }],
+  ['queued local work', { task: { queue: [{ id: 'already-admitted' }] } }],
+  ['retired run', { link: { automaticStart: { runId: 'old', epoch: 7 } } }],
+  ['retired epoch', { link: { receiptRun: { runId: 'run', epoch: 3 } } }],
+  ['another conversation now open in the tab', { currentTab: 'https://chatgpt.com/c/another' }],
+  ['uncommitted send', { checkpoint: { phase: 'reconnecting', stage: 'commit_intent' } }],
+  ['different receipt', { receipt: { textHash: 'd'.repeat(64) } }],
+  ['different turn', { receipt: { turn: 3 } }],
+]) {
+  test('cold reply recovery leaves ' + reason + ' untouched', async (context) => {
+    const { state } = await coldReply(context, change);
+    state.tasks.update(state.current);
+    for (let i = 0; i < 3; i++) {
+      state.tasks.tick();
+      await setImmediate();
+    }
+    const [status] = await state.tasks.request('bridge.list', {});
+    assert.equal(status.active, false);
+    assert.deepEqual(state.pages, []);
+    assert.deepEqual(state.creations, []);
+    assert.ok(state.calls.every((call) => ['state', 'worker.bridgeLoad'].includes(call.method)));
+  });
+}
+
+test('Pause during cold admission survives the delayed read and later recovery ticks', async (context) => {
+  const { state } = await coldReply(context);
+  const hold = deferred();
+  state.native(async (method, params) => {
+    if (method === 'worker.bridgeLoad') {
+      await hold.promise;
+    }
+    return state.defaultNative(method, params);
+  });
+  state.tasks.update(state.current);
+  await until(() => state.calls.some((call) => call.method === 'worker.bridgeLoad'));
+  assert.equal((await state.tasks.request('bridge.list', {}))[0].phase, 'reconnecting');
+  await state.tasks.request('bridge.pause', reviewed);
+  assert.equal(state.stored[LINK_STORAGE_KEY].links.worker.receiptRun, null);
+  hold.resolve();
+  await setImmediate();
+  state.tasks.tick();
+  await setImmediate();
+  assert.equal((await state.tasks.request('bridge.list', {}))[0].active, false);
+  assert.deepEqual(state.pages, []);
+});
+
+test('a host read interrupted during cold startup retries the same receipt without touching the page', async (context) => {
+  const { state } = await coldReply(context);
+  let now = Date.now();
+  context.mock.method(Date, 'now', () => now);
+  let loads = 0;
+  state.native(async (method, params) => {
+    if (method === 'worker.bridgeLoad' && ++loads === 2) {
+      throw new Error('Host restarting');
+    }
+    return state.defaultNative(method, params);
+  });
+  state.tasks.update(state.current);
+  await until(() => loads === 2);
+  await setImmediate();
+  assert.deepEqual(state.pages, []);
+  assert.equal(
+    state.calls.some((call) => call.method === 'worker.bridgeSave'),
+    false,
+  );
+  now += 16000;
+  state.tasks.tick();
+  await until(() => state.calls.some((call) => call.method === 'worker.prompt'));
+  assert.equal((await state.tasks.request('bridge.list', {}))[0].active, true);
+  assert.deepEqual(state.creations, []);
+});
+
+test('Chrome restores a pending reply in a new tab ID after the first lookup', async (context) => {
+  const { state, connection, saved } = await coldReply(context);
+  state.tabs.set(connection.id, { id: connection.id, url: 'https://chatgpt.com/c/unrelated' });
+  let queries = 0;
+  chrome.tabs.query = async () => {
+    queries++;
+    return [...state.tabs.values()];
+  };
+  state.tasks.update(state.current);
+  await until(() => queries > 0);
+  await setImmediate();
+  const restored = { id: 42, url: connection.url, discarded: true, autoDiscardable: true };
+  state.tabs.set(restored.id, restored);
+  const reloads = [];
+  chrome.tabs.reload = async (id) => {
+    reloads.push(id);
+    state.tabs.get(id).discarded = false;
+  };
+  state.tasks.tabUpdated(restored.id, { status: 'complete' }, restored);
+  state.tasks.tick();
+  await until(() => state.calls.filter((call) => call.method === 'worker.prompt').length === 2);
+  await setImmediate();
+  state.tasks.tick();
+  await until(() => state.pages.some((p) => p.message.action?.op === 'inspect'));
+  assert.equal(state.stored[LINK_STORAGE_KEY].links.worker.id, 42);
+  assert.deepEqual(reloads, [42]);
+  assert.deepEqual(state.creations, []);
+  assert.ok(state.pages.every((p) => p.tabId === 42));
+  const operations = state.pages.flatMap((p) => p.message.action ?? []);
+  assert.deepEqual(
+    operations.map((op) => op.op),
+    ['inspect'],
+  );
+  assert.equal(operations[0].receipt.exchangeId, saved.lastReceipt.exchangeId);
+});
+
+test('only browser startup can reopen the missing pinned conversation once after restore grace', async (context) => {
+  const { state, connection } = await coldReply(context);
+  state.tabs.delete(connection.id);
+  let now = Date.now();
+  context.mock.method(Date, 'now', () => now);
+  chrome.tabs.query = async () => [...state.tabs.values()];
+  state.tasks.update(state.current);
+  await setImmediate();
+  now += 25000;
+  state.tasks.tick();
+  await setImmediate();
+  assert.deepEqual(state.creations, []);
+  state.tasks.browserStartup();
+  await setImmediate();
+  assert.deepEqual(state.creations, []);
+  now += 11000;
+  state.tasks.tick();
+  state.tasks.tick();
+  await until(() => state.calls.filter((call) => call.method === 'worker.prompt').length === 2);
+  await setImmediate();
+  state.tasks.tick();
+  await until(() => state.pages.some((p) => p.message.action?.op === 'inspect'));
+  assert.deepEqual(state.creations, [{ url: connection.url, active: false }]);
+  assert.equal(state.stored[LINK_STORAGE_KEY].links.worker.id, 101);
+  assert.ok(
+    state.pages.every((p) => p.tabId === 101 && (!p.message.action || p.message.action.op === 'inspect')),
+  );
+});
+
+test('ambiguous restored tabs cannot wake a page or open another chat', async (context) => {
+  const { state, connection } = await coldReply(context);
+  state.tabs.delete(connection.id);
+  state.tabs.set(42, { id: 42, url: connection.url, discarded: true });
+  state.tabs.set(43, { id: 43, pendingUrl: connection.url });
+  chrome.tabs.query = async () => [...state.tabs.values()];
+  chrome.tabs.reload = () => assert.fail('ambiguous destination');
+  state.tasks.browserStartup();
+  state.tasks.update(state.current);
+  await setImmediate();
+  assert.deepEqual(state.pages, []);
+  assert.deepEqual(state.creations, []);
+  assert.equal(state.stored[LINK_STORAGE_KEY].links.worker.id, connection.id);
+});
+
+test('Chrome quitting preserves a confirmed wait while closing just the chat pauses it', async (context) => {
+  const { state, connection } = await coldReply(context);
+  state.tasks.update(state.current);
+  const waiting = (from) =>
+    state.broadcasts
+      .slice(from)
+      .some(
+        (message) =>
+          message.event === 'bridges' &&
+          message.data.some(
+            (item) => item.phase === 'waiting_reply' && item.reason === 'Checking the saved ChatGPT reply…',
+          ),
+      );
+  await until(() => waiting(0));
+  await setImmediate();
+  const before = state.calls.length;
+  state.tabs.delete(connection.id);
+  state.tasks.tabRemoved(connection.id, { isWindowClosing: true, windowId: 1 });
+  await setImmediate();
+  assert.ok(
+    state.calls
+      .slice(before)
+      .every((call) => call.method !== 'worker.pause' && call.method !== 'worker.bridgeSave'),
+  );
+  assert.ok(!state.stored[LINK_STORAGE_KEY].links.worker.hasOwnProperty('receiptRun'));
+  const nextWait = state.broadcasts.length;
+  state.tabs.set(connection.id, { id: connection.id, url: connection.url, autoDiscardable: true });
+  state.tasks.tabUpdated(connection.id, { status: 'complete' }, state.tabs.get(connection.id));
+  state.tasks.tick();
+  await until(() => waiting(nextWait));
+  state.tasks.tabRemoved(connection.id, { isWindowClosing: false, windowId: 1 });
+  await until(() => state.stored[LINK_STORAGE_KEY].links.worker.receiptRun === null);
+  const [paused] = await state.tasks.request('bridge.list', {});
+  assert.equal(paused.active, false);
+  assert.equal(paused.phase, 'stopped');
+});
+
+test('closing the task tab during cold admission cancels its automatic restoration', async (context) => {
+  const { state, connection } = await coldReply(context);
+  const hold = deferred();
+  state.native(async (method, params) => {
+    if (method === 'worker.bridgeLoad') {
+      await hold.promise;
+    }
+    return state.defaultNative(method, params);
+  });
+  state.tasks.browserStartup();
+  state.tasks.update(state.current);
+  await until(() => state.calls.some((call) => call.method === 'worker.bridgeLoad'));
+  state.tabs.delete(connection.id);
+  state.tasks.tabRemoved(connection.id, { isWindowClosing: false, windowId: 1 });
+  hold.resolve();
+  await setImmediate();
+  assert.equal(state.stored[LINK_STORAGE_KEY].links.worker.receiptRun, null);
+  assert.deepEqual(state.creations, []);
+  assert.deepEqual(state.pages, []);
+});
+
+test('closing a newly numbered restored tab before the next lookup keeps it closed on startup', async (context) => {
+  const { state, connection } = await coldReply(context);
+  let now = Date.now();
+  context.mock.method(Date, 'now', () => now);
+  state.tabs.delete(connection.id);
+  state.tasks.browserStartup();
+  state.tasks.tabUpdated(42, { url: connection.url });
+  state.tasks.tabRemoved(42, { isWindowClosing: false, windowId: 1 });
+  await setImmediate();
+  state.tasks.update(state.current);
+  now += 16000;
+  state.tasks.tick();
+  await setImmediate();
+  assert.equal(state.stored[LINK_STORAGE_KEY].links.worker.receiptRun, null);
+  assert.deepEqual(state.creations, []);
+  assert.deepEqual(state.pages, []);
 });

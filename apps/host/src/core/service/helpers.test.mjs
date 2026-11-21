@@ -15,7 +15,8 @@ const { sameCodeSelection } = await import('../followups.ts');
 const { projectContextSchema } = await import('./project-catalog.ts');
 const { recoverInterruptedWorker, recoverStoppedWorker, migrateLegacyCompletion } =
   await import('./state-migration.ts');
-const { summarizeAction, buildCompletion, buildReport } = await import('./reports.ts');
+const { summarizeAction, buildCompletion, buildReport, completionEventMessage, completionFailureMessage } =
+  await import('./reports.ts');
 const { buildEditRepair, encodeRepairObservation } = await import('./edit-repair.ts');
 const { EditConflict } = await import('../edit-plan.ts');
 const schemas = await import('./schemas.ts');
@@ -28,7 +29,7 @@ test('creation keeps legacy defaults, names, and literal false command trust', (
     autoCommands: true,
     checks: null,
   });
-  assert.equal(creation.goal, 'Preserve this task.');
+  assert.equal(creation.goal, '  Preserve this task.  ');
   assert.ok(creation.name.length > 0);
   assert.equal(creation.maxIterations, 8);
   assert.equal(creation.maxMinutes, 15);
@@ -37,6 +38,9 @@ test('creation keeps legacy defaults, names, and literal false command trust', (
   assert.equal('autoCommands' in creation, false);
 
   for (const params of [
+    { goal: '   ' },
+    { goal: 'x'.repeat(4001) },
+    { goal: 'bad\0goal' },
     { mode: 'pretend' },
     { maxIterations: 0 },
     { maxMinutes: 241 },
@@ -96,6 +100,18 @@ test('local proposals stay small and strict without replacing exact edit bases',
     /either base or expectedHash/,
   );
   assert.throws(() => parseHandoffText('界'.repeat(220000)), /too large/i);
+  assert.throws(
+    () =>
+      parseLocalProposal({
+        summary: 'Copy the controls.',
+        actions: [
+          { type: 'write', path: 'large.txt', base: 'missing', content: '界'.repeat(120_000) },
+          { type: 'write', path: 'next.txt', base: 'missing', content: '界'.repeat(12_000) },
+          { type: 'write', path: 'components.mjs', asset: 'components.mjs', base: 'missing' },
+        ],
+      }),
+    (error) => error.issue?.code === 'PROPOSAL_TOO_LARGE',
+  );
   assert.equal(parseDisplayName('  name  ', 'task name'), 'name');
   assert.throws(() => parseDisplayName('  ', 'task name'), /Invalid task name/);
 });
@@ -198,6 +214,32 @@ test('legacy completion never upgrades intermediate review, errors, approvals, o
   }
 });
 
+test('repair status prioritizes bounded, redacted findings over raw check metadata', () => {
+  const host = 'http://miter-' + 'a'.repeat(32) + '.localhost:54899/' + 'b'.repeat(32) + '/';
+  const message = completionFailureMessage([
+    { check: { type: 'quality', name: 'skills' }, ok: true, detail: 'Passed' },
+    {
+      check: { type: 'quality', name: 'browser' },
+      ok: false,
+      finding: 'desktop / Open match: blocked opening ' + host + 'index.html?player=O',
+      detail: '{"reports":["private/report.json"]}',
+    },
+    {
+      check: { type: 'command', profileId: 'test' },
+      ok: false,
+      detail: { code: 1, stdout: '', stderr: 'token=veryprivate ' + 'x'.repeat(10000) },
+    },
+    { check: { type: 'contains', path: 'result.txt', text: 'ready' }, ok: false },
+    { check: { type: 'exists', path: 'other.txt' }, ok: false },
+  ]);
+  assert.match(message, /Chrome: desktop \/ Open match: blocked opening \/index\.html\?player=O/);
+  assert.match(message, /test: token=\[REDACTED\]/);
+  assert.match(message, /result.txt must contain "ready"/);
+  assert.match(message, /Additional failed checks: 1/);
+  assert.doesNotMatch(message, /veryprivate|private\/report|localhost|Passed/);
+  assert.ok(message.length < 700);
+});
+
 test('snapshot and report builders preserve their exact content boundaries', () => {
   const write = {
     type: 'write',
@@ -232,6 +274,65 @@ test('snapshot and report builders preserve their exact content boundaries', () 
   assert.equal(report.includes('file_64: applied'), false);
   assert.match(report, /Completion: null\nError: none/);
   assert.ok(report.endsWith('Redaction is best effort, not a guarantee.\n'));
+});
+
+test('completion events name only the quality checks supported by the recorded evidence', () => {
+  const worker = makeWorker();
+  function checked(names) {
+    const results = names.map((name) => ({ check: { type: 'quality', name }, ok: true }));
+    return buildCompletion(worker, 'passed', 'Done.', results.length, 100, results);
+  }
+
+  const complete = checked(['components', 'syntax', 'tests', 'browser', 'lighthouse', 'snapshot']);
+  assert.equal(
+    completionEventMessage(complete),
+    'Finished. Checks passed: source, domain, browser, Lighthouse.',
+  );
+  assert.equal(complete.evidence.browser, 'passed');
+  assert.equal(complete.evidence.lighthouse, 'passed');
+
+  const backend = ['desktop', 'mobile'].map((device) => ({ device, journey: 'Save a record' }));
+  for (const devices of [[], backend.slice(0, 1), backend]) {
+    const checks = ['browser', 'lighthouse', 'snapshot'].map((name) => ({
+      check: { type: 'quality', name },
+      ok: true,
+      detail: JSON.stringify({ backend: devices }),
+    }));
+    const recorded = buildCompletion(worker, 'passed', 'Done.', checks.length, 100, checks);
+    assert.equal(recorded.evidence.detail.includes('running backend'), devices.length === 2);
+  }
+
+  const sourceOnly = checked(['components', 'syntax', 'tests', 'snapshot']);
+  assert.equal(
+    completionEventMessage(sourceOnly),
+    'Finished. Checks passed: source, domain. Not run: browser, Lighthouse.',
+  );
+
+  const browserWithoutLighthouse = checked(['browser', 'snapshot']);
+  assert.equal(
+    completionEventMessage(browserWithoutLighthouse),
+    'Finished. Checks passed: browser. Not run: source, domain, Lighthouse.',
+  );
+
+  const missingSnapshot = checked(['components', 'syntax', 'tests', 'browser', 'lighthouse']);
+  assert.equal(
+    completionEventMessage(missingSnapshot),
+    'Finished. Not run: source, domain, browser, Lighthouse.',
+  );
+
+  const historical = structuredClone(sourceOnly);
+  delete historical.evidence.lighthouse;
+  assert.equal(
+    completionEventMessage(historical),
+    'Finished. Checks passed: source, domain. Not run: browser. Not recorded: Lighthouse.',
+  );
+
+  const unchecked = buildCompletion(worker, 'not-run', 'Done.', 0, 100);
+  assert.equal(completionEventMessage(unchecked), 'Finished. No completion checks were configured.');
+  assert.equal(
+    completionEventMessage({ ...complete, verification: 'legacy-accepted' }),
+    'Finished. Passing verification was not recorded.',
+  );
 });
 
 test('repair observations remain whole JSON while the full audit keeps exact file evidence', () => {
@@ -292,7 +393,6 @@ test('serialized service-owned contracts have simple descriptions and validate r
     'skippedEditSchema',
     'verificationIntentSchema',
     'checkResultSchema',
-    'verificationResultSchema',
     'followupActivationSchema',
     'editRepairSchema',
     'editRepairArchiveSchema',
@@ -305,6 +405,27 @@ test('serialized service-owned contracts have simple descriptions and validate r
       assert.equal(typeof field.description, 'string', name + '.' + fieldName);
     }
   }
+
+  assert.equal(typeof schemas.verificationResultSchema.description, 'string');
+  for (const variant of schemas.verificationResultSchema.options) {
+    assert.equal(typeof variant.description, 'string');
+    for (const field of Object.values(variant.shape)) {
+      assert.equal(typeof field.description, 'string');
+    }
+  }
+
+  const failedVerification = {
+    ok: false,
+    results: [{ check: { type: 'exists', path: 'missing.txt' }, ok: false }],
+    requiresHumanAcceptance: false,
+    verification: 'failed',
+    summary: 'Not complete.',
+  };
+  assert.equal(schemas.verificationResultSchema.safeParse(failedVerification).success, true);
+  assert.equal(
+    schemas.verificationResultSchema.safeParse({ ...failedVerification, verification: 'passed' }).success,
+    false,
+  );
 
   assert.throws(() => schemas.readControlOperation({ signature: 'a'.repeat(64) }, 'control_1'), /invalid/);
   assert.equal(

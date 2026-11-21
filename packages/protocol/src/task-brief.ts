@@ -21,27 +21,53 @@ function clipWords(text: string, maximum: number): string {
   return clipped.trimEnd() + '…';
 }
 
+/** A launch-only request can be fulfilled locally. Any additional work goes to the normal coding task. */
+export function isProjectLaunchRequest(input: string): boolean {
+  if (!/\b(?:pnpm|vite|next(?:\.js)?|dev(?:elopment)? server)\b/i.test(input)) {
+    return false;
+  }
+  const clauses = input
+    .trim()
+    .toLowerCase()
+    .replace(/^(?:please |can you |could you )+/, '')
+    .replace(/(?:,?\s+please)?[.!?]*$/, '')
+    .split(/(?:\s*,\s*(?:(?:and|then)\s+)?|\s+(?:and then|and|then)\s+|[.;]\s*)/);
+  const install =
+    /^(?:pnpm (?:i|install)|(?:use pnpm to )?install (?:the |its |project )?(?:deps|dependencies)(?: (?:with|using) pnpm)?)$/;
+  const launch =
+    /^(?:(?:run|start|launch|open|preview) (?:the |this |my |our |its |a )?(?:(?:vite|next(?:\.js)?) )?(?:(?:app|project|dev|development) )?(?:app(?:lication)?|project|server|preview|it)(?: (?:locally|in (?:the )?(?:browser|chrome)))?|(?:run )?pnpm (?:run )?dev)$/;
+  return (
+    clauses.some((clause) => launch.test(clause)) &&
+    clauses.every((clause) => install.test(clause) || launch.test(clause))
+  );
+}
+
 export function buildTaskBrief(request: string): TaskBrief {
   const goal = tidy(request);
-  const game = /\bgame\b|tic[ -]?tac[ -]?toe|noughts\s+and\s+crosses/i.test(goal);
-  let kind: TaskBrief['kind'] = 'general';
-
-  if (/tic[ -]?tac[ -]?toe|noughts\s+and\s+crosses|\bxo\b/i.test(goal) && game) {
-    kind = 'tic-tac-toe';
-  } else if (/colou?r[ -]?(?:order[ -]?)?memory|memory[ -]?(?:sequence|game)/i.test(goal) && game) {
-    kind = 'color-memory';
-  }
-
-  const changeExisting =
-    /^(?:please\s+)?(?:fix|repair|debug|change|update|refactor|remove|improve|add)\b/i.test(goal);
   const firstLine = goal.split(/[\r\n]/).at(0) ?? '';
+  const createPrefix =
+    /^(?:please\s+)?(?:can you\s+)?(?:make|build|create|implement|develop)\s+(?:me\s+)?(?:like\s+)?(?:(?:a|an|the)\s+)?/i;
+  const changePrefix =
+    /^(?:please\s+)?(?:can you\s+)?(?:fix|repair|debug|change|update|refactor|remove|improve|add)\s+/i;
+  const changeExisting = changePrefix.test(firstLine);
   const lead = firstLine
-    .replace(
-      /^(?:please\s+)?(?:can you\s+)?(?:make|build|create)(?:\s+me)?(?:\s+like)?\s+(?:(?:a|an|the)\s+)?/i,
-      '',
-    )
+    .replace(createPrefix, '')
     .replace(/[.!?]+$/, '')
     .trim();
+  // Classify the requested subject. References to a game in a later clause
+  // or line can be context for an unrelated change.
+  const [subject = ''] = lead
+    .replace(changePrefix, '')
+    .replace(/^(?:a|an|the|my|our)\s+/i, '')
+    .split(/[,;:.!?]|\s+(?:with|for|in|of|using|where|that|to)\b/i, 1);
+  const gameName = subject.trim().replace(/^(?:(?:simple|classic|browser|web|skeuomorphic)\s+)+/i, '');
+  let kind: TaskBrief['kind'] = 'general';
+  if (/^(?:tic[ -]?tac[ -]?toe|noughts\s+and\s+crosses)(?: game)?$|^xo game$/i.test(gameName)) {
+    kind = 'tic-tac-toe';
+  } else if (/^(?:colou?r[ -]?(?:order[ -]?)?memory(?: game)?|memory[ -]sequence game)$/i.test(gameName)) {
+    kind = 'color-memory';
+  }
+  const game = kind !== 'general' || (createPrefix.test(firstLine) && /^(?:[\w-]+\s+)?game$/i.test(gameName));
   let name = 'New task';
 
   if (!changeExisting && kind === 'tic-tac-toe') {
@@ -103,7 +129,7 @@ export function buildTaskBrief(request: string): TaskBrief {
       'Check win, draw and restart logic. Include pointer/touch input and ' +
         'keyboard-accessible cells with an unambiguous turn/result indicator.',
     );
-  } else if (kind === 'color-memory') {
+  } else if (kind === 'color-memory' && !changeExisting) {
     approach.push(
       'Cover sequence playback, input locked during playback, correct-order input, ' +
         'sequence growth, score, mistake/game-over and restart.',
@@ -114,7 +140,7 @@ export function buildTaskBrief(request: string): TaskBrief {
     );
   }
 
-  if (/skeuomorph|skumorph|skewmorph|skeumorph|skewmr/i.test(goal)) {
+  if (game && /skeuomorph|skumorph|skewmorph|skeumorph|skewmr/i.test(subject)) {
     quality.push(
       'Use restrained skeuomorphism: tactile bevels, inset surfaces, subtle highlights ' +
         'and real pressed states. Materials support readability; do not bury the game in ornamental panels.',
@@ -161,9 +187,9 @@ export function taskBriefText(goal: string): string {
       'rather than repeatedly expanding the plan.',
     '- Fix reported failures, then request finish once the requested behavior is implemented. ' +
       'Do not keep polishing forever or invent features to fill turns.',
-    '- The checklist above is guidance, not executable verification. Configured checks still gate ' +
-      'completion. Finished without configured checks does not mean independently verified; no ' +
-      'separate acceptance click is required.',
+    '- The checklist above is guidance. The host separately enforces configured checks and applicable ' +
+      'built-in quality gates. Read the observed completion evidence: no separate acceptance click is ' +
+      'required, and untested behavior must not be described as verified.',
     '- Never claim browser, audio, build or test success without the corresponding execution evidence. ' +
       'No browser-testing tool is implied by this brief.',
   ].join('\n');

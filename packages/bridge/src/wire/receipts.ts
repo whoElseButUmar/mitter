@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { bootstrapDraftSchema } from '../bootstrap-draft.js';
 import {
   exchangeIdSchema,
   identifierSchema,
@@ -18,8 +19,15 @@ export const outboundReceiptSchema = z
     goalHash: sha256Schema.describe('A fingerprint of the complete task goal.'),
     textHash: sha256Schema.describe('A fingerprint of the complete outgoing message.'),
     renderedHash: sha256Schema.describe('A fingerprint of the composer text after insertion.'),
+    composerHash: sha256Schema
+      .optional()
+      .describe('The byte-exact text Miter verified in the composer before sending.'),
+    bootstrapDraft: bootstrapDraftSchema.optional().describe('Unconfirmed exact first-composer fingerprint.'),
     at: z.number().describe('When this send was recorded, in milliseconds since the Unix epoch.'),
     exchangeId: exchangeIdSchema.optional().describe('The exchange ID; older receipts may not have one.'),
+    replacesExchangeId: exchangeIdSchema
+      .optional()
+      .describe('The reviewed exchange replaced by an explicit resend.'),
     expectsReplyTo: z.literal(true).optional().describe('The reply must name the saved exchange ID.'),
     payloadHash: sha256Schema.optional().describe('A fingerprint of the message body without its wrapper.'),
     messageId: identifierSchema.optional().describe('The send intent ID used to prevent duplicate sends.'),
@@ -51,6 +59,7 @@ function legacyOptional<Schema extends z.ZodType>(schema: Schema) {
 // hashes or a malformed reply baseline. Preserve that migration behavior.
 const savedReceiptSchema = outboundReceiptSchema.extend({
   exchangeId: legacyOptional(exchangeIdSchema),
+  replacesExchangeId: legacyOptional(exchangeIdSchema),
   expectsReplyTo: legacyOptional(z.literal(true)),
   payloadHash: legacyOptional(sha256Schema),
   messageId: legacyOptional(identifierSchema),
@@ -79,8 +88,18 @@ export function parseReceipt(raw: unknown): OutboundReceipt | undefined {
     at: saved.at,
   };
 
+  if (saved.bootstrapDraft !== undefined) {
+    receipt.bootstrapDraft = saved.bootstrapDraft;
+  }
+  if (saved.composerHash !== undefined) {
+    receipt.composerHash = saved.composerHash;
+  }
+
   if (saved.exchangeId !== undefined) {
     receipt.exchangeId = saved.exchangeId;
+    if (saved.replacesExchangeId !== undefined) {
+      receipt.replacesExchangeId = saved.replacesExchangeId;
+    }
 
     if (saved.expectsReplyTo === true) {
       receipt.expectsReplyTo = true;

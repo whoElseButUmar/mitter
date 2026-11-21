@@ -15,6 +15,8 @@ export {
 } from './rpc/registry.js';
 export * from './rpc/files.js';
 export * from './rpc/system.js';
+export * from './rpc/readiness.js';
+export * from './rpc/preview.js';
 export * from './rpc/team.js';
 export * from './rpc/receipts.js';
 export * from './rpc/requests.js';

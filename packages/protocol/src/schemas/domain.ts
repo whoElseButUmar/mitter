@@ -2,7 +2,9 @@ import { z } from 'zod';
 import { VERSION } from '../constants.js';
 import { actionSchema, checkSchema } from './actions.js';
 import { envelopeSchema } from './envelopes.js';
+import { identifierSchema } from './primitives.js';
 import { settingsSchema } from './model-settings.js';
+import { readerDiagnosticSchema } from './reader-diagnostic.js';
 import { followupSummarySchema } from './requests.js';
 
 export const workerStateSchema = z
@@ -61,6 +63,10 @@ export const approvalSchema = z
       .nonnegative()
       .describe('Nonnegative whole-number project revision bound to this approval.'),
     profile: profileSchema.optional().describe('Bound command profile, when applicable.'),
+    fromTaskRequest: z.literal(true).optional().describe('A host setup step requested by the task owner.'),
+    manualSessionId: identifierSchema('terminal session ID')
+      .optional()
+      .describe('The project terminal waiting for the user to run this setup request.'),
   })
   .describe('Host-issued pending action approval.');
 
@@ -92,12 +98,46 @@ export const taskControlSchema = z
   })
   .describe('Persisted user-owned run boundary, never model-writable.');
 
+export const completionEvidenceSchema = z
+  .strictObject({
+    source: z
+      .enum(['passed', 'not-run'])
+      .describe('Whether automatic source, syntax and unchanged-snapshot checks passed for this completion.'),
+    domain: z
+      .enum(['passed', 'not-run'])
+      .describe('Whether isolated declared domain tests passed against the unchanged completion snapshot.'),
+    browser: z
+      .enum(['passed', 'not-run'])
+      .describe('Whether the isolated rendered browser checks passed against the unchanged snapshot.'),
+    lighthouse: z
+      .enum(['passed', 'not-run'])
+      .optional()
+      .describe(
+        'Whether every scored Lighthouse category reached 100 on desktop and mobile. Absent on older completions.',
+      ),
+    devServer: z.enum(['vite', 'next']).optional().describe('The pnpm framework exercised in Chrome.'),
+    devServerFingerprint: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional()
+      .describe('SHA-256 of the framework project files audited for this run.'),
+    detail: z
+      .string()
+      .min(1)
+      .max(1000)
+      .describe('The verification scope and behavior these checks do not prove.'),
+  })
+  .describe('Host-recorded verification evidence for the completed project snapshot.');
+
 export const completionRecordSchema = z
   .strictObject({
     version: z.literal(1).describe('Completion record format version.'),
     verification: z.enum(['passed', 'not-run', 'legacy-accepted']).describe('Actual verification outcome.'),
     summary: z.string().describe('Completion summary.'),
-    checked: z.int().nonnegative().describe('Nonnegative whole-number count of configured checks performed.'),
+    checked: z.int().nonnegative().describe('Nonnegative whole-number count of completion check results.'),
+    evidence: completionEvidenceSchema
+      .optional()
+      .describe('Automatic project verification evidence, when recorded.'),
     at: z
       .int()
       .nonnegative()
@@ -148,6 +188,13 @@ export const workerSchema = z
       .describe(
         'Run start time in whole milliseconds since the Unix epoch; zero means the run has not started.',
       ),
+    setupWaitMs: z
+      .int()
+      .nonnegative()
+      .optional()
+      .describe(
+        'Milliseconds this host has observed the task waiting for a setup decision or manual command.',
+      ),
     pending: approvalSchema.optional().describe('Optional pending action approval.'),
     approvedFingerprint: z.string().optional().describe('Previously approved exact fingerprint.'),
     autoCommands: z.boolean().describe('Whether configured commands may run automatically.'),
@@ -186,6 +233,14 @@ export const activitySchema = z
 export const bridgeProgressSummarySchema = z
   .strictObject({
     workerId: z.string().describe('Associated worker identifier.'),
+    revision: z
+      .int()
+      .nonnegative()
+      .max(Number.MAX_SAFE_INTEGER)
+      .optional()
+      .describe(
+        'Display-only saved checkpoint revision, a nonnegative safe integer; absence means freshness is unknown, not permission to resume.',
+      ),
     turns: z.int().nonnegative().describe('Nonnegative whole-number count of observed model turns.'),
     maxTurns: z
       .int()
@@ -208,6 +263,23 @@ export const bridgeProgressSummarySchema = z
     phase: z.string().describe('Current bridge phase.'),
     reason: z.string().describe('Current progress reason.'),
     errorCode: z.string().optional().describe('Optional bridge error code.'),
+    readerDiagnostic: readerDiagnosticSchema
+      .optional()
+      .describe('The latest structural reader observation, when supplied by the runner.'),
+    monitoring: z
+      .boolean()
+      .optional()
+      .describe(
+        'Display-only status: the current runner is watching for a late reply; this grants no execution authority.',
+      ),
+    watchUntil: z
+      .int()
+      .nonnegative()
+      .max(Number.MAX_SAFE_INTEGER)
+      .optional()
+      .describe(
+        'Display-only absolute late-reply watch deadline in safe whole Unix milliseconds; it never restores or extends a watch.',
+      ),
   })
   .describe('Display-only bridge progress summary, independent of bridge runtime modules.');
 

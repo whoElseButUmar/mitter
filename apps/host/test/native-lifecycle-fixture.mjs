@@ -11,6 +11,12 @@ const configurationSchema = z
   .strictObject({
     failTerminals: z.boolean().default(false).describe('Throw a terminal cleanup aggregate in this child.'),
     failRuntime: z.boolean().default(false).describe('Reject runtime closure after its barrier settles.'),
+    failControl: z.boolean().default(false).describe('Reject terminal control shutdown after draining.'),
+    holdControlOpen: z.boolean().default(false).describe('Hold endpoint startup until explicitly released.'),
+    holdControl: z
+      .boolean()
+      .default(false)
+      .describe('Hold terminal control drain until explicitly released.'),
     failRequests: z.boolean().default(false).describe('Throw after closing the real request queue.'),
     failOutput: z.boolean().default(false).describe('Throw after closing the real output queue.'),
     failUnsubscribe: z.boolean().default(false).describe('Throw after removing the snapshot callback.'),
@@ -37,6 +43,8 @@ const commandSchema = z
   .enum([
     'service-change',
     'release-runtime',
+    'release-control',
+    'release-control-open',
     'release-dispatch',
     'release-reset',
     'end',
@@ -59,6 +67,7 @@ const substitutedImports = new Set([
   './core/terminal.js',
   './core/request-queue.js',
   './core/output-queue.js',
+  './core/terminal-control/server.js',
 ]);
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -144,6 +153,8 @@ globalThis.clearTimeout = (timer) => {
 };
 
 const runtimeRelease = Promise.withResolvers();
+const controlRelease = Promise.withResolvers();
+const controlOpenRelease = Promise.withResolvers();
 const dispatchRelease = Promise.withResolvers();
 const resetRelease = Promise.withResolvers();
 let activeReset;
@@ -160,6 +171,31 @@ const snapshot = {
 
 export function defaultDataDir() {
   return path.join(tmpdir(), 'mitter-native-fixture-never-opened');
+}
+
+export async function startTerminalControl() {
+  trace('control.open');
+  if (configuration.holdControlOpen) {
+    await controlOpenRelease.promise;
+  }
+  return {
+    async claim() {
+      return { command: null };
+    },
+    async complete() {
+      return { recorded: true };
+    },
+    async close() {
+      trace('control.close.enter');
+      if (configuration.holdControl) {
+        await controlRelease.promise;
+      }
+      trace('control.close.finished');
+      if (configuration.failControl) {
+        throw new Error('fixture terminal control closure failed');
+      }
+    },
+  };
 }
 
 export async function openRuntime() {
@@ -315,6 +351,14 @@ process.on('message', (raw) => {
     }
     case 'release-runtime': {
       runtimeRelease.resolve();
+      break;
+    }
+    case 'release-control': {
+      controlRelease.resolve();
+      break;
+    }
+    case 'release-control-open': {
+      controlOpenRelease.resolve();
       break;
     }
     case 'release-dispatch': {

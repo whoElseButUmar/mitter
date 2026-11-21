@@ -1,3 +1,5 @@
+import { APP_VERSION } from '../../../../packages/protocol/src/index.ts';
+
 export function chromeEvent() {
   const listeners = new Set();
 
@@ -49,6 +51,18 @@ export function deferred() {
   return { promise, ...callbacks };
 }
 
+/** Complete setup separately so transport tests can keep asserting only their RPC messages. */
+export function answerViewHandshake(port) {
+  const postMessage = port.postMessage;
+  port.postMessage = (message) => {
+    if (message.type === 'hello') {
+      port.onMessage.emit({ type: 'hello', id: message.id, version: APP_VERSION });
+    } else {
+      postMessage(message);
+    }
+  };
+}
+
 export async function settle() {
   for (let index = 0; index < 8; index++) {
     await Promise.resolve();
@@ -61,7 +75,7 @@ export const snapshot = {
   workers: [],
   events: [],
   settings: { coderModelPath: '', contextSize: 8192, maxTokens: 1024, gpu: 'auto' },
-  runtime: { version: '1.0.0-rc.21', node: 'test', workflow: 'test', models: 'test' },
+  runtime: { version: APP_VERSION, node: 'test', workflow: 'test', models: 'test' },
 };
 
 export const terminalInfo = {

@@ -13,6 +13,7 @@ export const reply = {
   actions: [{ type: 'list', path: '.' }],
 };
 export const chatLink = {
+  providerId: 'chatgpt',
   id: 7,
   url: 'https://chatgpt.com/c/task-1',
   title: 'Task chat',

@@ -1,6 +1,68 @@
 import { Modal } from '../components';
 import { createNotificationsDraft, type NotificationsDraftOptions } from '../ui/dialog-forms';
-import { Show } from 'solid-js';
+import { notificationPreferencesSchema, type NotificationPreferences } from '../schemas/messages';
+import { errorMessage } from '../schemas/primitives';
+import { callResult } from '../ui/rpc';
+import { createSignal, onCleanup, onMount, Show } from 'solid-js';
+
+export function NotificationsSettings(
+  props: Omit<NotificationsDraftOptions, 'preferences'> & { playSound: () => Promise<void> },
+) {
+  const [preferences, setPreferences] = createSignal<NotificationPreferences>();
+  const [loading, setLoading] = createSignal(true);
+  const [error, setError] = createSignal('');
+  let alive = true;
+  onCleanup(() => {
+    alive = false;
+  });
+  const load = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const result = await callResult(props.rpc, notificationPreferencesSchema, 'notifications.get');
+      if (alive) {
+        setPreferences(result);
+      }
+    } catch (error) {
+      if (alive) {
+        setError(errorMessage(error));
+      }
+    } finally {
+      if (alive) {
+        setLoading(false);
+      }
+    }
+  };
+  onMount(() => void load());
+
+  return (
+    <Show
+      keyed
+      when={preferences()}
+      fallback={
+        <Modal title="Notifications" close={props.close}>
+          <Show
+            when={loading()}
+            fallback={
+              <p class="error" role="alert">
+                {error()}
+              </p>
+            }
+          >
+            <p role="status">Loading notification settings…</p>
+          </Show>
+          <Show when={!loading()}>
+            <button type="button" onClick={() => void load()}>
+              Retry
+            </button>
+          </Show>
+        </Modal>
+      }
+    >
+      {(saved) => <NotificationsForm {...props} preferences={saved} />}
+    </Show>
+  );
+}
 
 export function NotificationsForm(props: NotificationsDraftOptions & { playSound: () => Promise<void> }) {
   const draft = createNotificationsDraft(props);
@@ -9,6 +71,7 @@ export function NotificationsForm(props: NotificationsDraftOptions & { playSound
   return (
     <Modal title="Notifications" close={draft.close}>
       <form
+        aria-busy={draft.busy()}
         onSubmit={(event) => {
           event.preventDefault();
           return draft.save();
@@ -17,6 +80,7 @@ export function NotificationsForm(props: NotificationsDraftOptions & { playSound
         <label class="checkline">
           <input
             type="checkbox"
+            disabled={draft.busy()}
             checked={preferences().enabled}
             onChange={(event) =>
               setPreferences((previous) => ({
@@ -25,11 +89,12 @@ export function NotificationsForm(props: NotificationsDraftOptions & { playSound
               }))
             }
           />
-          <span>Desktop notifications for completion and attention</span>
+          <span>Desktop notifications</span>
         </label>
         <label class="checkline">
           <input
             type="checkbox"
+            disabled={!preferences().enabled || draft.busy()}
             checked={preferences().sound}
             onChange={(event) =>
               setPreferences((previous) => ({
@@ -38,22 +103,22 @@ export function NotificationsForm(props: NotificationsDraftOptions & { playSound
               }))
             }
           />
-          <span>Play a quiet chime while a Miter view is open</span>
+          <span>Play a sound</span>
         </label>
-        <p class="muted small">
-          Click a notification to open its task. Your operating system’s notification settings also apply.
-        </p>
+        <p class="muted small">Select an alert to open its task. Sound plays while Miter is open.</p>
         <Show when={draft.error()}>
           <p class="error" role="alert">
             {draft.error()}
           </p>
         </Show>
         <div class="button-row end">
-          <button type="button" onClick={() => void props.playSound()}>
+          <button type="button" disabled={draft.busy()} onClick={() => void props.playSound()}>
             Test sound
           </button>
           <button class="primary" disabled={draft.busy()}>
-            Save
+            <Show when={draft.busy()} fallback="Save changes">
+              Saving…
+            </Show>
           </button>
         </div>
       </form>

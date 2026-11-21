@@ -8,7 +8,7 @@ import { assetChunkSchema } from '../../src/schemas/preview.ts';
 import { responseSchema } from '../../../../packages/protocol/src/index.ts';
 import { WorkspaceStateSchema, emptyWorkspace } from '../../../../packages/ui/src/workspace.ts';
 import { PreviewChunkSchema } from '../../../../packages/ui/src/preview/schemas.ts';
-import { mockPort, assetChunk } from './chrome-mock.mjs';
+import { mockPort, assetChunk, answerViewHandshake } from './chrome-mock.mjs';
 
 function hostClient(context) {
   context.mock.timers.enable({ apis: ['setTimeout'] });
@@ -17,6 +17,7 @@ function hostClient(context) {
     runtime: {
       connect() {
         const port = mockPort('mitter-ui');
+        answerViewHandshake(port);
         ports.push(port);
         return port;
       },

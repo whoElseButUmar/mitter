@@ -7,6 +7,17 @@ import { runBounded } from './bounded-process.mjs';
 import { ChromePipe, browserEnvironment } from './chrome-pipe.mjs';
 import { checkPreviewSandbox } from './chrome-preview.mjs';
 import { checkDomReader } from './chrome-dom-reader.mjs';
+import { checkAppFoundation } from './chrome-app-foundation.mjs';
+import { checkAppComponents } from './chrome-app-components.mjs';
+import { checkSetup } from './chrome-setup.mjs';
+import { checkProjectHome } from './chrome-project-home.mjs';
+import { checkProjectForm } from './chrome-project-form.mjs';
+import { checkWorkspaceJourney } from './chrome-workspace-journey.mjs';
+import { checkTaskRecovery } from './chrome-task-recovery.mjs';
+import { checkStaticPreview } from './chrome-static-preview.mjs';
+import { checkAppRun } from './chrome-app-run.mjs';
+import { checkConfirmation } from './chrome-confirmation.mjs';
+import { checkFeedback } from './chrome-feedback.mjs';
 import { assertNoSystemHost, installNativeHost } from './chrome-native.mjs';
 import { writePackagedFixture, assertPackagedFixtureStylesheets } from './chrome-styles.mjs';
 import {
@@ -106,7 +117,7 @@ async function main() {
       'packaged workspace mount',
     );
     assert.equal(await evaluate(chrome, app.session, 'chrome.runtime.id'), id);
-    await click(chrome, app.session, '[aria-label="Connection and health"]');
+    await click(chrome, app.session, '.health-button');
     await waitFor(
       chrome,
       app.session,
@@ -120,16 +131,13 @@ async function main() {
       'document.querySelector("dialog[open]") === null',
       'packaged dialog dismissal',
     );
+    await checkAppRun(executable, directory, path.join(directory, 'extension'), log.fd, signal);
+    console.log('PASS: Run opens the completed app’s terminal session, reuses it and stops it.');
     const packagedStyles = await writePackagedFixture(
       chrome,
       app.session,
       path.join(directory, 'extension'),
       id,
-    );
-    parseContract(
-      targetCloseSchema,
-      await chrome.request('Target.closeTarget', { targetId: app.targetId }),
-      'Chrome did not confirm closure of the packaged workspace page.',
     );
     console.log('PASS: packaged extension loads, mounts, and opens/dismisses its health dialog.');
 
@@ -155,6 +163,15 @@ async function main() {
     assert.ok((await lstat(path.join(native.state, 'mitter.sqlite'))).isFile());
     console.log('PASS: production client/background/native host save and read back a temporary project.');
     await appendFile(logPath, '\nNative round trip: ' + JSON.stringify(nativeResult) + '\n');
+    await checkWorkspaceJourney(chrome, app.session, native.project);
+    parseContract(
+      targetCloseSchema,
+      await chrome.request('Target.closeTarget', { targetId: app.targetId }),
+      'Chrome did not confirm closure of the packaged workspace page.',
+    );
+    console.log(
+      'PASS: real workspace create/open/reopen project, first task and saved navigation without duplicates.',
+    );
 
     const readerEvidence = await checkDomReader(chrome, fixture.session, id, {
       onEvidence: (evidence) =>
@@ -165,6 +182,27 @@ async function main() {
     );
 
     await checkDialogs(chrome, fixture.session);
+    await checkTaskRecovery(chrome, fixture.session);
+    await checkSetup(chrome, fixture.session);
+    await checkProjectHome(chrome, fixture.session);
+    await checkProjectForm(chrome, fixture.session);
+    await checkConfirmation(chrome, fixture.session);
+    await checkFeedback(chrome, fixture.session);
+    console.log(
+      'PASS: file loading, retry and empty states; notification preferences and in-dialog feedback.',
+    );
+    console.log(
+      'PASS: styled confirmations, keyboard focus, duplicate prevention, stale ownership and cleanup.',
+    );
+    console.log(
+      'PASS: first-run setup, missing helper, version mismatch, unsupported checks and recovery controls at 1024/320/290px.',
+    );
+    const foundation = await checkAppFoundation(chrome, fixture.session);
+    console.log('Working app components:', await checkAppComponents(chrome, directory, id));
+    await appendFile(logPath, '\nApp foundation browser checks: ' + JSON.stringify(foundation) + '\n');
+    console.log(
+      'PASS: bundled app foundation styles, native forms, pointer/keyboard focus, RTL, scrolling and accessibility preferences.',
+    );
     console.log('PASS: task attention layout uses only the packaged workspace stylesheets.');
     console.log(
       'PASS: native validation, in-dialog errors, Escape/focus restoration, and stale-save ownership.',
@@ -179,6 +217,11 @@ async function main() {
     assert.deepEqual(exceptions, [], 'Live pages must not produce uncaught exceptions.');
     console.log(
       'PASS: preview Blob release, late-read fencing, FontFace cleanup, and 30 mount/dispose cycles.',
+    );
+    const staticPreview = await checkStaticPreview(executable, directory, log.fd, signal);
+    await appendFile(logPath, '\nStatic app preview: ' + JSON.stringify(staticPreview) + '\n');
+    console.log(
+      'PASS: real static preview HTTP server, module imports, CSS, reload storage and separate origins.',
     );
     await appendFile(
       logPath,

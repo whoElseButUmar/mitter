@@ -8,6 +8,7 @@ import path from 'node:path';
 const { Store } = await import('../database.ts');
 const { Service } = await import('../service.ts');
 const { digest } = await import('../workspace.ts');
+const { referenceWorkflow } = await import('../workflow.ts');
 const { parseProposalEnvelope } = await import('../../../../../packages/protocol/src/proposal.ts');
 
 export { digest };
@@ -103,15 +104,21 @@ export async function fixture(context, options = {}) {
 
   const stoppedActors = [];
   const workflowFactory = (initial, onChange) => {
-    let state = initial;
+    let factory = referenceWorkflow;
+
+    if (options.workflowFactory) {
+      factory = options.workflowFactory;
+    }
+
+    const workflow = factory(initial, onChange);
 
     return {
-      get: () => state,
-      move: (next) => {
-        state = next;
-        onChange(next);
+      get: () => workflow.get(),
+      move: (next) => workflow.move(next),
+      stop: () => {
+        stoppedActors.push(workflow.get());
+        workflow.stop();
       },
-      stop: () => stoppedActors.push(state),
     };
   };
   let models = {

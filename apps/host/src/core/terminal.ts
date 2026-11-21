@@ -5,6 +5,7 @@ import type { Snapshot } from '../../../../packages/protocol/src/index.js';
 import type { TerminalInfo } from '../../../../packages/terminal/src/protocol.js';
 import { terminalRequestSchema } from './terminal/requests.js';
 import { terminalLaunch } from './terminal/launch.js';
+import { manualSetupLaunch, prepareManualReport, type ManualSetupOptions } from './terminal/manual-setup.js';
 import { appendTerminalOutput, readTerminalOutput } from './terminal/session-buffer.js';
 import type { TerminalSession } from './terminal/session-buffer.js';
 import type { PtyFactory, PtySubscription } from './terminal/pty-adapter.js';
@@ -13,8 +14,16 @@ import { errorMessage } from './types.js';
 export type { PtyProcess, PtyFactory } from './terminal/pty-adapter.js';
 
 type ManagedTerminalSession = TerminalSession & {
+  manualSetup: boolean;
   cleanupFailures: unknown[];
   cleanupInProgress: boolean;
+};
+
+type ManualSession = {
+  root: string;
+  file: string;
+  signal: AbortSignal;
+  onExit: (sessionId: string, exitCode: number | null) => void;
 };
 
 function terminalCleanupError(message: string, failures: unknown[]): AggregateError {
@@ -155,37 +164,63 @@ export class TerminalManager {
   }
 
   private async create(
-    clientId: string,
+    clientId: string | undefined,
     projectId: string,
     workerId: string | undefined,
     cols: number,
     rows: number,
+    manual?: ManualSession,
   ): Promise<TerminalInfo> {
+    if (manual && this.sessions.size + this.creating >= 8) {
+      const finished = [...this.sessions.values()].find(
+        (session) => session.manualSetup && session.info.exited,
+      );
+      if (finished) {
+        const failures = this.closeSession(finished);
+        if (failures.length) {
+          throw terminalCleanupError('Could not release the finished setup terminal', failures);
+        }
+      }
+    }
     if (this.sessions.size + this.creating >= 8) {
       throw new Error('Close a terminal before opening another (maximum 8).');
     }
     this.creating++;
 
     try {
-      const launch = await terminalLaunch(this.snapshot(), projectId, workerId, cols, rows);
       const factory = await (this.loading ??= this.load().catch((error) => {
         this.loading = undefined;
 
         throw error;
       }));
+      const launch = await terminalLaunch(this.snapshot(), projectId, workerId, cols, rows);
 
       if (this.disposed) {
         throw new Error('The terminal host closed while starting.');
       }
 
-      const pty = factory.spawn(launch.shell, launch.args, launch.options);
+      let program = launch.shell;
+      let args = launch.args;
+      let title = path.basename(launch.shell);
+      if (manual) {
+        manual.signal.throwIfAborted();
+        if (launch.options.cwd !== manual.root) {
+          throw new Error('The project folder changed. Review the setup command again.');
+        }
+        const entry = manualSetupLaunch(launch.shell, manual.file, launch.options.env.PATH);
+        launch.options.env.PATH = entry.path;
+        program = entry.program;
+        args = entry.args;
+        title = 'Project setup';
+      }
+      const pty = factory.spawn(program, args, launch.options);
       const id = randomUUID();
       const session: ManagedTerminalSession = {
         info: {
           id,
           projectId,
           workerId,
-          title: path.basename(launch.shell),
+          title,
           cwd: launch.options.cwd,
           shell: launch.shell,
           pid: pty.pid,
@@ -196,6 +231,14 @@ export class TerminalManager {
           paused: false,
         },
         pty,
+        manualSetup: Boolean(manual),
+        kill(signal) {
+          if (manual && pty.killGroup) {
+            pty.killGroup();
+          } else {
+            pty.kill(signal);
+          }
+        },
         owner: clientId,
         frames: [],
         next: 0,
@@ -211,12 +254,34 @@ export class TerminalManager {
       this.sessions.set(id, session);
 
       try {
+        const cancel = () => {
+          const failures = this.closeSession(session);
+          if (failures.length) {
+            process.stderr.write(
+              'Could not close the project setup terminal: ' + failures.map(errorMessage).join(', ') + '\n',
+            );
+          }
+        };
+        if (manual) {
+          manual.signal.addEventListener('abort', cancel, { once: true });
+          session.subscriptions.push({ dispose: () => manual.signal.removeEventListener('abort', cancel) });
+        }
+        let reported = false;
         session.subscriptions.push(pty.onData((data) => appendTerminalOutput(session, data)));
         session.subscriptions.push(
           pty.onExit((event) => {
             session.info.exited = true;
             session.info.exitCode = event.exitCode;
             session.info.paused = false;
+            if (manual && !reported) {
+              reported = true;
+              manual.signal.removeEventListener('abort', cancel);
+              let code: number | null = event.exitCode;
+              if (session.closed || event.signal) {
+                code = null;
+              }
+              manual.onExit(id, code);
+            }
 
             // A kill/dispose call may emit exit synchronously; its batch owns the subscriptions.
             if (session.closed && !session.cleanupInProgress) {
@@ -244,11 +309,42 @@ export class TerminalManager {
 
       return {
         ...session.info,
-        owned: true,
+        owned: clientId !== undefined,
         occupied: false,
       };
     } finally {
       this.creating--;
+    }
+  }
+
+  async startManualSetup(options: ManualSetupOptions): Promise<string> {
+    if (this.disposed) {
+      throw new Error('The terminal host is closed.');
+    }
+    options.signal.throwIfAborted();
+    const report = await prepareManualReport();
+    let release: Promise<void> | undefined;
+    const closeReport = () => (release ??= report.close());
+    try {
+      const session = await this.create(undefined, options.projectId, options.workerId, 80, 24, {
+        root: options.root,
+        file: report.file,
+        signal: options.signal,
+        onExit(id, code) {
+          void report
+            .result(code)
+            .catch(() => ({ code: null, output: 'The setup command result could not be verified.' }))
+            .then((result) => options.onFinish(id, result))
+            .finally(closeReport)
+            .catch((error: unknown) =>
+              process.stderr.write('Could not finish the setup terminal: ' + errorMessage(error) + '\n'),
+            );
+        },
+      });
+      return session.id;
+    } catch (error) {
+      await closeReport();
+      throw error;
     }
   }
 
@@ -304,7 +400,7 @@ export class TerminalManager {
 
       if (requestKill && !session.info.exited) {
         try {
-          session.pty.kill();
+          session.kill();
         } catch (error) {
           failures.push(error);
         }
@@ -390,7 +486,7 @@ export class TerminalManager {
 
                 if (!session.info.exited) {
                   try {
-                    session.pty.kill('SIGKILL');
+                    session.kill('SIGKILL');
                   } catch (error) {
                     startupFailures.push(error);
                   }

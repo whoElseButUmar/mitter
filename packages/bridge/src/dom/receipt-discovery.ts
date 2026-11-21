@@ -1,11 +1,18 @@
-import { readReplyJSON } from '../../../protocol/src/reply-json.js';
+import {
+  exceedsHandoffBytes,
+  hasCompleteReplyFence,
+  isIncompleteReplyJSON,
+  readReplyJSON,
+} from '../../../protocol/src/reply-json.js';
 import { matchesReceipt, parseReceipt, type OutboundReceipt } from '../message-wire.js';
 import { identifierSchema } from '../schemas/primitives.js';
+import { hasStreamRetry, hasOnlyHiddenSearchIcons, isAnalyzedActivity } from './provider-activity.js';
 import { readAssistantMessage } from './assistant-reader.js';
 import { contentHidden, htmlElements, pageElements, parentAcrossShadow } from './page-elements.js';
 import {
   discoverMessages,
   explicitRole,
+  headingRole,
   messageRole,
   roleSelector,
   setReceiptRole,
@@ -18,6 +25,7 @@ import {
   type CodeAncestor,
   type MessageDiscovery,
   type ReceiptDiscoveryStats,
+  type ReplyRecovery,
   type TranscriptStats,
 } from './types.js';
 
@@ -198,9 +206,231 @@ function receiptRoleConflict(element: HTMLElement): boolean {
   return false;
 }
 
+/** Native role ownership can include a heading and sibling message toolbar.
+ * Permit only that presentation outside the identified message; arbitrary
+ * prose, media, another turn or an editor still prevents crossing the wrapper. */
+function nativeMessageWrapper(parent: HTMLElement, message: HTMLElement, base: MessageDiscovery): boolean {
+  const role = messageRole(message);
+  if (
+    !base.messages.includes(message) ||
+    (role !== 'user' && role !== 'assistant') ||
+    !parent.contains(message) ||
+    base.messages.some((other) => other !== message && parent.contains(other))
+  ) {
+    return false;
+  }
+  const ownedContent = (node: Node): boolean => {
+    if (node === message) {
+      return true;
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      return !node.nodeValue?.trim();
+    }
+    if (!(node instanceof HTMLElement) || contentHidden(node)) {
+      return true;
+    }
+    if (node.matches('button,[role="button"],summary,svg,script,style,template')) {
+      return true;
+    }
+    if (
+      node.matches('h1,h2,h3,h4,h5,h6,[role="heading"]') &&
+      (node.getAttribute('data-conversation-role') === role ||
+        (node.matches('h4.sr-only:not([data-conversation-role])') &&
+          node === node.parentElement?.firstElementChild &&
+          node.nextElementSibling?.tagName === 'DIV' &&
+          node.nextElementSibling.contains(message) &&
+          !node.closest(
+            'blockquote,.markdown,[data-message-content],[data-markdown-text-style],[data-user-message-bubble]',
+          ))) &&
+      (headingRole(node) === role ||
+        (role === 'user' && /^You said:\s*You$/i.test((node.textContent || '').trim())) ||
+        (role === 'assistant' && /^ChatGPT said:\s*ChatGPT$/i.test((node.textContent || '').trim())))
+    ) {
+      return true;
+    }
+    if (
+      node.matches('form,nav,aside,textarea,[contenteditable="true"],pre,code,img,video,audio,canvas,iframe')
+    ) {
+      return false;
+    }
+    return Array.from(node.childNodes).every(ownedContent);
+  };
+  return ownedContent(parent);
+}
+
+/** A collapsed activity disclosure between the verified user's message and the
+ * keyed final response occupies a separate sibling in the windowed transcript. */
+function collapsedActivity(user: HTMLElement, activity: Node, response: Node): boolean {
+  if (!(activity instanceof HTMLDivElement) || !(response instanceof HTMLDivElement)) {
+    return false;
+  }
+  const userKey = user
+    .querySelector('[data-content-search-unit-key]')
+    ?.getAttribute('data-content-search-unit-key');
+  if (!userKey?.endsWith(':0:user')) {
+    return false;
+  }
+  const finalKey = userKey.slice(0, -':0:user'.length) + ':2:assistant';
+  const finalWrapper = [response, ...htmlElements(response, '[data-chatgpt-search-unit-key]')].find(
+    (node) => node.getAttribute('data-chatgpt-search-unit-key') === finalKey,
+  );
+  if (
+    finalWrapper?.getAttribute('data-content-search-unit-key') !== finalKey ||
+    !finalWrapper.querySelector('[data-markdown-text-style="assistant-message"]') ||
+    !finalWrapper.querySelector('[data-dil-message-id]') ||
+    activity.querySelector(
+      'form,video,audio,canvas,iframe,textarea,[contenteditable="true"],h1,h2,h3,h4,h5,h6,[role="heading"],[data-message-author-role],[data-message-id],[data-turn-id],[data-content-search-unit-key],[data-chatgpt-search-unit-key],[data-user-message-bubble],[data-dil-message-id]',
+    )
+  ) {
+    return false;
+  }
+  const controls = htmlElements(activity, 'button,[role="button"]');
+  const toggle = controls[0];
+  const duration = toggle?.parentElement;
+  if (
+    !toggle ||
+    !duration ||
+    toggle.getAttribute('aria-expanded') !== 'false' ||
+    !/^Worked for \d+(?:h|m|s)(?: \d+(?:h|m|s)){0,2}$/.test(duration.innerText.trim())
+  ) {
+    return false;
+  }
+  const standaloneToggle =
+    toggle.matches('button[type="button"][data-turn-disclosure-button]') &&
+    duration.children.length === 1 &&
+    duration.innerText.trim() === toggle.innerText.trim();
+  if (!duration.classList.contains('group/activity-header') && !standaloneToggle) {
+    return false;
+  }
+  if (!hasOnlyHiddenSearchIcons(activity, toggle)) {
+    return false;
+  }
+  if (controls.length === 1) {
+    return !activity.querySelector('pre,code,a') && activity.innerText.trim() === duration.innerText.trim();
+  }
+
+  return isAnalyzedActivity(activity, duration, controls);
+}
+
+function recoveryObservation(
+  kind: ReplyRecovery['kind'],
+  receipt: OutboundReceipt,
+  userText: string,
+  response: HTMLElement,
+): ReplyRecovery | undefined {
+  if (
+    !receipt.exchangeId ||
+    contentHidden(response) ||
+    response.matches('form,textarea,[contenteditable="true"],blockquote,nav,aside') ||
+    response.querySelector('form,textarea,[contenteditable="true"],blockquote,nav,aside')
+  ) {
+    return;
+  }
+  const read = readAnchoredAssistant(response);
+  const controls = responseControls(response);
+  const responseOnly =
+    ((controls.positive === 1 && controls.negative === 1) || controls.other === 1) && !controls.userEdit;
+  const identifiedAssistant =
+    explicitRole(response) === 'assistant' ||
+    htmlElements(response, roleSelector).some((element) => explicitRole(element) === 'assistant');
+  const diagnosticCarrier = kind === 'duplicate_send' && (identifiedAssistant || responseOnly);
+  if (
+    diagnosticCarrier &&
+    htmlElements(response, '*').some((element) => contentHidden(element) && !!element.textContent?.trim())
+  ) {
+    return;
+  }
+  // An identified assistant may expose conflicting blocks as diagnostics only.
+  // Without that role evidence, require one whole JSON/fence carrier.
+  if (
+    !read.text.trim() ||
+    exceedsHandoffBytes(read.text) ||
+    ['CODE_NOT_VISIBLE', 'PLAIN_HIDDEN_CONTENT'].includes(read.issue || '') ||
+    (!diagnosticCarrier &&
+      (['EXTRA_CONTENT', 'MULTIPLE_BLOCKS'].includes(read.issue || '') ||
+        !/^\s*(?:\{|(?:\\?`){3}(?:json)?[ \t\\]*\r?\n)/.test(read.text)))
+  ) {
+    return;
+  }
+  let wholeCarrier =
+    diagnosticCarrier ||
+    read.format === 'code' ||
+    hasCompleteReplyFence(read.text) ||
+    isIncompleteReplyJSON(read.text);
+  if (!wholeCarrier && !read.issue) {
+    try {
+      const parsed = readReplyJSON(read.text);
+      wholeCarrier = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+    } catch {}
+  }
+  if (!wholeCarrier) {
+    return;
+  }
+  return {
+    kind,
+    exchangeId: receipt.exchangeId,
+    userText,
+    responseText: read.text,
+    format: read.format,
+    issue: read.issue,
+  };
+}
+
+/** Locate one response after the latest duplicate receipt, without assigning
+ * either a user role or an assistant role. Only correction may use this text. */
+function duplicateRecoveryResponse(
+  latest: HTMLElement,
+  matchingNodes: HTMLElement[],
+  base: MessageDiscovery,
+): HTMLElement | undefined {
+  const latestKnownUser = base.messages.filter((message) => messageRole(message) === 'user').at(-1);
+  if (latestKnownUser && !latestKnownUser.contains(latest) && !latest.contains(latestKnownUser)) {
+    return;
+  }
+  for (let branch = latest, depth = 0; depth < 20; depth++) {
+    const parent = branch.parentElement;
+    if (!parent || parent.matches('body,html,form,nav,aside,[role="dialog"]')) {
+      return;
+    }
+    const siblings = Array.from(parent.childNodes);
+    const following = siblings.slice(siblings.indexOf(branch) + 1).filter(substantiveBranch);
+    if (following.length) {
+      const response = following[0];
+      if (following.length !== 1 || !(response instanceof HTMLElement)) {
+        return;
+      }
+      const roles = [explicitRole(response), ...htmlElements(response, roleSelector).map(explicitRole)];
+      const controls = responseControls(response);
+      if (
+        roles.includes('user') ||
+        roles.includes('unknown') ||
+        controls.userEdit ||
+        controls.positive > 1 ||
+        controls.negative > 1 ||
+        controls.other > 2
+      ) {
+        return;
+      }
+      if (latestKnownUser) {
+        const knownTail = base.messages.slice(base.messages.indexOf(latestKnownUser) + 1);
+        if (knownTail.length > 1 || knownTail.some((message) => !response.contains(message))) {
+          return;
+        }
+      }
+      return response;
+    }
+    if (parent.matches('main,[role="main"]') || !matchingNodes.includes(parent)) {
+      return;
+    }
+    branch = parent;
+  }
+  return;
+}
+
 export async function discoverReceiptMessages(
   receipt: OutboundReceipt,
   base: MessageDiscovery = discoverMessages(),
+  checkCurrent: () => void = () => {},
 ): Promise<MessageDiscovery> {
   // Parse even when called outside chatDom by tests or future callers.
   const validReceipt = parseReceipt(receipt);
@@ -238,11 +468,14 @@ export async function discoverReceiptMessages(
   const receiptMarker = validReceipt.exchangeId || 'You are collaborating with Mitter,';
   const receiptCandidates = (elements: HTMLElement[]): HTMLElement[] =>
     elements.filter((element) => {
+      // A composer wrapper can contain the exact resend bytes. Neither the
+      // editor nor any ancestor containing it is a sent-message candidate.
       if (
         element.matches('html,body,main,[role="main"]') ||
         transcriptExcluded(element) ||
         (element.textContent || '').length > 180000 ||
-        !(element.textContent || '').includes(receiptMarker)
+        !(element.textContent || '').includes(receiptMarker) ||
+        element.querySelector('form,textarea,[contenteditable="true"]')
       ) {
         return false;
       }
@@ -282,36 +515,43 @@ export async function discoverReceiptMessages(
     node: HTMLElement;
     read: ReturnType<typeof readUserMessageVariants>;
   }> = [];
-  for (const candidate of candidateReads) {
-    const message = candidate.node;
+  // Nested wrappers often serialize the same full message. Hash each unique
+  // serialization once, in one bounded batch, but keep every DOM candidate:
+  // disjoint identical sends must still be diagnosed as ambiguous.
+  const matchesByText = new Map<string, Promise<boolean>>();
+  const candidateMatches = await Promise.all(
+    candidateReads.map((candidate) =>
+      Promise.all(
+        (candidate.read?.texts ?? []).map((text) => {
+          if (text.length > 160000) {
+            return false;
+          }
+          let matching = matchesByText.get(text);
+          if (!matching) {
+            matching = matchesReceipt(text, validReceipt);
+            matchesByText.set(text, matching);
+          }
+          return matching;
+        }),
+      ),
+    ),
+  );
+  checkCurrent();
+  for (const [candidateIndex, candidate] of candidateReads.entries()) {
     const userRead = candidate.read;
-    // Role metadata, when present, cannot be contradicted by a receipt match.
-    if (!userRead) {
+    if (!userRead || !candidate.node.isConnected) {
       continue;
     }
-    const exactMatches = await Promise.all(
-      userRead.texts.map((text) => {
-        if (text.length <= 160000) {
-          return matchesReceipt(text, validReceipt);
-        }
-        return false;
-      }),
-    );
-    const index = exactMatches.indexOf(true);
+    const index = candidateMatches[candidateIndex]?.indexOf(true) ?? -1;
     const verifiedText = userRead.texts[index];
-    if (index >= 0 && verifiedText !== undefined && message.isConnected) {
-      // DOM can change while WebCrypto yields. Never pair an old verified
-      // user-body snapshot with a newly inserted response.
-      const freshRead = readUserMessageVariants(message);
-      if (freshRead.texts.includes(verifiedText)) {
-        matchingMessages.push({
-          node: message,
-          read: {
-            ...freshRead,
-            texts: [verifiedText, ...freshRead.texts.filter((text) => text !== verifiedText)],
-          },
-        });
-      }
+    if (verifiedText !== undefined) {
+      matchingMessages.push({
+        node: candidate.node,
+        read: {
+          ...userRead,
+          texts: [verifiedText, ...userRead.texts.filter((text) => text !== verifiedText)],
+        },
+      });
     }
   }
   // Nested matches are the same bubble, disjoint visible matches are not. Never
@@ -387,7 +627,23 @@ export async function discoverReceiptMessages(
   if (leafMatches.length > 1) {
     receiptStats.state = 'ambiguous';
     transcriptStats.state = 'unrecognized';
-    return unchangedDiscovery();
+    const discovery = unchangedDiscovery();
+    const latestMatch = leafMatches.at(-1);
+    if (latestMatch) {
+      const response = duplicateRecoveryResponse(
+        latestMatch.node,
+        matchingMessages.map((match) => match.node),
+        base,
+      );
+      const userText = latestMatch.read.texts[0];
+      if (response && userText !== undefined) {
+        const recovery = recoveryObservation('duplicate_send', validReceipt, userText, response);
+        if (recovery) {
+          discovery.replyRecovery = recovery;
+        }
+      }
+    }
+    return discovery;
   }
   if (!leafMatches.length) {
     if (base.stats.users) {
@@ -396,13 +652,22 @@ export async function discoverReceiptMessages(
     }
     // A matching marker permits ONLY opening Show more, not acknowledging or
     // importing. The next read must recover and verify the COMPLETE body.
-    const collapsedCandidates = candidateMessages.filter(
-      (message) =>
-        !!validReceipt.exchangeId &&
-        !receiptRoleConflict(message) &&
-        (message.textContent || '').includes('MITTER EXCHANGE ' + validReceipt.exchangeId) &&
-        messageDisclosure(message, true).collapsed,
-    );
+    const expectedBeginning = 'MITTER EXCHANGE ' + validReceipt.exchangeId;
+    const collapsedCandidates = candidateReads
+      .filter(({ node, read }) => {
+        if (!validReceipt.exchangeId || !read || receiptRoleConflict(node)) {
+          return false;
+        }
+        // A transcript ancestor may contain this nonce and older Show more
+        // buttons. Only a candidate beginning with this exchange can own its
+        // disclosure; a marker somewhere inside the page is not a user bubble.
+        const startsCurrentExchange = read.texts.some((text) => {
+          const beginning = text.replace(/\s+/g, ' ').trimStart();
+          return beginning === expectedBeginning || beginning.startsWith(expectedBeginning + ' ');
+        });
+        return startsCurrentExchange && messageDisclosure(node, true).collapsed;
+      })
+      .map(({ node }) => node);
     const smallestCandidates = collapsedCandidates.filter(
       (message) => !collapsedCandidates.some((other) => other !== message && message.contains(other)),
     );
@@ -460,8 +725,19 @@ export async function discoverReceiptMessages(
     const followingBranches = siblings.slice(index + 1).filter(substantiveBranch);
     if (followingBranches.length) {
       receiptStats.tailBranches = followingBranches.length;
-      const responseBranch = followingBranches[0];
-      if (followingBranches.length !== 1 || !(responseBranch instanceof HTMLElement)) {
+      let activity: Node | undefined;
+      let responseBranch = followingBranches[0];
+      const finalBranch = followingBranches[1];
+      if (
+        followingBranches.length === 2 &&
+        responseBranch &&
+        finalBranch &&
+        collapsedActivity(branch, responseBranch, finalBranch)
+      ) {
+        activity = responseBranch;
+        responseBranch = finalBranch;
+      }
+      if ((!activity && followingBranches.length !== 1) || !(responseBranch instanceof HTMLElement)) {
         receiptStats.state = 'unknown_tail';
         transcriptStats.unclassifiedTail = true;
         transcriptStats.state = 'partial';
@@ -469,7 +745,9 @@ export async function discoverReceiptMessages(
       }
       if (base.stats.users) {
         const userIndex = base.messages.indexOf(matchedMessage.node);
-        const knownTail = base.messages.slice(userIndex + 1);
+        const knownTail = base.messages
+          .slice(userIndex + 1)
+          .filter((message) => !activity?.contains(message));
         if (knownTail.length > 1 || knownTail.some((message) => !responseBranch.contains(message))) {
           receiptStats.state = 'unknown_tail';
           transcriptStats.unclassifiedTail = true;
@@ -499,15 +777,56 @@ export async function discoverReceiptMessages(
         transcriptStats.state = 'partial';
         return discovery;
       }
+      // A stopped stream can leave only ChatGPT's error notice and Retry
+      // control. It is evidence to request another reply, never an action
+      // batch or permission to click an arbitrary button in a message.
+      if (
+        validReceipt.exchangeId &&
+        hasStreamRetry(responseBranch) &&
+        !responseBranch.querySelector('pre,code,blockquote,a,textarea,[contenteditable="true"]') &&
+        /^(?:ChatGPT said:\s*(?:ChatGPT\s*)?)?Error in message stream\.?\s*(?:Retry)?$/i.test(
+          responseBranch.innerText.trim(),
+        )
+      ) {
+        discovery.replyRecovery = {
+          kind: 'unreadable_reply',
+          issue: 'PROVIDER_STREAM_ERROR',
+          exchangeId: validReceipt.exchangeId,
+          userText: verifiedText,
+          responseText: 'Error in message stream',
+          format: 'plain',
+        };
+        receiptStats.state = 'waiting_reply';
+        return discovery;
+      }
       if (!hasAssistantRole && !responseOnly) {
         // An incomplete response row often gets its action toolbar only after
         // streaming. Never infer completion from valid JSON alone.
         receiptStats.state = 'waiting_reply';
         transcriptStats.unclassifiedTail = true;
         transcriptStats.state = 'partial';
+        const recovery = recoveryObservation('unreadable_reply', validReceipt, verifiedText, responseBranch);
+        if (recovery) {
+          discovery.replyRecovery = recovery;
+        }
         return discovery;
       }
-      const assistantRead = readAnchoredAssistant(responseBranch);
+      const nativeAssistant = discovery.messages.find(
+        (message) => messageRole(message) === 'assistant' && responseBranch.contains(message),
+      );
+      let responseMessage = responseBranch;
+      if (nativeAssistant) {
+        if (!nativeMessageWrapper(responseBranch, nativeAssistant, base)) {
+          // Keep residual content visible to the coordinator even when a
+          // nested literal reply independently matches the exchange nonce.
+          receiptStats.state = 'unknown_tail';
+          transcriptStats.unclassifiedTail = true;
+          transcriptStats.state = 'partial';
+          return discovery;
+        }
+        responseMessage = nativeAssistant;
+      }
+      const assistantRead = readAnchoredAssistant(responseMessage);
       let identity =
         'receipt-reply-' + (validReceipt.messageId || validReceipt.exchangeId || validReceipt.textHash);
       // The envelope ID is not authority. A stable ID merely prevents a
@@ -523,10 +842,17 @@ export async function discoverReceiptMessages(
         ) {
           identity = 'reply-' + envelope.id;
         }
-      } catch {}
-      setReceiptRole(responseBranch, 'assistant', identity);
-      discovery.messages = discovery.messages.filter((message) => !responseBranch.contains(message));
-      discovery.messages.push(responseBranch);
+      } catch {
+        const recovery = recoveryObservation('unreadable_reply', validReceipt, verifiedText, responseBranch);
+        if (recovery) {
+          discovery.replyRecovery = recovery;
+        }
+      }
+      if (responseMessage !== nativeAssistant) {
+        setReceiptRole(responseBranch, 'assistant', identity);
+        discovery.messages = discovery.messages.filter((message) => !responseBranch.contains(message));
+        discovery.messages.push(responseBranch);
+      }
       discovery.assistantRead = assistantRead;
       transcriptStats.state = 'ready';
       transcriptStats.assistants = discovery.messages.filter(
@@ -543,7 +869,10 @@ export async function discoverReceiptMessages(
     }
     // A matching substring nested inside an edited/quoted message is not the
     // full user turn. Only climb through wrappers that also match the receipt.
-    if (!matchingMessages.some((match) => match.node === parent)) {
+    if (
+      !matchingMessages.some((match) => match.node === parent) &&
+      !nativeMessageWrapper(parent, matchedMessage.node, base)
+    ) {
       if (base.stats.users && discovery.messages.at(-1) === matchedMessage.node) {
         receiptStats.state = 'waiting_reply';
         return discovery;

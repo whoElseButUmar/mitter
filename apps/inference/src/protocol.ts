@@ -1,8 +1,6 @@
 import { z } from 'zod';
 import { settingsSchema } from '../../../packages/protocol/src/model-settings.js';
 
-export const modelSettingsSchema = settingsSchema;
-
 export const modelCorrelationSchema = z
   .object({
     id: z.string().min(1).max(100).describe('The request ID used to match an inference response.'),
@@ -14,7 +12,7 @@ export const modelRequestSchema = z
     id: modelCorrelationSchema.shape.id,
     method: z.literal('propose').describe('The supported local-model operation.'),
     input: z.string().describe('The complete prompt sent to the local model.'),
-    settings: modelSettingsSchema.describe('The local model path and inference limits.'),
+    settings: settingsSchema.describe('The local model path and inference limits.'),
   })
   .describe('A single local-model inference request.');
 
@@ -47,6 +45,5 @@ export const modelResponseSchema = z
   ])
   .describe('A checked local inference result or failure, correlated by request ID.');
 
-export type ModelSettings = z.infer<typeof modelSettingsSchema>;
-export type ModelRequest = z.infer<typeof modelRequestSchema>;
+export type ModelSettings = z.infer<typeof settingsSchema>;
 export type ModelResponse = z.infer<typeof modelResponseSchema>;

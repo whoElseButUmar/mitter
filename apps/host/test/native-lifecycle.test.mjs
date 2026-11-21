@@ -16,6 +16,9 @@ const eventSchema = z
   .enum([
     'ready',
     'runtime.open',
+    'control.open',
+    'control.close.enter',
+    'control.close.finished',
     'terminals.construct',
     'terminals.close',
     'terminals.reset',
@@ -137,6 +140,8 @@ function assertReleased(result, expectedCode) {
   assert.equal(count(result.events, 'fixture.unhandled'), 0, result.stderr);
 
   for (const event of [
+    'control.close.enter',
+    'control.close.finished',
     'terminals.close',
     'requests.close',
     'output.close',
@@ -149,6 +154,7 @@ function assertReleased(result, expectedCode) {
     assert.equal(count(result.events, event), 1, event + ': ' + result.events.join(', '));
   }
   assert.ok(result.events.includes('stdin.pause'));
+  assert.ok(result.events.indexOf('control.close.finished') < result.events.indexOf('runtime.close.enter'));
   assert.ok(result.events.indexOf('requests.close') < result.events.indexOf('runtime.close.enter'));
   assert.ok(result.events.indexOf('service.unsubscribe') < result.events.indexOf('runtime.close.enter'));
   assert.ok(result.events.indexOf('snapshot.timer.cleared') < result.events.indexOf('runtime.close.enter'));
@@ -164,6 +170,7 @@ for (const scenario of [
   { name: 'normal EOF', configuration: {}, expectedCode: 0 },
   { name: 'terminal cleanup failure', configuration: { failTerminals: true }, expectedCode: 1 },
   { name: 'runtime closure failure', configuration: { failRuntime: true }, expectedCode: 1 },
+  { name: 'terminal control closure failure', configuration: { failControl: true }, expectedCode: 1 },
   {
     name: 'terminal and runtime failures',
     configuration: { failTerminals: true, failRuntime: true },
@@ -339,3 +346,87 @@ test(
     assert.equal(z.object({ event: z.literal('resetRequired') }).parse(frames[0]).event, 'resetRequired');
   },
 );
+
+test(
+  'native shutdown drains terminal admissions before closing the database',
+  { timeout: 10000 },
+  async (t) => {
+    const native = runNative(t, { holdControl: true });
+    await native.waitFor('ready');
+    native.child.kill('SIGTERM');
+    await native.waitFor('control.close.enter');
+    native.command('checkpoint');
+    await native.waitFor('checkpoint');
+    assert.equal(count(native.events, 'runtime.close.enter'), 0);
+    native.command('release-control');
+    const result = await native.exited;
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(result.events.indexOf('control.close.finished') < result.events.indexOf('runtime.close.enter'));
+  },
+);
+
+test('reset cannot erase state before accepted terminal operations drain', { timeout: 10000 }, async (t) => {
+  const native = runNative(t, { holdControl: true });
+  await native.waitFor('ready');
+  native.request('prepare', 'system.resetPrepare', { confirmation: 'CLEAR' });
+  await native.waitFor('control.close.enter');
+  native.command('checkpoint');
+  await native.waitFor('checkpoint');
+  assert.equal(count(native.events, 'reset.prepare'), 0);
+  native.command('release-control');
+  await native.waitFor('reset.prepare');
+  native.child.stdin.end();
+  const result = await native.exited;
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(count(result.events, 'control.close.enter'), 1);
+});
+
+test(
+  'shutdown waits for a pending endpoint startup and closes its late result',
+  { timeout: 10000 },
+  async (t) => {
+    const native = runNative(t, { holdControlOpen: true });
+    await native.waitFor('control.open');
+    native.child.kill('SIGTERM');
+    native.command('checkpoint');
+    await native.waitFor('checkpoint');
+    assert.equal(count(native.events, 'runtime.close.enter'), 0);
+    native.command('release-control-open');
+    const result = await native.exited;
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(count(result.events, 'control.close.finished'), 1);
+    assert.ok(result.events.indexOf('control.close.finished') < result.events.indexOf('runtime.close.enter'));
+    assert.equal(result.stdout.length, 0);
+  },
+);
+
+test('reset drains a late-opening endpoint before replacing its service', { timeout: 10000 }, async (t) => {
+  const native = runNative(t, { holdControlOpen: true });
+  await native.waitFor('control.open');
+  native.request('prepare', 'system.resetPrepare', { confirmation: 'CLEAR' });
+  native.command('checkpoint');
+  await native.waitFor('checkpoint');
+  assert.equal(count(native.events, 'reset.prepare'), 0);
+  native.command('release-control-open');
+  await native.waitFor('reset.prepare');
+  native.request('complete', 'system.resetComplete', { confirmation: 'CLEAR' });
+  await native.waitFor('control.open', 2);
+  native.child.stdin.end();
+  const result = await native.exited;
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(count(result.events, 'control.close.finished'), 2);
+  assert.ok(result.events.indexOf('control.close.finished') < result.events.indexOf('reset.prepare'));
+});
+
+test('failed late endpoint cleanup is retained as a shutdown failure', { timeout: 10000 }, async (t) => {
+  const native = runNative(t, { holdControlOpen: true, failControl: true });
+  await native.waitFor('control.open');
+  native.child.kill('SIGTERM');
+  native.command('checkpoint');
+  await native.waitFor('checkpoint');
+  native.command('release-control-open');
+  const result = await native.exited;
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stderr, /Terminal control cleanup failed/);
+  assert.equal(count(result.events, 'runtime.close.finished'), 1);
+});

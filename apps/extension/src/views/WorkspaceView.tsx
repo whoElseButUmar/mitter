@@ -1,16 +1,19 @@
+import { reloadWorkspace } from '../workspace-reload';
 import { ProjectToolbar } from './ProjectToolbar';
 import { errorMessage } from '../schemas/primitives';
 import type { JSX } from 'solid-js';
-import { welcomeCopy } from '../ui/task-view';
 import { type WorkspaceController } from '../ui/workspace-controller';
 import { lazy, Show } from 'solid-js';
-import { displayTaskName } from '../../../../packages/protocol/src/task-brief';
-import { APP_VERSION } from '../../../../packages/protocol/src/index';
+import { TooltipButton } from '../components/TooltipButton';
 import { Icon, Mark } from '../icons';
 import { DebugConsole } from '../DebugConsole';
-import { WorkspaceTabRow } from '../controls';
+import { MenuButton, WorkspaceTabRow } from '../controls';
 import { tabId } from '../../../../packages/ui/src/tab-row';
 import { TaskView } from './TaskView';
+import { SetupPanel } from './SetupPanel';
+import { connectionHelp } from '../ui/connection-help';
+import { ConnectionAction } from './ConnectionGuide';
+import { ProjectHome } from './ProjectHome';
 
 const TerminalDock = lazy(() =>
   import('../TerminalDock').then((module) => ({
@@ -26,7 +29,6 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
     connectionError,
     selected,
     success,
-    info,
     setNotice,
     setModal,
     terminalOpen,
@@ -47,7 +49,7 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
   } = props.controller;
   const { chooseProject, choose, openLibrary, closeTabs, menuItems, projectTabs, taskTabs, activeCount } =
     tabs;
-  const welcome = () => welcomeCopy(project(), projectWorkers().length, snapshot().projects.length);
+  const canExpand = typeof location !== 'undefined' && location.pathname !== '/workspace.html';
 
   const projectPanelLabel = () => {
     const currentProject = project();
@@ -96,171 +98,203 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
     return 'Open a project to add a task';
   };
 
-  const savedEntryCount = () => {
-    if (project()) {
-      return projectWorkers().length;
-    }
-
-    return snapshot().projects.length;
-  };
-
-  const browseSavedEntries = () => {
-    if (project()) {
-      openLibrary('tasks');
-      return;
-    }
-
-    openLibrary('projects');
-  };
-
   return (
     <div class="app-shell">
+      <a class="skip-link" href="#mitter-task-view">
+        Skip to workspace
+      </a>
       <header class="titlebar">
         <span class="app-name">
           <Mark size={23} />
           Miter
         </span>
-        <span class="window-caption">Local project runner</span>
         <div class="spacer" />
-        <button
-          class="icon-button history-button"
-          title="Recently closed tabs"
-          aria-label="History"
-          onClick={() => openLibrary('history', '')}
-        >
-          <Icon name="history" size={16} />
-        </button>
+        <Show when={navigation().recentlyClosed.length > 0}>
+          <TooltipButton
+            class="icon-button history-button"
+            icon="history"
+            label="Recently closed tabs"
+            onClick={() => openLibrary('history', '')}
+          />
+        </Show>
         <button
           classList={{
             connection: true,
             online: connected(),
             'health-button': true,
           }}
-          title="Connection, diagnostics and state backups"
-          aria-label="Connection and health"
+          title="Setup &amp; connection"
+          aria-haspopup="dialog"
           onClick={() => setModal('health')}
         >
-          <i />
-          <Show when={connected()} fallback={'Disconnected'}>
-            {'Local ready'}
+          <Show
+            when={connected()}
+            fallback={
+              <Show when={connectionError()} fallback="Connecting…">
+                Disconnected
+              </Show>
+            }
+          >
+            Helper connected
           </Show>
         </button>
-        <button
-          class="icon-button"
-          aria-label="Open full workspace"
-          title="Open full workspace"
-          onClick={() =>
-            chrome.tabs.create({
-              url: chrome.runtime.getURL('/workspace.html'),
-            })
-          }
-        >
-          <Icon name="expand" size={15} />
-        </button>
-      </header>
-      <div class="shell-body">
-        <div class="main-shell">
-          <WorkspaceTabRow
-            kind="project"
-            items={projectTabs()}
-            selected={navigation().projectId}
-            addDisabled={!connected()}
-            canAdd={true}
-            addLabel="New project"
-            onSelect={chooseProject}
-            onAdd={() => setModal('project')}
-            onClose={(id) =>
-              void closeTabs({
-                type: 'close',
-                kind: 'project',
-                id,
+        <Show when={canExpand}>
+          <button
+            class="workspace-open"
+            aria-label="Open full workspace"
+            title="Open full workspace"
+            onClick={() =>
+              chrome.tabs.create({
+                url: chrome.runtime.getURL('/workspace.html'),
               })
             }
-            onList={() => openLibrary('projects', '')}
-            listLabel="All projects"
-            menuItems={(id) => menuItems('project', id)}
-          />
+          >
+            <Icon name="external" />
+            Workspace
+          </button>
+        </Show>
+      </header>
+      <div class="shell-body">
+        <main class="main-shell" aria-label="Workspace">
+          <Show when={projectTabs().length > 0}>
+            <div class="project-navigation">
+              <div class="project-tabs">
+                <WorkspaceTabRow
+                  kind="project"
+                  items={projectTabs()}
+                  selected={navigation().projectId}
+                  addDisabled={!connected()}
+                  canAdd={true}
+                  addLabel="New project"
+                  onSelect={chooseProject}
+                  onAdd={() => setModal('project-create')}
+                  onClose={(id) =>
+                    void closeTabs({
+                      type: 'close',
+                      kind: 'project',
+                      id,
+                    })
+                  }
+                  onList={() => openLibrary('projects', '')}
+                  listLabel="All projects"
+                  menuItems={(id) => menuItems('project', id)}
+                />
+              </div>
+              <div class="project-switcher">
+                <button
+                  class="project-switcher-current"
+                  aria-label={'Switch project: ' + (project()?.name || 'Projects')}
+                  onClick={() => openLibrary('projects', '')}
+                >
+                  <Icon name="folder" />
+                  <span>{project()?.name || 'Projects'}</span>
+                  <Icon name="down" />
+                </button>
+                <TooltipButton
+                  class="icon-button"
+                  label="New project"
+                  icon="plus"
+                  disabled={!connected()}
+                  onClick={() => setModal('project-create')}
+                />
+              </div>
+              <Show when={project()}>
+                {(projectEntry) => <ProjectToolbar controller={props.controller} project={projectEntry()} />}
+              </Show>
+            </div>
+          </Show>
           <div
             id="mitter-project-view"
             role={panelRole(!!project())}
             aria-labelledby={projectPanelLabel()}
             class="project-view"
           >
-            <WorkspaceTabRow
-              kind="task"
-              items={taskTabs()}
-              selected={selected()}
-              addDisabled={!connected()}
-              canAdd={!!project()}
-              addLabel={newTaskLabel()}
-              onSelect={choose}
-              onAdd={newWorker}
-              onClose={(id) =>
-                void closeTabs({
-                  type: 'close',
-                  kind: 'task',
-                  id,
-                })
-              }
-              onList={() => openLibrary('tasks')}
-              listLabel="All project tasks"
-              menuItems={(id) => menuItems('task', id)}
-            />
-            <Show when={!connected()}>
-              <div class="connection-banner">
-                <span>{connectionError() || 'Connecting to the local host…'}</span>
-                <button onClick={() => client.reconnect()}>Reconnect</button>
-              </div>
+            <Show when={taskTabs().length > 0}>
+              <WorkspaceTabRow
+                kind="task"
+                items={taskTabs()}
+                selected={selected()}
+                addDisabled={!connected()}
+                canAdd={!!project()}
+                addLabel={newTaskLabel()}
+                onSelect={choose}
+                onAdd={newWorker}
+                onClose={(id) =>
+                  void closeTabs({
+                    type: 'close',
+                    kind: 'task',
+                    id,
+                  })
+                }
+                onList={() => openLibrary('tasks')}
+                listLabel="All project tasks"
+                menuItems={(id) => menuItems('task', id)}
+              />
             </Show>
-            <Show when={project()}>
-              {(projectEntry) => <ProjectToolbar controller={props.controller} project={projectEntry()} />}
+            <Show when={!connected() && snapshot().projects.length > 0}>
+              <div class="connection-banner">
+                <span role="status">{connectionHelp(connectionError()).title}</span>
+                <ConnectionAction
+                  error={connectionError()}
+                  reconnect={() => client.reconnect()}
+                  reload={reloadWorkspace}
+                />
+                <button onClick={() => setModal('health')}>Setup help</button>
+              </div>
             </Show>
             <div
               id="mitter-task-view"
               role={panelRole(!!worker())}
               aria-labelledby={taskPanelLabel()}
               class="task-view"
+              tabindex="-1"
             >
               <Show
                 when={worker()}
                 fallback={
-                  <div class="welcome">
-                    <Icon name="folder" size={36} />
-                    <h1>{welcome().title}</h1>
-                    <p>{welcome().text}</p>
-                    <div class="button-row">
-                      <Show when={savedEntryCount()}>
-                        <button onClick={browseSavedEntries}>
-                          <Show when={project()} fallback={'Browse projects'}>
-                            {'Browse tasks'}
-                          </Show>
-                        </button>
-                      </Show>
-                      <Show
-                        when={project()}
-                        fallback={
-                          <button class="primary" onClick={() => setModal('project')} disabled={!connected()}>
-                            Choose Folder…
-                          </button>
-                        }
-                      >
-                        <button class="primary" onClick={() => newWorker()} disabled={!connected()}>
-                          New task
-                        </button>
-                      </Show>
-                    </div>
-                  </div>
+                  <Show
+                    when={snapshot().projects.length > 0}
+                    fallback={
+                      <SetupPanel
+                        connected={connected()}
+                        error={connectionError()}
+                        rpc={rpc}
+                        reconnect={() => client.reconnect()}
+                        reload={reloadWorkspace}
+                        openProject={() => setModal('project')}
+                        createProject={() => setModal('project-create')}
+                        newTask={newWorker}
+                      />
+                    }
+                  >
+                    <ProjectHome
+                      project={project()}
+                      projects={snapshot().projects}
+                      tasks={projectWorkers()}
+                      connected={connected()}
+                      createProject={() => setModal('project-create')}
+                      openProject={() => setModal('project')}
+                      newTask={newWorker}
+                      chooseProject={chooseProject}
+                      chooseTask={choose}
+                      browseProjects={() => openLibrary('projects')}
+                      browseTasks={() => openLibrary('tasks')}
+                    />
+                  </Show>
                 }
               >
                 {(task) => <TaskView controller={props.controller} task={task()} />}
               </Show>
             </div>
           </div>
-        </div>
+        </main>
       </div>
       <Show when={terminalMounted()}>
         <TerminalDock
           visible={terminalOpen()}
+          rpc={rpc}
+          runFocus={props.controller.runFocus()}
+          setupFocus={props.controller.setupFocus()}
           projectId={navigation().projectId}
           {...terminalScope()}
           projectName={project()?.name || ''}
@@ -275,21 +309,11 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
               .then(() => success('Console cleared.'))
               .catch((event) => setNotice(errorMessage(event)))
           }
-          close={() => {
-            setDebugOpen(false);
-            info('Console closed.');
-          }}
+          close={() => setDebugOpen(false)}
           copy={copy}
         />
       </Show>
       <footer class="statusbar">
-        <span>Miter {APP_VERSION}</span>
-        <span class="footer-state">
-          <Show when={worker()} fallback={'Ready'}>
-            {(currentWorker) => displayTaskName(currentWorker())}
-          </Show>
-        </span>
-        <div class="spacer" />
         <Show when={activeCount()}>
           <button
             title="View working tasks, including closed tabs"
@@ -298,27 +322,40 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
             {activeCount()} working
           </button>
         </Show>
-        <button onClick={toggleTerminal} aria-pressed={terminalOpen()} title="Local shell · Ctrl+Shift+`">
-          Terminal
-        </button>
+        <Show when={project() || terminalOpen()}>
+          <button
+            onClick={toggleTerminal}
+            aria-pressed={terminalOpen()}
+            title="App runs and shells · Ctrl+Shift+`"
+          >
+            <Icon name="terminal" />
+            Terminal
+          </button>
+        </Show>
+        <div class="spacer" />
+        <MenuButton
+          label="Help"
+          items={[
+            { id: 'setup', label: 'Setup & connection', run: () => setModal('health') },
+            {
+              id: 'diagnostics',
+              label: 'Diagnostics',
+              run: () => {
+                setDebugOpen((value) => !value);
+                setTerminalOpen(false);
+              },
+            },
+          ]}
+        />
         <button
-          onClick={() => {
-            setDebugOpen((value) => !value);
-            setTerminalOpen(false);
-          }}
-          aria-pressed={debugOpen()}
-        >
-          <Icon name="terminal" size={13} />
-          Console<span class="shortcut">Ctrl + `</span>
-        </button>
-        <button
-          class="icon-button"
+          class="settings-button"
           aria-label="Settings"
           title="Settings"
           onClick={() => setModal('settings')}
           disabled={!connected()}
         >
-          <Icon name="settings" size={14} />
+          <Icon name="settings" />
+          Settings
         </button>
       </footer>
       {props.children}

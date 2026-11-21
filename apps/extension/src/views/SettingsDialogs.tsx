@@ -2,7 +2,7 @@ import type { WorkspaceController } from '../ui/workspace-controller';
 import { Show } from 'solid-js';
 import { ProfileForm, SettingsForm } from '../forms';
 import { ContextForm } from '../forms/ContextForm';
-import { NotificationsForm } from '../forms/NotificationsForm';
+import { NotificationsForm, NotificationsSettings } from '../forms/NotificationsForm';
 
 export function SettingsDialogs(props: { controller: WorkspaceController }) {
   const { snapshot, success, modal, setModal, notifications, project, rpc, playDing } = props.controller;
@@ -45,6 +45,14 @@ export function SettingsDialogs(props: { controller: WorkspaceController }) {
         <SettingsForm
           settings={snapshot().settings}
           close={close}
+          notifications={(closeNotifications) => (
+            <NotificationsSettings
+              rpc={rpc}
+              close={closeNotifications}
+              success={success}
+              playSound={playDing}
+            />
+          )}
           save={async (request) => {
             await rpc('settings.update', request);
             success('Settings saved.');

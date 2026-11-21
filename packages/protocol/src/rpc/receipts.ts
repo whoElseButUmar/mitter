@@ -11,6 +11,15 @@ export const projectContextSchema = z
   })
   .describe('The project context returned to the user and task prompts.');
 
+export const workerSetupDecisionResultSchema = z
+  .strictObject({
+    accepted: z.literal(true).describe('The native host accepted this decision.'),
+    sessionId: identifierSchema('terminal session ID')
+      .optional()
+      .describe('The terminal to show when the user chose manual entry.'),
+  })
+  .describe('Acknowledgement of one command decision. Its execution outcome follows in the task report.');
+
 export const historyResultSchema = z
   .strictObject({
     events: z

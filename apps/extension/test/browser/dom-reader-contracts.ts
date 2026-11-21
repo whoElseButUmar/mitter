@@ -6,6 +6,29 @@ export const DOM_READER_LATER_USER_TEXT = 'A later human message must remain vis
 export const domReaderScenarioNameSchema = z
   .enum([
     'mixed-generating',
+    'mixed-generating-modern-stop',
+    'roleless-resend-draft',
+    'roleless-composer-only',
+    'literal-fenced-roleless',
+    'literal-escaped-fence',
+    'literal-malformed-fence',
+    'roleless-code-unanchored-receipt',
+    'roleless-code-unanchored-duplicate',
+    'roleless-code-unanchored-human',
+    'roleless-code-unanchored-unknown',
+    'roleless-code-unanchored-edited',
+    'roleless-code-unanchored-quote',
+    'roleless-code-intervening-branch',
+    'recovery-roleless-literal',
+    'recovery-roleless-malformed',
+    'recovery-duplicate-send',
+    'recovery-duplicate-known',
+    'recovery-duplicate-known-malformed',
+    'recovery-duplicate-known-conflicting',
+    'recovery-duplicate-intervention',
+    'recovery-duplicate-later-branch',
+    'recovery-hidden-response',
+    'recovery-extra-response-text',
     'mixed-generating-correlated',
     'complete-roleless',
     'complete-roleless-copy-code',
@@ -55,7 +78,7 @@ export const domReaderPlanSchema = z
     generating: z.boolean().describe('Show the supported composer Stop button instead of Send.'),
     padding: z.number().int().min(0).max(24001).describe('Empty elements used to reach the DOM scan limit.'),
     frameText: z.string().max(160000).describe('An exact receipt decoy in an opaque iframe, or empty.'),
-    draft: z.string().max(100).describe('An existing composer draft that read operations must preserve.'),
+    draft: z.string().max(160000).describe('An existing composer draft that read operations must preserve.'),
   })
   .describe('Bounded synthetic DOM input fulfilled entirely offline in a disposable Chrome profile.');
 
@@ -88,6 +111,22 @@ export const domReaderObservationSchema = z
     lastUserId: idSchema.describe('Identity of the latest visible recognized user turn.'),
     userIds: z.array(idSchema).max(256).describe('Retained recognized user IDs in transcript order.'),
     busy: z.boolean().describe('The real supported generation control was detected.'),
+    draft: z.boolean().describe('The page reader detects an unsent composer draft.'),
+    recoveryKind: z
+      .enum(['unreadable_reply', 'duplicate_send'])
+      .nullable()
+      .describe('Correction-only evidence, absent when the boundary is uncertain.'),
+    recoveryExact: z.boolean().describe('Recovery text preserves the complete synthetic response bytes.'),
+    recoveryUserExact: z.boolean().describe('Recovery evidence contains the exact latest sent body.'),
+    recoveryExchangeMatched: z.boolean().describe('Recovery evidence names the requested saved exchange.'),
+    recoveryConflictPreserved: z
+      .boolean()
+      .describe('Both distinct payloads remain in the diagnostic carrier, without selecting either.'),
+    literalPayloadExact: z
+      .boolean()
+      .describe(
+        'A literal fenced candidate parses to the expected full object with identical source strings.',
+      ),
     complete: z.boolean().describe('The bridge classified a non-streaming assistant response as complete.'),
     stopped: z.boolean().describe('The owned automation session is stopped.'),
     ready: z.boolean().describe('The real composer was found.'),

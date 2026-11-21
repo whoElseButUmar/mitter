@@ -1,3 +1,4 @@
+import { reloadWorkspace } from './workspace-reload';
 import { requireElement } from './ui/dom';
 import { createSignal, createEffect, onMount, onCleanup, Show, type JSX } from 'solid-js';
 import { Modal } from './components';
@@ -5,6 +6,7 @@ import { connectResetView } from './data-view';
 import { mountResetForm } from '../../../packages/ui/src/reset-form';
 import type { DataResetState } from '../../../packages/bridge/src/data-reset';
 import './style.css';
+import { ConnectionGuide } from './views/ConnectionGuide';
 
 function ResetForm(props: {
   state: DataResetState;
@@ -100,12 +102,11 @@ export function ResetBoundary(props: { app: () => JSX.Element }) {
       <Show when={!ready()}>
         <main class="reset-locked">
           <h1>Miter</h1>
-          <p role="status">{connectionError() || 'Connecting to the local coordinator…'}</p>
-          <Show when={connectionError()}>
-            <button type="button" onClick={() => location.reload()}>
-              Reload Miter
-            </button>
-          </Show>
+          <ConnectionGuide
+            error={connectionError()}
+            reconnect={() => location.reload()}
+            reload={reloadWorkspace}
+          />
         </main>
       </Show>
       <Show when={ready() && !locked()}>{props.app()}</Show>

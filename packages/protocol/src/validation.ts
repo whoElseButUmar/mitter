@@ -68,6 +68,15 @@ export function correctionAdvice(issue: ReplyIssue): string {
     field: issue.field,
   })}\n${where}: ${issue.message}`;
 
+  if (issue.code === 'EXCLUDED_PATH') {
+    return (
+      header +
+      '\nOmit the excluded path. For installed dependencies, use the project package.json, lockfile ' +
+      'and recorded setup result. Continue with project source files. Do not repeat a successful ' +
+      'install or use another command to access the excluded path. No actions from this batch ran.'
+    );
+  }
+
   if (
     [
       'INVALID_BASE',

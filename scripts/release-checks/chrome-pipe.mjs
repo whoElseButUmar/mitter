@@ -1,8 +1,26 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
+import { z } from 'zod';
 import { protocolMessageSchema, protocolRequestSchema } from './chrome-schemas.mjs';
 import { parseJsonContract } from '../helpers/runtime.mjs';
+
+const previewOriginsSchema = z
+  .array(
+    z
+      .url({ protocol: /^http$/, hostname: /^miter-[a-f0-9]{32}\.localhost$/ })
+      .refine((value) => new URL(value).origin === value && new URL(value).port !== '')
+      .describe('One exact temporary Miter preview origin, including its loopback server port.'),
+  )
+  .max(4)
+  .describe('The only local HTTP origins reachable by this private preview regression browser.');
+
+export function previewNetworkArguments(origins = []) {
+  const allowed = previewOriginsSchema.parse(origins).map((origin) => new URL(origin));
+  const bypass = ['<-loopback>', ...allowed.map((url) => url.host)];
+  const resolvers = [...allowed.map((url) => 'MAP ' + url.hostname + ' 127.0.0.1'), 'MAP * ~NOTFOUND'];
+  return ['--proxy-bypass-list=' + bypass.join(';'), '--host-resolver-rules=' + resolvers.join(', ')];
+}
 
 export function browserEnvironment(directory, inherited = process.env) {
   const env = {};
@@ -32,8 +50,9 @@ export function browserEnvironment(directory, inherited = process.env) {
 
 /** Owns one isolated Chrome process and its private, NUL-delimited DevTools pipe. */
 export class ChromePipe {
-  constructor(executable, directory, log, signal) {
+  constructor(executable, directory, log, signal, previewOrigins = []) {
     signal.throwIfAborted();
+    const networkArguments = previewNetworkArguments(previewOrigins);
     this.signal = signal;
     this.pending = new Map();
     this.events = [];
@@ -56,8 +75,7 @@ export class ChromePipe {
         '--use-mock-keychain',
         '--password-store=basic',
         '--proxy-server=http://127.0.0.1:9',
-        '--proxy-bypass-list=<-loopback>',
-        '--host-resolver-rules=MAP * ~NOTFOUND',
+        ...networkArguments,
         '--user-data-dir=' + directory + '/profile',
         'about:blank',
       ],

@@ -40,19 +40,37 @@ function mergeActivity(currentEvents: Activity[], incomingEvents: Activity[]): A
 export class TaskOutput {
   private readonly filesState = createSignal<ChangedFile[]>([]);
   private readonly fileState = createSignal('');
+  private readonly previewRequestState = createSignal(0);
   private readonly viewState = createSignal<OutputView>('result');
+  // Native <details> toggles before its toggle event syncs this signal. An
+  // explicit file/history action must reassert open even in that interval.
+  private readonly expandedState = createSignal(false, { equals: false });
   private readonly libraryState = createSignal<FileListing | undefined>();
   private readonly savedActivity = createSignal<Activity[]>([]);
   private readonly moreState = createSignal(false);
   private readonly busyState = createSignal(false);
+  private readonly browsingState = createSignal(false);
+  private readonly filesLoadingState = createSignal(false);
+  private readonly filesErrorState = createSignal('');
+  private readonly historyErrorState = createSignal('');
 
   readonly files = this.filesState[0];
   readonly file = this.fileState[0];
+  readonly previewRequest = this.previewRequestState[0];
   readonly view = this.viewState[0];
-  readonly setView = this.viewState[1];
+  readonly expanded = this.expandedState[0];
+  readonly setExpanded = this.expandedState[1];
+  readonly setView = (view: OutputView): void => {
+    this.viewState[1](view);
+    this.setExpanded(true);
+  };
   readonly fileLibrary = this.libraryState[0];
   readonly historyMore = this.moreState[0];
   readonly historyBusy = this.busyState[0];
+  readonly browsing = this.browsingState[0];
+  readonly filesLoading = this.filesLoadingState[0];
+  readonly filesError = this.filesErrorState[0];
+  readonly historyError = this.historyErrorState[0];
   readonly activity: Accessor<Activity[]>;
 
   private alive = true;
@@ -65,6 +83,33 @@ export class TaskOutput {
   private historyBefore: number | null = null;
 
   constructor(private dependencies: TaskOutputDependencies) {
+    const browseScope = createMemo(() => {
+      const task = dependencies.worker();
+      const project = dependencies.project();
+      return JSON.stringify([
+        dependencies.selected(),
+        task?.id,
+        task?.projectId,
+        task?.runId,
+        task?.control?.epoch ?? 0,
+        task?.worktree?.root,
+        project?.id,
+        project?.root,
+        dependencies.connected(),
+      ]);
+    });
+    let previousBrowseScope = '';
+    createEffect(() => {
+      const scope = browseScope();
+      dependencies.modal();
+      this.browserGeneration++;
+      this.browsingState[1](false);
+      if (scope !== previousBrowseScope) {
+        previousBrowseScope = scope;
+        this.libraryState[1](undefined);
+      }
+    });
+
     let readActivity: Accessor<Activity[]> | undefined = createMemo(() => {
       const id = dependencies.selected();
       const events = mergeActivity(dependencies.snapshot().events, this.savedActivity[0]());
@@ -90,6 +135,7 @@ export class TaskOutput {
         this.historyGeneration++;
         this.historyTask = '';
         this.busyState[1](false);
+        this.historyErrorState[1]('');
         return;
       }
 
@@ -98,19 +144,38 @@ export class TaskOutput {
       }
     });
 
+    let previousFilesScope = '';
     createEffect(() => {
       const task = dependencies.worker();
       const connected = dependencies.connected();
+      const scope = browseScope();
+
+      if (scope !== previousFilesScope) {
+        previousFilesScope = scope;
+        this.scopeGeneration++;
+        this.filesState[1]([]);
+        this.fileState[1]('');
+      }
 
       if (!task || !connected) {
         this.filesGeneration++;
         this.filesKey = '';
         this.filesState[1]([]);
         this.fileState[1]('');
+        this.filesLoadingState[1](false);
+        this.filesErrorState[1]('');
         return;
       }
 
-      const key = task.id + ':' + task.state + ':' + (dependencies.project()?.revision || 0);
+      const key = JSON.stringify([
+        task.id,
+        task.runId,
+        task.control?.epoch ?? 0,
+        task.worktree?.root,
+        task.state,
+        dependencies.project()?.root,
+        dependencies.project()?.revision ?? 0,
+      ]);
 
       if (key !== this.filesKey) {
         this.filesKey = key;
@@ -130,10 +195,15 @@ export class TaskOutput {
       batch(() => {
         this.filesState[1]([]);
         this.fileState[1]('');
+        this.previewRequestState[1]((request) => request + 1);
         this.libraryState[1](undefined);
         this.savedActivity[1]([]);
         this.moreState[1](false);
         this.busyState[1](false);
+        this.browsingState[1](false);
+        this.filesLoadingState[1](false);
+        this.filesErrorState[1]('');
+        this.historyErrorState[1]('');
       });
     });
   }
@@ -150,16 +220,22 @@ export class TaskOutput {
     batch(() => {
       this.filesState[1]([]);
       this.fileState[1]('');
+      this.previewRequestState[1]((request) => request + 1);
       this.libraryState[1](undefined);
 
       if (this.dependencies.modal() === 'files') {
         this.dependencies.setModal('');
       }
 
-      this.setView('result');
+      this.viewState[1]('result');
+      this.setExpanded(false);
       this.savedActivity[1]([]);
       this.moreState[1](false);
       this.busyState[1](false);
+      this.browsingState[1](false);
+      this.filesLoadingState[1](false);
+      this.filesErrorState[1]('');
+      this.historyErrorState[1]('');
     });
   }
 
@@ -168,8 +244,11 @@ export class TaskOutput {
       return;
     }
 
-    this.fileState[1](path);
-    this.setView('result');
+    batch(() => {
+      this.fileState[1](path);
+      this.setView('result');
+      this.previewRequestState[1]((request) => request + 1);
+    });
   };
 
   loadHistory = async (reset = false): Promise<void> => {
@@ -185,6 +264,7 @@ export class TaskOutput {
 
     const generation = ++this.historyGeneration;
     this.busyState[1](true);
+    this.historyErrorState[1]('');
 
     try {
       const params: Record<string, unknown> = { workerId: id };
@@ -212,7 +292,7 @@ export class TaskOutput {
           this.historyTask = '';
         }
 
-        this.dependencies.notice(errorMessage(error));
+        this.historyErrorState[1](errorMessage(error));
       }
     } finally {
       if (this.alive && generation === this.historyGeneration) {
@@ -221,8 +301,23 @@ export class TaskOutput {
     }
   };
 
+  retryHistory = async (): Promise<void> => {
+    if (!this.historyBusy()) {
+      await this.loadHistory(this.historyTask !== this.dependencies.selected());
+    }
+  };
+
+  retryFiles = async (): Promise<void> => {
+    const id = this.dependencies.selected();
+    if (this.alive && id && this.dependencies.connected() && !this.filesLoading()) {
+      await this.refreshFiles(id);
+    }
+  };
+
   private async refreshFiles(id: string): Promise<void> {
     const generation = ++this.filesGeneration;
+    this.filesLoadingState[1](true);
+    this.filesErrorState[1]('');
 
     try {
       const files = await callResult(this.dependencies.rpc, changedFileSchema.array(), 'worker.files', {
@@ -235,31 +330,51 @@ export class TaskOutput {
     } catch (error) {
       if (this.alive && generation === this.filesGeneration) {
         this.filesKey = '';
-        this.dependencies.notice(errorMessage(error));
+        this.filesErrorState[1](errorMessage(error));
+      }
+    } finally {
+      if (this.alive && generation === this.filesGeneration) {
+        this.filesLoadingState[1](false);
       }
     }
   }
 
   browseFiles = async (): Promise<void> => {
-    if (!this.alive) {
+    const id = this.dependencies.selected();
+    const task = this.dependencies.worker();
+    const project = this.dependencies.project();
+    if (
+      !this.alive ||
+      !this.dependencies.connected() ||
+      !id ||
+      this.browsing() ||
+      task?.id !== id ||
+      !project ||
+      task.projectId !== project.id
+    ) {
       return;
     }
 
-    const id = this.dependencies.selected();
     const generation = ++this.browserGeneration;
+    const isCurrent = () => this.alive && generation === this.browserGeneration;
+    this.browsingState[1](true);
 
     try {
       const result = await callResult(this.dependencies.rpc, fileListSchema, 'worker.browse', {
         workerId: id,
       });
 
-      if (this.alive && generation === this.browserGeneration && id === this.dependencies.selected()) {
+      if (isCurrent()) {
         this.libraryState[1]({ workerId: id, files: result.files });
         this.dependencies.setModal('files');
       }
     } catch (error) {
-      if (this.alive && generation === this.browserGeneration) {
+      if (isCurrent()) {
         this.dependencies.notice(errorMessage(error));
+      }
+    } finally {
+      if (isCurrent()) {
+        this.browsingState[1](false);
       }
     }
   };
@@ -293,7 +408,7 @@ export class TaskOutput {
         .create(fileWindowOptions(url))
         .then(() => {
           if (this.alive) {
-            this.dependencies.success('Opened file in a new window.');
+            this.dependencies.success('Opened file preview.');
           }
         })
         .catch((error) => {
@@ -319,7 +434,7 @@ export class TaskOutput {
     return [
       {
         id: 'preview',
-        label: 'Open preview / source',
+        label: 'View file',
         run: () => {
           if (isCurrent()) {
             this.preview(path);
@@ -328,7 +443,7 @@ export class TaskOutput {
       },
       {
         id: 'window',
-        label: 'Open in new window',
+        label: 'Preview in new window',
         run: () => {
           if (isCurrent()) {
             this.openFileWindow(id, path);

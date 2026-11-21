@@ -62,6 +62,18 @@ const productionCheckSchema = z
   ])
   .describe('Build consistency check and actionable failure or source-only guidance.');
 
+const prerequisiteCheckSchema = z
+  .strictObject({
+    name: z
+      .enum(['node-runtime', 'automatic-app-checks', 'native-registration'])
+      .describe('The runtime, isolation or browser connection prerequisite inspected.'),
+    status: z
+      .enum(['passed', 'failed'])
+      .describe('Whether this prerequisite was found; no runtime code is executed.'),
+    detail: z.string().min(1).describe('Observed evidence and the next action, when needed.'),
+  })
+  .describe('Read-only prerequisite inspection, not a live host or sandbox execution check.');
+
 export const preparationArgumentsSchema = z
   .array(
     z
@@ -72,9 +84,11 @@ export const preparationArgumentsSchema = z
   .describe('Terminal preparation accepts one mode flag; absence means read-only inspection.');
 
 export const doctorArgumentsSchema = z
-  .array(z.literal('--json').describe('Print the schema-validated installation report as JSON.'))
-  .max(1)
-  .describe('The doctor CLI accepts at most one --json flag and no positional arguments.');
+  .array(z.enum(['--json', '--chromium']).describe('Print JSON or inspect the Chromium registration.'))
+  .refine((args) => {
+    return new Set(args).size === args.length;
+  })
+  .describe('The doctor CLI accepts no unknown or repeated flags.');
 
 export const installationReportSchema = z
   .strictObject({
@@ -88,7 +102,9 @@ export const installationReportSchema = z
     identity: extensionIdentitySchema,
     dependencies: z.array(dependencySchema).describe('Local dependency resolution results.'),
     assets: z.array(assetSchema).describe('Local build and installation asset presence.'),
-    checks: z.array(productionCheckSchema).describe('Production asset consistency checks.'),
+    checks: z
+      .array(z.union([productionCheckSchema, prerequisiteCheckSchema]))
+      .describe('Production assets, runtime and native registration checks.'),
     networkRequested: z.literal(false).describe('Diagnostics never request network access.'),
     projectFilesChanged: z.literal(false).describe('Diagnostics never modify project files.'),
     guidance: z.array(z.string().min(1)).describe('Read-only follow-up and privacy guidance.'),

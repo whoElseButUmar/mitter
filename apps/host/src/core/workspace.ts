@@ -1,9 +1,12 @@
 export { digest } from './edit-plan.js';
 export {
+  DirectoryReadError,
+  ExcludedPathError,
   validateRelative,
   canonicalRoot,
   overlaps,
   safePath,
+  isMissingProjectPath,
   fileText,
   existing,
   listFiles,

@@ -2,8 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ViewConnections } from '../../src/background/view-connections.ts';
 import { chromeEvent, mockPort, deferred, settle } from './chrome-mock.mjs';
+import { APP_VERSION } from '../../../../packages/protocol/src/index.ts';
 
-function setup(context) {
+function connectView(connected, port) {
+  connected.emit(port);
+
+  if (port.name === 'mitter-ui' && port.onMessage.size > 0) {
+    assert.equal(port.messages.shift().connected, false);
+    port.onMessage.emit({ type: 'hello', id: 'version-check', version: APP_VERSION });
+    assert.deepEqual(port.messages.shift(), { type: 'hello', id: 'version-check', version: APP_VERSION });
+  }
+}
+
+function setup(context, { connect = () => {}, initialMessages = () => [] } = {}) {
   const connected = chromeEvent();
   globalThis.chrome = {
     runtime: {
@@ -28,12 +39,12 @@ function setup(context) {
   const views = new ViewConnections({
     reset: () => reset,
     rpc: async () => {},
-    connect: () => {},
+    connect,
     request(method, params) {
       requests.push({ method, params });
       return job.promise;
     },
-    initialMessages: () => [],
+    initialMessages,
     log: () => {},
   });
   views.start();
@@ -65,7 +76,7 @@ for (const kind of ['ui', 'reset', 'terminal', 'file']) {
   test(`${kind} view disposal detaches owned listeners even when local disconnect emits no event`, async (context) => {
     const { views, connected } = setup(context);
     const port = viewPort(kind);
-    connected.emit(port);
+    connectView(connected, port);
     await settle();
     port.disconnect = () => {
       port.disconnects++;
@@ -107,7 +118,7 @@ test('a rejected auxiliary sender is not retained when local disconnect emits no
   port.disconnect = () => {
     port.disconnects++;
   };
-  connected.emit(port);
+  connectView(connected, port);
   assert.equal(port.disconnects, 1);
   assert.equal(port.onMessage.size, 0);
   assert.equal(port.onDisconnect.size, 0);
@@ -125,7 +136,7 @@ test('UI ports authenticate documents; ping is exact and cannot invoke task work
   connected.emit(nested);
   assert.equal(nested.disconnects, 1);
   const port = mockPort('mitter-ui');
-  connected.emit(port);
+  connectView(connected, port);
   port.onMessage.emit({ type: 'ping', id: 'exact-nonce' });
   assert.deepEqual(port.messages, [{ type: 'pong', id: 'exact-nonce' }]);
   assert.equal(requests.length, 0);
@@ -133,11 +144,79 @@ test('UI ports authenticate documents; ping is exact and cannot invoke task work
   assert.equal(requests.length, 0);
 });
 
+test('UI requests and host connects wait for a matching view version on each port', async (context) => {
+  let connections = 0;
+  const initial = { event: 'debug', data: [] };
+  const { connected, views, requests, job } = setup(context, {
+    connect: () => {
+      connections++;
+    },
+    initialMessages: () => [initial],
+  });
+  const port = viewPort('ui');
+  connected.emit(port);
+  views.broadcast(initial);
+  assert.equal(port.messages.length, 1);
+  assert.equal(port.messages[0].event, 'connection');
+  assert.equal(port.messages[0].connected, false);
+  assert.match(port.messages[0].error, /Reload on Miter/);
+  port.onMessage.emit({ id: 'too-early', method: 'worker.run', params: { workerId: 'worker' } });
+  assert.equal(requests.length, 0);
+  assert.equal(connections, 0);
+  assert.match(port.messages.at(-1).error, /version.*Reload on Miter.*No operation was sent/);
+  port.onMessage.emit({ type: 'reconnect' });
+  assert.equal(connections, 0);
+  port.onMessage.emit({ type: 'hello', id: 'exact-id', version: 'older-view' });
+  assert.deepEqual(port.messages.at(-2), { type: 'hello', id: 'exact-id', version: APP_VERSION });
+  assert.equal(port.messages.at(-1).connected, false);
+  assert.equal(connections, 0);
+  port.onMessage.emit({ type: 'hello', id: 'matching', version: APP_VERSION });
+  assert.deepEqual(port.messages.at(-2), { type: 'hello', id: 'matching', version: APP_VERSION });
+  assert.deepEqual(port.messages.at(-1), initial);
+  assert.equal(connections, 1);
+  port.onMessage.emit({ type: 'reconnect' });
+  assert.equal(connections, 2);
+  port.onMessage.emit({ id: 'run', method: 'worker.run', params: { workerId: 'worker' } });
+  assert.equal(requests.length, 1);
+  job.resolve({ started: true });
+  await views.settled();
+  await settle();
+  assert.deepEqual(port.messages.at(-1), { id: 'run', ok: true, result: { started: true } });
+
+  port.disconnect();
+  const replacement = viewPort('ui');
+  connected.emit(replacement);
+  replacement.onMessage.emit({ id: 'no-handshake', method: 'worker.run', params: { workerId: 'worker' } });
+  assert.equal(requests.length, 1);
+  assert.equal(replacement.messages.at(-1).ok, false);
+});
+
+test('UI matching handshake reports native connection failure and permits an ordinary reconnect', (context) => {
+  let failing = true;
+  const { connected } = setup(context, {
+    connect: () => {
+      if (failing) {
+        throw new Error('Native helper unavailable');
+      }
+    },
+  });
+  const port = viewPort('ui');
+  connected.emit(port);
+  port.onMessage.emit({ type: 'hello', id: 'hello', version: APP_VERSION });
+  assert.deepEqual(port.messages.at(-1), {
+    event: 'connection',
+    connected: false,
+    error: 'Native helper unavailable',
+  });
+  failing = false;
+  assert.doesNotThrow(() => port.onMessage.emit({ type: 'reconnect' }));
+});
+
 test('null or malformed view envelopes and reset confirmations have no receiver-side effects', async (context) => {
   const { connected, requests, clears } = setup(context);
   const view = mockPort('mitter-ui');
   const reset = mockPort('miter-data-view');
-  connected.emit(view);
+  connectView(connected, view);
   connected.emit(reset);
   await settle();
 
@@ -163,7 +242,7 @@ test('null or malformed view envelopes and reset confirmations have no receiver-
 test('known malformed and native-only UI methods fail before task dependencies can run', async (context) => {
   const { connected, requests } = setup(context);
   const port = mockPort('mitter-ui');
-  connected.emit(port);
+  connectView(connected, port);
   const rejected = [
     ['worker.run', {}],
     ['worker.import', { workerId: 'worker', text: null }],
@@ -184,7 +263,7 @@ test('known malformed and native-only UI methods fail before task dependencies c
 test('malformed known UI acknowledgements cannot be published as success or trigger replay', async (context) => {
   const { views, connected, job, requests } = setup(context);
   const port = mockPort('mitter-ui');
-  connected.emit(port);
+  connectView(connected, port);
   const message = { id: 'run', method: 'worker.run', params: { workerId: 'worker' } };
   port.onMessage.emit(message);
   port.onMessage.emit(message);
@@ -202,7 +281,7 @@ test('malformed known UI acknowledgements cannot be published as success or trig
 test('UI duplicate in-flight requests do not replay mutations and disposal removes listeners', async (context) => {
   const { views, connected, job, requests } = setup(context);
   const port = mockPort('mitter-ui');
-  connected.emit(port);
+  connectView(connected, port);
   const message = { id: 'run', method: 'worker.run', params: { workerId: 'worker' } };
   port.onMessage.emit(message);
   port.onMessage.emit(message);

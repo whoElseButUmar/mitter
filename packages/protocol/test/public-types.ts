@@ -61,6 +61,12 @@ type LegacyAction =
   | { type: 'finish'; summary: string }
   | { type: 'ask'; question: string };
 
+type SkillAction = {
+  type: 'skill';
+  name: 'caveman' | 'no-ai-slop' | 'ponytail' | 'app-design' | 'engineering-quality';
+  asset?: 'foundation.css' | 'components.mjs' | undefined;
+};
+
 type LegacyEnvelope = {
   protocol: 'mitter/1';
   id: string;
@@ -88,6 +94,7 @@ type LegacyWorker = {
   maxIterations: number;
   maxMinutes: number;
   startedAt: number;
+  setupWaitMs?: number | undefined;
   pending?: Approval | undefined;
   approvedFingerprint?: string | undefined;
   autoCommands: boolean;
@@ -107,11 +114,18 @@ const callbackEnvelope = parseEnvelopeWith('{}', (value) => ({
   observed: value,
 }));
 
-/** Compile-only assertions: unchanged caller-facing shapes and inferred callback results. */
+type PreviewFinish = Extract<LegacyAction, { type: 'finish' }> & { openPreview?: true | undefined };
+type CurrentActions =
+  | Exclude<LegacyAction, { type: 'finish' }>
+  | { [Key in keyof PreviewFinish]: PreviewFinish[Key] }
+  | SkillAction
+  | { type: 'setupCommand'; command: string[]; purpose: string; effects: string };
+
+/** Compile-only assertions cover the read-only skill action and the optional framework launch. */
 export type PublicTypeChecks = [
   Assert<Equal<RpcResult<typeof coreRpcRegistry, 'worker.read'>, FileText>>,
   Assert<Equal<RpcParams<typeof coreRpcRegistry, 'project.read'>['path'], string>>,
-  Assert<Equal<Action, LegacyAction>>,
+  Assert<Equal<Action, CurrentActions>>,
   Assert<Equal<Envelope, LegacyEnvelope>>,
   Assert<Equal<Worker, LegacyWorker>>,
   Assert<Equal<Action, z.infer<typeof actionSchema>>>,

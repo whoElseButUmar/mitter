@@ -1,11 +1,12 @@
 import { requireElement } from '../ui/dom';
-import { onMount, onCleanup } from 'solid-js';
+import { onMount, onCleanup, Show } from 'solid-js';
 import { Modal } from '../components';
 import { mountTaskSheet, type TaskSheetDependencies } from '../../../../packages/bridge/src/task-sheet';
 import type { TaskBoundary, Worker } from '../../../../packages/protocol/src/index';
 import { reviewedTaskBoundary } from '../ui/task-boundary';
 import type { ViewRPC } from '../ui/rpc';
 import { createChatStartCleanup } from '../ui/chat-start-cleanup';
+import { createReadiness } from '../ui/readiness';
 
 type WorkerFormProps = Omit<TaskSheetDependencies, 'create' | 'start'> & {
   rpc: ViewRPC;
@@ -90,6 +91,7 @@ export function createWorkerFormRequests(
 
 export function WorkerForm(props: WorkerFormProps) {
   const requests = createWorkerFormRequests(props);
+  const readiness = createReadiness(() => true, props.rpc);
   let root: HTMLDivElement | undefined;
   onMount(() => {
     const dispose = mountTaskSheet(requireElement(root, 'forms root'), { ...props, ...requests });
@@ -98,6 +100,18 @@ export function WorkerForm(props: WorkerFormProps) {
 
   return (
     <Modal title="New task" close={requests.close}>
+      <Show when={readiness.report()?.webChecks.status === 'unavailable'}>
+        <div class="setup-attention" role="status">
+          <strong>Web-app checks need setup</strong>
+          <p>{readiness.report()?.webChecks.detail}</p>
+          <p>{readiness.report()?.webChecks.hint}</p>
+        </div>
+      </Show>
+      <Show when={readiness.error()}>
+        <p class="muted small" role="status">
+          Local requirements could not be checked. Open Setup &amp; connection in Help.
+        </p>
+      </Show>
       <div
         ref={(element) => {
           root = element;

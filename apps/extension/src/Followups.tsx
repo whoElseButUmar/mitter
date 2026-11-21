@@ -6,6 +6,8 @@ import { mountFollowupComposer } from '../../../packages/ui/src/followup-compose
 import type { FollowupSummary } from '../../../packages/protocol/src/requests';
 import type { ChangeRequest } from './FileViewer';
 import { ContextArea } from './ContextArea';
+import { TooltipButton } from './components/TooltipButton';
+import { Icon } from './icons';
 
 export function FollowupPanel(props: {
   workerId: string;
@@ -62,14 +64,13 @@ export function FollowupPanel(props: {
   const pending = () => props.items.filter((followup) => ['queued', 'blocked'].includes(followup.status));
   return (
     <section class="followup-section" aria-label="Follow up on this task">
-      <div class="followup-topline">
-        <span>Continue this task</span>
-        <Show when={props.items.length}>
-          <button class="text-button" onClick={props.history}>
-            Follow-up history
+      <Show when={props.items.length}>
+        <div class="followup-topline">
+          <button class="text-button" aria-label="Follow-up history" onClick={props.history}>
+            History
           </button>
-        </Show>
-      </div>
+        </div>
+      </Show>
       <div
         ref={(element) => {
           root = element;
@@ -77,7 +78,8 @@ export function FollowupPanel(props: {
       />
       <Show when={pending().length}>
         <details class="followup-queue" open>
-          <summary>
+          <summary class="disclosure-summary">
+            <Icon name="down" />
             {pending().length} pending follow-up
             <Show when={pending().length === 1} fallback={'s'}>
               {''}
@@ -113,16 +115,14 @@ export function FollowupPanel(props: {
                 <div class="followup-row">
                   <span>{followup.instruction}</span>
                   <small>{followup.status}</small>
-                  <button
+                  <TooltipButton
                     class="icon-button"
-                    title="Remove queued request"
-                    aria-label="Remove queued request"
+                    icon="close"
+                    label="Remove queued request"
                     onClick={() =>
                       void props.cancel(followup.id).catch((event) => setError(errorMessage(event)))
                     }
-                  >
-                    ×
-                  </button>
+                  />
                 </div>
                 <Show when={followup.error}>
                   <p class="error">{followup.error}</p>

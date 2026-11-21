@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { FrameDecoder, encodeFrame } from './core/framing.js';
 import { parseRequest, EXTENSION_ORIGIN } from '../../../packages/protocol/src/index.js';
 import { errorMessage } from './core/types.js';
+import { startTerminalControl } from './core/terminal-control/server.js';
 const portable = process.argv.includes('--portable');
 const origin = process.argv.find((a) => a.startsWith('chrome-extension://'));
 
@@ -29,11 +30,84 @@ const runtime = await openRuntime({
   portable,
   dataDir,
 });
-let terminals = new TerminalManager(() => runtime.service.snapshot());
+function projectTerminals() {
+  const manager = new TerminalManager(() => runtime.service.snapshot());
+  runtime.service.startManualSetup = (options) => manager.startManualSetup(options);
+  return manager;
+}
+let terminals = projectTerminals();
 const decoder = new FrameDecoder();
 let closing = false;
 let resetGate = runtime.resetRequired;
 let resetBusy = false; // Backpressure-aware writes; stdout is reserved EXCLUSIVELY for native frames.
+let terminalControl: Awaited<ReturnType<typeof startTerminalControl>> | undefined;
+let terminalOpening: Promise<void> | undefined;
+let terminalClosing: Promise<void> | undefined;
+let terminalGeneration = 0;
+
+async function openTerminalControl() {
+  if (closing || resetGate) {
+    return;
+  }
+
+  const generation = terminalGeneration;
+  const opening = (async () => {
+    await terminalClosing;
+
+    if (closing || resetGate || generation !== terminalGeneration) {
+      return;
+    }
+
+    let opened: Awaited<ReturnType<typeof startTerminalControl>>;
+    try {
+      opened = await startTerminalControl({ dataDir: runtime.dataDir, service: runtime.service });
+    } catch (error) {
+      process.stderr.write('Terminal task control unavailable: ' + errorMessage(error) + '\n');
+      return;
+    }
+
+    if (closing || resetGate || generation !== terminalGeneration) {
+      await opened.close();
+      return;
+    }
+
+    terminalControl = opened;
+  })();
+  terminalOpening = opening;
+
+  try {
+    await opening;
+  } finally {
+    if (terminalOpening === opening) {
+      terminalOpening = undefined;
+    }
+  }
+}
+
+async function closeTerminalControl() {
+  terminalGeneration++;
+  const active = terminalControl;
+  terminalControl = undefined;
+  const shutdown = Promise.allSettled([terminalOpening, terminalClosing, active?.close()]).then((results) => {
+    const failures = results.filter((result) => result.status === 'rejected');
+
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures.map((failure) => failure.reason),
+        'Terminal control cleanup failed.',
+      );
+    }
+  });
+  terminalClosing = shutdown;
+
+  try {
+    await shutdown;
+  } finally {
+    if (terminalClosing === shutdown) {
+      terminalClosing = undefined;
+    }
+  }
+}
 const output = new OutputQueue(
   async (message) => {
     for (const part of nativeMessages(message, randomUUID())) {
@@ -152,6 +226,7 @@ process.stdin.on('data', (chunk: unknown) => {
         const selected = request;
         void (async () => {
           try {
+            await closeTerminalControl();
             if (selected.method === 'system.resetPrepare') {
               const result = await runtime.prepareReset(
                 selected.params.confirmation,
@@ -181,8 +256,9 @@ process.stdin.on('data', (chunk: unknown) => {
                 return;
               }
 
-              terminals = new TerminalManager(() => runtime.service.snapshot());
+              terminals = projectTerminals();
               resetGate = false;
+              await openTerminalControl();
               subscribe();
               send({
                 id: selected.id,
@@ -222,7 +298,23 @@ process.stdin.on('data', (chunk: unknown) => {
         }
 
         try {
-          if (TERMINAL_METHODS.has(request.method)) {
+          if (request.method === 'terminal.claim' || request.method === 'terminal.complete') {
+            const control = terminalControl;
+
+            if (!control) {
+              throw new Error('Terminal task control is unavailable. Check the native host diagnostics.');
+            }
+
+            let result;
+
+            if (request.method === 'terminal.claim') {
+              result = await control.claim(request.params);
+            } else {
+              result = await control.complete(request.params);
+            }
+
+            send({ id: request.id, ok: true, result });
+          } else if (TERMINAL_METHODS.has(request.method)) {
             const result = await terminals.dispatch(request.method, request.params);
             send({
               id: request.id,
@@ -268,6 +360,11 @@ async function close() {
   updateTimer = undefined;
 
   const failures: string[] = [];
+  try {
+    await closeTerminalControl();
+  } catch (error) {
+    failures.push('terminal task control: ' + errorMessage(error));
+  }
   const cleanupSteps = [
     { resource: 'terminals', release: () => terminals.close() },
     { resource: 'request queue', release: () => requests.close() },
@@ -323,6 +420,13 @@ process.stdin.on('end', () => {
 process.stdout.on('error', () => void close());
 process.on('SIGINT', () => void close());
 process.on('SIGTERM', () => void close());
+
+try {
+  await openTerminalControl();
+} catch (error) {
+  process.stderr.write('Terminal startup cleanup failed: ' + errorMessage(error) + '\n');
+  void close();
+}
 
 if (runtime.resetRequired) {
   send({

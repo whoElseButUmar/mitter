@@ -113,6 +113,37 @@ export async function verifyBuild(root) {
   }
 
   for (const filename of [
+    'skills/caveman/SKILL.md',
+    'skills/caveman/LICENSE',
+    'skills/no-ai-slop/SKILL.md',
+    'skills/no-ai-slop/eval.md',
+    'skills/no-ai-slop/LICENSE',
+    'skills/ponytail/SKILL.md',
+    'skills/ponytail/LICENSE',
+    'skills/NOTICE.md',
+  ]) {
+    let bundledAsset;
+    let sourceAsset;
+
+    try {
+      bundledAsset = await readFile(path.join(output, filename));
+      sourceAsset = await readFile(path.join(root, 'apps/extension/public', filename));
+    } catch (error) {
+      throw new Error('Missing or unreadable bundled skill asset: ' + filename + '. Run pnpm build.', {
+        cause: error,
+      });
+    }
+
+    if (bundledAsset.length === 0 || sourceAsset.length === 0) {
+      throw new Error('Empty bundled skill asset: ' + filename + '. Restore its source, then rebuild.');
+    }
+
+    if (!bundledAsset.equals(sourceAsset)) {
+      throw new Error('The packaged skill asset is stale: ' + filename + '. Run pnpm build.');
+    }
+  }
+
+  for (const filename of [
     'sidepanel.html',
     'workspace.html',
     'file.html',

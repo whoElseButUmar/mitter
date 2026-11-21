@@ -26,6 +26,10 @@ export type HandoffDelivery = z.infer<typeof handoffDeliverySchema>;
 
 export const deliveryKey = (envelopeId: string) => 'miter.handoffDelivery.v1.' + envelopeId;
 
+/** A linked exchange gets one admission, or can be retired before admission. */
+export const exchangeKey = (workerId: string, exchangeId: string) =>
+  'miter.handoffExchange.' + JSON.stringify([workerId, exchangeId]);
+
 export function matchingDelivery(
   store: Store,
   worker: Worker,

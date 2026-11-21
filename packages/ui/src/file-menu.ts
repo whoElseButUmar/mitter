@@ -20,7 +20,7 @@ export function fileViewerMenu(actions: FileMenuActions): MenuItem[] {
   }
 
   return [
-    { id: 'window', label: 'Open in new window', run: actions.openWindow },
+    { id: 'window', label: 'Preview in new window', run: actions.openWindow },
     {
       id: 'finder',
       label: 'Reveal in file manager',

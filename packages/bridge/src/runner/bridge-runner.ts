@@ -1,3 +1,5 @@
+import { z } from 'zod';
+import { bootstrapDraftSchema, rawDraftDigest, type BootstrapDraft } from '../bootstrap-draft.js';
 import {
   ReplyGapTracker,
   REPLY_GAP_IDLE_MS,
@@ -7,14 +9,21 @@ import {
 import { isHistoricalReply, isReplyFragment } from '../reply-window.js';
 import { NativeRequestTimeout } from '../native-request.js';
 import { isReadOnlyReply, isIncompleteReplyJSON } from '../../../protocol/src/reply-json.js';
-import { boundReply, replyDigest, replyHeaders } from '../reply-recovery.js';
+import { assertFreshReplyExchange, boundReply, replyDigest, replyHeaders } from '../reply-recovery.js';
 import type { ProposalEnvelope } from '../../../protocol/src/proposal.js';
 import { ReplyValidationError, correctionAdvice, type ReplyIssue } from '../../../protocol/src/validation.js';
-import type { TaskBoundary, Worker } from '../../../protocol/src/index.js';
+import type { ReaderDiagnostic, TaskBoundary, Worker } from '../../../protocol/src/index.js';
 import { parseRpcParams, RpcResultValidationError } from '../../../protocol/src/rpc.js';
 import type { ChatView, DomRequest } from '../chat-dom.js';
 import { PageBridgeError } from '../page-transport.js';
-import type { TaskProgress } from '../progress.js';
+import {
+  matchesWaitingReply,
+  isUnsentBootstrap,
+  taskProgressSchema,
+  type TaskProgress,
+} from '../progress.js';
+import { taskPresentation } from '../presentation.js';
+import { bridgeProgressLoadSchema } from './progress-load.js';
 
 import {
   messagePayload,
@@ -37,14 +46,17 @@ import { conversationURL, chatStartURL, isTaskBootstrap, normalizeMessage } from
 import {
   buildReportPrompt,
   buildExchangeMessage,
+  renewExchangeMessage,
   buildCorrectionPrompt,
   buildTaskLinkCorrection,
   buildMissingResponsePrompt,
+  buildReplyRecoveryPrompt,
 } from './prompts.js';
 import {
   replyFingerprint,
   parseAssistantReply,
   checkReplyExchange,
+  mistypedProjectHeaders,
   replyWaitExplanation,
 } from './reply-validation.js';
 import { recoverTaskProgress } from './progress-recovery.js';
@@ -52,6 +64,7 @@ import { CheckpointWriter } from './checkpoint-writer.js';
 import {
   assistantReadShape,
   transcriptReadShape,
+  readerDiagnostic,
   userReadShape,
   codeReplyReadShape,
   transcriptAncestryShape,
@@ -80,6 +93,25 @@ type RunnerOwner = {
   destination: string;
 };
 
+type HostReconnect = {
+  deadline: number;
+  retryAt: number;
+  attempts: number;
+  workerBinding: string;
+  progress: string;
+};
+
+function waitingWorkerBinding(worker: Worker): string {
+  return JSON.stringify([
+    worker.state,
+    worker.iteration,
+    worker.cursor,
+    worker.observations,
+    worker.activeFollowupId,
+    worker.control?.mode,
+  ]);
+}
+
 /** Coordinates page ownership, durable sending and host execution. Mutations
  * stay in this guarded lifecycle; extracted helpers never receive the runner. */
 export class BridgeRunner {
@@ -101,11 +133,13 @@ export class BridgeRunner {
   private previousAssistantText = '';
   private sentAt = 0;
   private replyCandidate: TimedObservation | undefined;
+  private recoveryCandidate: TimedObservation | undefined;
   private repeatedActionBatches = 0;
   private pendingConversationBind: boolean;
   private bootstrapPrompt = '';
   private nextStepPrompt = '';
   private reconnectSince: number | undefined;
+  private hostReconnect: HostReconnect | undefined;
   private recoveryPhase = 'connecting';
   private correctionAttempts = 0;
   private unlinkedCandidate: TimedObservation | undefined;
@@ -113,6 +147,7 @@ export class BridgeRunner {
   private unlinkedWaitSince: number | undefined;
   private readonly bootstrapOrigin: string;
   private unreadableSince: number | undefined;
+  private readerDiagnostic: ReaderDiagnostic | undefined;
   private pinnedConversation = '';
   private sendCommitAttempted = false;
   private pendingSend:
@@ -139,6 +174,8 @@ export class BridgeRunner {
   private activeTimeDeadline: number;
   private progress?: TaskProgress;
   private activeMillisecondsBeforeResume = 0;
+  private lastHostSetupWaitMs = 0;
+  private excludedSetupWaitMs = 0;
   private resumedAt = 0;
   private activeTimeStoppedAt: number | undefined;
   private readonly checkpointWriter: CheckpointWriter;
@@ -205,6 +242,10 @@ export class BridgeRunner {
       activeMs: options.previousProgress?.activeMs,
       maxMinutes: options.previousProgress?.maxMinutes,
     };
+    if (options.waitingReplyRevision !== undefined) {
+      this.status.phase = 'waiting_reply';
+      this.status.reason = 'Reconnecting to the saved reply…';
+    }
     const worker = dependencies.snapshot()?.workers.find((worker) => worker.id === options.workerId);
 
     if (worker) {
@@ -249,7 +290,27 @@ export class BridgeRunner {
     }
     const goalHash = await messageDigest(worker.goal);
     this.assertCanContinue();
-    const progress = recoverTaskProgress(loaded, worker, this.options, goalHash, () => this.now());
+    let recoveryOptions = this.options;
+    if (this.options.waitingReplyRevision !== undefined) {
+      const saved = bridgeProgressLoadSchema.parse(loaded).progress;
+      if (
+        !matchesWaitingReply(
+          saved,
+          this.options.waitingReplyRevision,
+          this.status.url,
+          this.options.lastReceipt,
+        )
+      ) {
+        throw new PageBridgeError(
+          'PROGRESS_BINDING',
+          'The saved reply changed before Miter could reconnect.',
+        );
+      }
+      // Both receipts agree on this send. Leave legacy browser migration out of
+      // cold recovery so the host's recorded counters and baselines stay exact.
+      recoveryOptions = { ...this.options, lastReceipt: undefined };
+    }
+    const progress = recoverTaskProgress(loaded, worker, recoveryOptions, goalHash, () => this.now());
 
     const expectedBatchId = this.owner?.expectedBatchId;
 
@@ -321,6 +382,8 @@ export class BridgeRunner {
       this.status.url = this.pinnedConversation;
     }
     this.resumedAt = this.now();
+    this.excludedSetupWaitMs = 0;
+    this.lastHostSetupWaitMs = this.boundWorker().setupWaitMs ?? 0;
     this.activeMillisecondsBeforeResume = progress.activeMs;
     if (progress.lastReceipt) {
       this.options.lastReceipt = progress.lastReceipt;
@@ -339,8 +402,10 @@ export class BridgeRunner {
     this.activeTimeDeadline = this.now() + Math.max(0, progress.maxMinutes * 60000 - progress.activeMs);
     await this.dependencies.verifyStartup?.();
     this.assertCanContinue();
-    await this.checkpoint();
-    this.assertCanContinue();
+    if (this.options.waitingReplyRevision === undefined) {
+      await this.checkpoint();
+      this.assertCanContinue();
+    }
   }
   /** Serialized durable boundary. Host CAS rejects stale writers; save before
    * Send/import/next-turn transitions, never recreate a counter on Resume. */
@@ -372,7 +437,7 @@ export class BridgeRunner {
     if (!progress) {
       throw new Error('Saved task progress is unavailable.');
     }
-    return {
+    const checkpoint: TaskProgress = {
       ...progress,
       turns: this.status.turns,
       maxTurns: this.status.maxTurns,
@@ -380,7 +445,7 @@ export class BridgeRunner {
       activeMs: Math.max(
         progress.activeMs,
         this.activeMillisecondsBeforeResume +
-          Math.max(0, (this.activeTimeStoppedAt ?? this.now()) - this.resumedAt),
+          Math.max(0, (this.activeTimeStoppedAt ?? this.now()) - this.resumedAt - this.excludedSetupWaitMs),
       ),
       lastReceipt: parseReceipt(this.options.lastReceipt),
       repeats: this.repeatedActionBatches,
@@ -391,6 +456,17 @@ export class BridgeRunner {
       errorCode: this.status.errorCode,
       updatedAt: this.now(),
     };
+    delete checkpoint.readerDiagnostic;
+    if (this.readerDiagnostic && (this.status.monitoring || this.status.errorCode)) {
+      checkpoint.readerDiagnostic = this.readerDiagnostic;
+    }
+    delete checkpoint.monitoring;
+    delete checkpoint.watchUntil;
+    if (this.status.monitoring === true) {
+      checkpoint.monitoring = true;
+      checkpoint.watchUntil = this.status.watchUntil;
+    }
+    return checkpoint;
   }
 
   async flushed(): Promise<void> {
@@ -401,6 +477,207 @@ export class BridgeRunner {
     await this.operationIdle;
     await this.stopPending;
     await this.checkpointWriter.flushed();
+  }
+
+  /** Closing a Chrome window can be part of quitting the browser. Retire
+   * the reader without replacing its confirmed waiting checkpoint with Stop. */
+  detachWaitingReply(): boolean {
+    if (
+      !this.status.active ||
+      this.status.monitoring ||
+      !this.progress ||
+      this.progress.stage !== 'waiting_reply' ||
+      !this.progress.lastReceipt?.expectsReplyTo ||
+      !this.progress.lastReceipt.exchangeId ||
+      this.pendingSend ||
+      this.pendingDelivery ||
+      !(
+        this.status.phase === 'waiting_reply' ||
+        (this.status.phase === 'reconnecting' && this.recoveryPhase === 'waiting_reply')
+      )
+    ) {
+      return false;
+    }
+    this.status.active = false;
+    this.hostReconnect = undefined;
+    return true;
+  }
+
+  /** An idle reply wait can reconnect by reading state. In-flight operations remain ambiguous. */
+  hostDisconnected(): boolean {
+    if (this.hostReconnect && this.status.active) {
+      return true;
+    }
+    const worker = this.dependencies.snapshot()?.workers.find((item) => item.id === this.options.workerId);
+    const progress = this.progress;
+    let phase = this.status.phase;
+    if (phase === 'reconnecting') {
+      phase = this.recoveryPhase;
+    }
+    if (
+      !this.status.active ||
+      this.status.monitoring ||
+      this.operationRunning ||
+      this.lateReplyWatch.running ||
+      phase !== 'waiting_reply' ||
+      !progress ||
+      progress.stage !== 'waiting_reply' ||
+      !progress.lastReceipt?.expectsReplyTo ||
+      !progress.lastReceipt.exchangeId ||
+      this.pendingSend ||
+      this.pendingDelivery ||
+      !this.dependencies.reconnectHost ||
+      !this.dependencies.loadProgress ||
+      !worker ||
+      !this.ownsWorker(worker) ||
+      !['idle', 'review'].includes(worker.state) ||
+      worker.queue.length !== 0 ||
+      worker.pending ||
+      worker.humanAcceptanceReady ||
+      worker.control?.mode === 'stopped'
+    ) {
+      return false;
+    }
+    this.hostReconnect = {
+      deadline: this.now() + 60000,
+      retryAt: this.now(),
+      attempts: 0,
+      workerBinding: waitingWorkerBinding(worker),
+      progress: JSON.stringify(taskProgressSchema.parse(progress)),
+    };
+    this.replyCandidate = undefined;
+    this.recoveryCandidate = undefined;
+    this.recoveryPhase = 'waiting_reply';
+    this.status.errorCode = 'HOST_RECONNECTING';
+    this.update(
+      'reconnecting',
+      'Reconnecting to the local host… The saved reply is waiting; nothing is being resent.',
+    );
+    return true;
+  }
+
+  private async reconnectWaitingHost(): Promise<void> {
+    const recovery = this.hostReconnect;
+    if (!recovery || this.operationRunning || !this.status.active) {
+      return;
+    }
+    if (this.now() >= recovery.deadline || recovery.attempts >= 6) {
+      this.hostReconnect = undefined;
+      await this.stop(
+        'The local host could not reconnect. Open Setup to check its connection, then Resume this saved reply. Nothing was resent.',
+        'error',
+        'HOST_RECONNECT_FAILED',
+      );
+      return;
+    }
+    if (this.now() < recovery.retryAt) {
+      return;
+    }
+    this.operationRunning = true;
+    this.operationIdle = new Promise((resolve) => {
+      this.operationDone = resolve;
+    });
+    try {
+      this.dependencies.checkAvailable?.();
+      if (this.now() >= this.activeTimeDeadline) {
+        throw new PageBridgeError(
+          'TIME_LIMIT',
+          'The task time limit was reached while reconnecting. Progress is saved.',
+        );
+      }
+      recovery.attempts++;
+      const reconnect = this.dependencies.reconnectHost;
+      const loadProgress = this.dependencies.loadProgress;
+      if (!reconnect || !loadProgress) {
+        throw new PageBridgeError(
+          'HOST_RECONNECT_FAILED',
+          'The saved reply cannot be reconnected automatically. Open Setup, then Resume.',
+        );
+      }
+      const fresh = await reconnect();
+      if (this.hostReconnect !== recovery || !this.status.active) {
+        return;
+      }
+      this.dependencies.checkAvailable?.();
+      const worker = fresh.workers.find((item) => item.id === this.options.workerId);
+      const current = this.boundWorker();
+      if (
+        !worker ||
+        !this.ownsWorker(worker) ||
+        waitingWorkerBinding(worker) !== recovery.workerBinding ||
+        waitingWorkerBinding(current) !== recovery.workerBinding ||
+        worker.queue.length ||
+        current.queue.length ||
+        worker.pending ||
+        current.pending ||
+        worker.humanAcceptanceReady ||
+        current.humanAcceptanceReady
+      ) {
+        throw new PageBridgeError(
+          'RUN_SUPERSEDED',
+          'The task changed while the host was disconnected. Review its current state before resuming.',
+        );
+      }
+      const loaded = bridgeProgressLoadSchema.parse(await loadProgress());
+      if (this.hostReconnect !== recovery || !this.status.active) {
+        return;
+      }
+      this.dependencies.checkAvailable?.();
+      const latest = this.boundWorker();
+      if (
+        waitingWorkerBinding(latest) !== recovery.workerBinding ||
+        latest.queue.length ||
+        latest.pending ||
+        latest.humanAcceptanceReady ||
+        JSON.stringify(loaded.progress) !== recovery.progress
+      ) {
+        throw new PageBridgeError(
+          'PROGRESS_BINDING',
+          'Saved task progress changed while reconnecting. Resume after reviewing the current task; nothing was replayed.',
+        );
+      }
+      if (this.now() >= recovery.deadline || this.now() >= this.activeTimeDeadline) {
+        throw new PageBridgeError(
+          'HOST_RECONNECT_FAILED',
+          'The local host reconnected after the recovery window ended. Resume to check the saved reply.',
+        );
+      }
+      this.hostReconnect = undefined;
+      this.reconnectSince = undefined;
+      this.status.errorCode = undefined;
+      this.update('waiting_reply', 'Local host reconnected. Checking the saved reply; nothing was resent.');
+      this.dependencies.log(
+        'bridge.host.reconnected',
+        'Fresh task and exact saved checkpoint confirmed. Only state reads were retried.',
+      );
+    } catch (error) {
+      if (this.hostReconnect !== recovery || !this.status.active) {
+        return;
+      }
+      let failure = error;
+      try {
+        this.dependencies.checkAvailable?.();
+      } catch (guardError) {
+        failure = new PageBridgeError('RUN_SUPERSEDED', errorMessage(guardError));
+      }
+      if (
+        failure instanceof PageBridgeError ||
+        failure instanceof RpcResultValidationError ||
+        failure instanceof z.ZodError
+      ) {
+        this.hostReconnect = undefined;
+        await this.stop(errorMessage(failure), 'error', bridgeErrorCode(failure) || 'HOST_RESPONSE_INVALID');
+        return;
+      }
+      recovery.retryAt = this.now() + Math.min(16000, 1000 * 2 ** (recovery.attempts - 1));
+      this.dependencies.log(
+        'bridge.host.retry',
+        'Read-only host reconnect attempt ' + recovery.attempts + '/6 failed: ' + errorMessage(failure),
+      );
+    } finally {
+      this.operationRunning = false;
+      this.operationDone?.();
+    }
   }
 
   async interruptGeneration(): Promise<void> {
@@ -489,7 +766,17 @@ export class BridgeRunner {
     );
   }
 
-  private assertCanContinue() {
+  private accountForSetupWait(worker: Worker): void {
+    const total = worker.setupWaitMs ?? 0;
+    const unaccounted = Math.max(0, total - this.lastHostSetupWaitMs);
+    const sinceResume = Math.max(0, this.now() - this.resumedAt - this.excludedSetupWaitMs);
+    const waiting = Math.min(unaccounted, sinceResume);
+    this.excludedSetupWaitMs += waiting;
+    this.activeTimeDeadline += waiting;
+    this.lastHostSetupWaitMs = total;
+  }
+
+  private assertCanContinue(checkTime = true) {
     this.dependencies.checkAvailable?.();
 
     if (
@@ -504,7 +791,7 @@ export class BridgeRunner {
     if (!this.status.active) {
       throw new Error('Session stopped.');
     }
-    if (this.now() >= this.activeTimeDeadline) {
+    if (checkTime && this.now() >= this.activeTimeDeadline) {
       throw new PageBridgeError(
         'TIME_LIMIT',
         'The task’s active-time limit is reached. Progress is saved; add more time to continue.',
@@ -542,6 +829,7 @@ export class BridgeRunner {
   private async selectDirectReply(view: ChatView): Promise<void> {
     if (
       !view.codeReply ||
+      view.replyRecovery ||
       view.busy ||
       view.draft ||
       view.ready === false ||
@@ -654,6 +942,7 @@ export class BridgeRunner {
     text?: string,
     messageId?: string,
     composerSession?: string,
+    staleDraft?: BootstrapDraft,
   ): Promise<ChatView> {
     // The new-chat route can be provisional. Only inspections may look across
     // that transition; writes remain pinned to the last proven exact URL.
@@ -676,8 +965,10 @@ export class BridgeRunner {
       text,
       messageId,
       composerSession,
+      staleDraft,
       expiresAt: this.activeTimeDeadline,
       allowConversationBind: this.pendingConversationBind,
+      preservePause: this.options.waitingReplyRevision !== undefined || undefined,
       includeHistory: op === 'inspect' && this.status.phase === 'connecting',
       receipt: inspectionReceipt,
       workerId: this.options.workerId,
@@ -690,6 +981,34 @@ export class BridgeRunner {
       await this.normalizeUserEcho(result);
     }
     if (op === 'inspect') {
+      const receipt = this.options.lastReceipt;
+      if (
+        receipt?.exchangeId &&
+        !result.replyRecovery &&
+        this.correctionAttempts === 0 &&
+        !this.progress?.approvedReply &&
+        this.progress?.stage === 'waiting_reply'
+      ) {
+        const typo = mistypedProjectHeaders(result, receipt);
+        const state = this.dependencies.snapshot();
+        if (
+          typo &&
+          state &&
+          !state.projects.some((item) => item.id === typo.projectId) &&
+          !this.replyIdsBeforeSend(receipt).includes(typo.id) &&
+          typo.id !== this.progress.lastImportedId &&
+          (await this.matchesSavedReceipt(result.lastUserText))
+        ) {
+          result.replyRecovery = {
+            kind: 'unreadable_reply',
+            issue: 'PROJECT_ID_TYPO',
+            exchangeId: receipt.exchangeId,
+            userText: result.lastUserText,
+            responseText: result.assistantText,
+            format: 'code',
+          };
+        }
+      }
       await this.selectDirectReply(result);
       this.logObservation(
         'bridge.reply.observe',
@@ -751,6 +1070,7 @@ export class BridgeRunner {
         }
         const userOwned =
           !!result.replyEvidence ||
+          (!!result.replyRecovery && (await this.matchesSavedReceipt(result.replyRecovery.userText))) ||
           (!!result.lastUserText &&
             !result.lastUserTruncated &&
             (this.matchesExpectedMessage(result.lastUserText) ||
@@ -871,6 +1191,7 @@ export class BridgeRunner {
   private checkTranscript(view: ChatView): void {
     const transcript = view.transcript;
     if (!transcript || view.replyEvidence) {
+      this.unreadableSince = undefined;
       return;
     }
     if (
@@ -892,10 +1213,38 @@ export class BridgeRunner {
       }
     }
     if (transcript.scanLimited) {
+      this.readerDiagnostic = readerDiagnostic(view, 'scan_limit');
       throw new PageBridgeError(
         'TRANSCRIPT_LIMIT',
         'The page is too large to inspect safely. No reply was imported. Open the linked chat near its latest messages, then Resume.',
       );
+    }
+    // This observation authorizes only a bounded recovery request. Its full
+    // receipt and live ownership are checked again before any new message;
+    // neither its response text nor an ambiguous old reply can be imported.
+    if (
+      view.replyRecovery &&
+      this.progress?.stage === 'waiting_reply' &&
+      this.options.lastReceipt?.expectsReplyTo &&
+      view.replyRecovery.exchangeId === this.options.lastReceipt.exchangeId
+    ) {
+      this.unreadableSince = undefined;
+      return;
+    }
+    // Roleless layouts can place message controls beside the matched user
+    // bubble. While literal JSON is still growing, that shape grants only a
+    // bounded read-only wait, never a response role or permission to import.
+    if (
+      this.options.lastReceipt?.expectsReplyTo &&
+      transcript.roleAttributes === 0 &&
+      transcript.alternativeRoles === 0 &&
+      transcript.semanticRoles === 0 &&
+      receiptDiscovery?.state === 'unknown_tail' &&
+      receiptDiscovery.matches === 1 &&
+      isReplyFragment(view)
+    ) {
+      this.unreadableSince = undefined;
+      return;
     }
     // A verified send followed by an in-progress unlabelled response is not an
     // unsupported page yet. Wait read-only for its response controls to render;
@@ -909,6 +1258,7 @@ export class BridgeRunner {
       return;
     }
     if (this.options.lastReceipt?.expectsReplyTo && !transcript.users) {
+      this.unreadableSince = undefined;
       return;
     }
     const pending =
@@ -927,9 +1277,14 @@ export class BridgeRunner {
           true,
         );
       }
+      let reason: ReaderDiagnostic['reason'] = 'awaiting_receipt';
+      if (transcript.unclassifiedTail) {
+        reason = 'unclassified_tail';
+      }
+      this.readerDiagnostic = readerDiagnostic(view, reason);
       throw new PageBridgeError(
         'TRANSCRIPT_UNSUPPORTED',
-        'Automatic matching could not read this layout. Use reply lets you select the existing JSON directly, without resending the task. Your files and progress are saved.',
+        'Miter could not read a complete reply for this task. Open the chat to check it. If the full JSON is present, select it with Use reply. Your files and progress are saved.',
       );
     }
     this.unreadableSince = undefined;
@@ -968,6 +1323,7 @@ export class BridgeRunner {
       if (!progress) {
         throw new Error('Saved task progress is unavailable.');
       }
+      assertFreshReplyExchange(worker, envelope.replyTo, progress);
       progress.conversationUrl = this.status.url;
       progress.approvedReply = {
         id: envelope.id,
@@ -1040,6 +1396,15 @@ export class BridgeRunner {
       if (worker.humanAcceptanceReady) {
         throw new Error('The result is ready for your review. Another chat is not needed.');
       }
+      if (this.options.waitingReplyRevision !== undefined) {
+        await this.loadTaskPrompts(worker.id);
+        this.assertCanContinue();
+        this.starting = false;
+        this.restoringPendingSend = true;
+        this.sentAt = this.now();
+        this.update('waiting_reply', 'Checking the saved ChatGPT reply…');
+        return;
+      }
       this.update('connecting', 'Connecting to ChatGPT…');
       await this.loadTaskPrompts(worker.id);
       this.assertCanContinue();
@@ -1066,6 +1431,10 @@ export class BridgeRunner {
       this.starting = false;
       await this.initialise();
     } catch (error) {
+      if (this.options.waitingReplyRevision !== undefined && this.starting) {
+        await this.stop(errorMessage(error), 'error', bridgeErrorCode(error));
+        throw error;
+      }
       if (!this.recover(error, 'connecting')) {
         await this.stop(errorMessage(error), 'error', bridgeErrorCode(error));
         throw error;
@@ -1111,13 +1480,47 @@ export class BridgeRunner {
       );
       return;
     }
-    const page = await this.requestPage('inspect');
+    let page = await this.requestPage('inspect');
     if (page.ready === false) {
       this.update('connecting', 'Waiting for the ChatGPT page to be ready…');
       if (this.now() - this.resumedAt > 60000) {
-        throw new Error('ChatGPT’s composer did not load. Sign in to the open chat, then resume this task.');
+        throw new PageBridgeError(
+          'CHAT_NOT_READY',
+          'ChatGPT’s composer is unavailable. Open chat to check page loading and sign in if needed, then resume this task. No new Send was attempted.',
+        );
       }
       return;
+    }
+    if (
+      page.draft &&
+      !page.busy &&
+      this.options.newChat === true &&
+      page.url === this.bootstrapOrigin &&
+      isUnsentBootstrap(this.progress) &&
+      !this.options.lastReceipt &&
+      page.count === 0 &&
+      page.transcript?.state === 'empty'
+    ) {
+      const proof = await this.dependencies.findCompletedBootstrapDraft?.(page.draftText);
+      this.assertCanContinue();
+      if (proof) {
+        const verified = bootstrapDraftSchema.parse(proof);
+        page = await this.requestPage(
+          'clear_draft',
+          page.draftText,
+          undefined,
+          page.composerSession,
+          verified,
+        );
+        this.assertCanContinue();
+        if (page.outcome !== 'cleared' || page.draft) {
+          throw new PageBridgeError('DRAFT_CONFLICT', 'The restored draft could not be cleared safely.');
+        }
+        this.dependencies.log(
+          'bridge.draft.recovered',
+          'Cleared an exact previously confirmed task draft. Nothing was resent.',
+        );
+      }
     }
     const receipt = parseReceipt(this.options.lastReceipt);
     const receiptBound =
@@ -1146,6 +1549,41 @@ export class BridgeRunner {
         );
       }
       await this.send(messagePayload(page.draftText), page);
+      return;
+    }
+    if (
+      this.progress?.stage === 'prepared' &&
+      receiptBound &&
+      receipt?.replacesExchangeId &&
+      receipt.exchangeId
+    ) {
+      // A service-worker restart can occur after the new receipt is saved but
+      // before prepare inserts it. The older visible reply cannot acknowledge it.
+      if (
+        page.draft ||
+        page.busy ||
+        page.lastUserTruncated ||
+        !page.lastUserText ||
+        (await messageDigest(page.lastUserText)) !== receipt.priorUserHash
+      ) {
+        throw new PageBridgeError(
+          'PREPARED_MESSAGE_CHANGED',
+          'The reviewed message is no longer fully visible. No resend was attempted.',
+        );
+      }
+      const restored = renewExchangeMessage(
+        page.lastUserText,
+        receipt.replacesExchangeId,
+        receipt.exchangeId,
+        worker,
+      );
+      if (restored === undefined || !(await receiptMatches(restored))) {
+        throw new PageBridgeError(
+          'PREPARED_MESSAGE_CHANGED',
+          'The saved resend could not be reconstructed exactly. Nothing was sent.',
+        );
+      }
+      await this.send(restored, page);
       return;
     }
     const ownedText = messagePayload(page.lastUserText);
@@ -1207,7 +1645,25 @@ export class BridgeRunner {
       await this.checkpoint();
       return;
     }
-    if (this.options.resumeExisting && !ownedUser && !ownedAssistant && !page.draft) {
+    // A draft conflict can pause a brand-new task before its first send. The
+    // durable exact-zero checkpoint distinguishes that case from a missing
+    // conversation with earlier sends or imported work. Only a blank new-chat
+    // root can continue; an uncertain or prepared send still requires recovery.
+    const unsentNewChat =
+      this.options.newChat === true &&
+      this.pendingConversationBind &&
+      chatStartURL(page.url, true) === this.bootstrapOrigin &&
+      isUnsentBootstrap(this.progress) &&
+      !this.options.lastReceipt &&
+      page.count === 0 &&
+      page.userCount === 0 &&
+      !page.lastRole &&
+      !page.lastUserText &&
+      !page.assistantText &&
+      !page.codeReply &&
+      !page.busy &&
+      !page.draft;
+    if (this.options.resumeExisting && !ownedUser && !ownedAssistant && !page.draft && !unsentNewChat) {
       if (page.count === 0 || (page.busy && !page.lastUserText)) {
         this.update('connecting', 'Reopening the saved chat… Waiting for this task’s messages.');
         if (this.now() - this.resumedAt > 60000) {
@@ -1300,6 +1756,13 @@ export class BridgeRunner {
           return;
         }
         if (envelope.workerId !== worker.id || envelope.projectId !== worker.projectId) {
+          if (
+            page.replyRecovery?.issue === 'PROJECT_ID_TYPO' &&
+            receipt &&
+            mistypedProjectHeaders(page, receipt)
+          ) {
+            return; // The normal receive loop rechecks the live receipt before a fresh correction.
+          }
           throw new Error('The existing reply has the wrong worker/project IDs. No actions were imported.');
         }
         const seen = await this.queryRpc('worker.handoffSeen', {
@@ -1339,14 +1802,22 @@ export class BridgeRunner {
   }
 
   private async loadReportPrompt(worker: Worker): Promise<string> {
+    const nextStepPrompt = await this.queryRpc('worker.prompt', {
+      workerId: worker.id,
+      kind: 'next',
+    });
+    this.assertCanContinue();
     const report = await this.queryRpc('worker.report', {
       workerId: worker.id,
     });
     this.assertCanContinue();
+    // Refresh registered commands and project context for this new exchange.
+    // Pending sends retain their saved bytes. Explicit resends use the reviewed body.
+    this.nextStepPrompt = nextStepPrompt;
     return buildReportPrompt(this.nextStepPrompt, report);
   }
 
-  private async send(text: string, page: ChatView, exactResend = false): Promise<void> {
+  private async send(text: string, page: ChatView, confirmedResend = false): Promise<void> {
     this.assertCanContinue();
     if (this.status.turns >= this.status.maxTurns) {
       throw new PageBridgeError(
@@ -1367,6 +1838,7 @@ export class BridgeRunner {
       savedPrepared = parseReceipt(this.options.lastReceipt);
     }
     let expectsReplyTo = false;
+    let replacesExchangeId = savedPrepared?.replacesExchangeId;
     if (page.draft) {
       text = page.draftText;
       const saved = parseReceipt(this.options.lastReceipt);
@@ -1383,14 +1855,31 @@ export class BridgeRunner {
         saved.projectId === worker.projectId &&
         saved.goalHash === (await messageDigest(worker.goal)) &&
         (await matchesReceipt(text, saved));
-    } else if (exactResend) {
+    } else if (confirmedResend) {
       if (!(await this.matchesSavedReceipt(text))) {
         throw new PageBridgeError(
           'RESEND_MISMATCH',
           'The saved prompt is unavailable or changed. Nothing was resent.',
         );
       }
-      expectsReplyTo = this.options.lastReceipt?.expectsReplyTo === true;
+      const previous = this.options.lastReceipt;
+      const nextId = crypto.randomUUID();
+      if (previous?.expectsReplyTo && previous.exchangeId) {
+        const renewed = renewExchangeMessage(text, previous.exchangeId, nextId, this.boundWorker());
+        if (renewed === undefined) {
+          throw new PageBridgeError(
+            'RESEND_MISMATCH',
+            'The original reply contract could not be verified. Nothing was resent.',
+          );
+        }
+        text = renewed;
+        replacesExchangeId = previous.exchangeId;
+      } else {
+        text = buildExchangeMessage(messagePayload(text), nextId, this.boundWorker());
+      }
+      expectsReplyTo = true;
+    } else if (savedPrepared?.replacesExchangeId && (await this.matchesSavedReceipt(text))) {
+      expectsReplyTo = true;
     } else {
       const exchangeId = savedPrepared?.exchangeId || crypto.randomUUID();
       expectsReplyTo = true;
@@ -1405,6 +1894,7 @@ export class BridgeRunner {
     this.waitObservation = '';
     this.waitUnchangedAt = this.now();
     this.restoringPendingSend = false;
+    this.unreadableSince = undefined;
     this.expectedUserText = text;
     this.expectedRenderedUserText = '';
     this.messageCountBeforeSend = page.count;
@@ -1422,6 +1912,7 @@ export class BridgeRunner {
     this.userVisibilitySince = undefined;
     this.observations.delete('bridge.user.observe');
     this.replyCandidate = undefined;
+    this.recoveryCandidate = undefined;
     this.unlinkedCandidate = undefined;
     this.unlinkedWaitSince = undefined;
     this.sentAt = this.now();
@@ -1452,6 +1943,9 @@ export class BridgeRunner {
       priorReplyIds: page.codeReplyIds?.slice(-64),
       exchangeId: frame?.exchangeId,
     };
+    if (replacesExchangeId) {
+      receipt.replacesExchangeId = replacesExchangeId;
+    }
     if (expectsReplyTo) {
       receipt.expectsReplyTo = true;
     }
@@ -1540,10 +2034,29 @@ export class BridgeRunner {
         }
         this.expectedRenderedUserText = prepared.renderedDraftText || '';
         if (this.options.lastReceipt) {
-          const receipt = {
+          const receipt: OutboundReceipt = {
             ...this.options.lastReceipt,
             renderedHash: await messageDigest(this.expectedRenderedUserText || pending.text),
           };
+          if (prepared.outcome === 'prepared' && prepared.draftText === pending.text) {
+            receipt.composerHash = await rawDraftDigest(pending.text);
+          }
+          if (
+            this.status.turns === 0 &&
+            this.options.newChat === true &&
+            receipt.composerHash &&
+            receipt.exchangeId &&
+            prepared.url === this.bootstrapOrigin
+          ) {
+            receipt.bootstrapDraft = bootstrapDraftSchema.parse({
+              workerId: receipt.workerId,
+              projectId: receipt.projectId,
+              goalHash: receipt.goalHash,
+              exchangeId: receipt.exchangeId,
+              origin: this.bootstrapOrigin,
+              rawHash: receipt.composerHash,
+            });
+          }
           this.assertCanContinue();
           this.options.lastReceipt = receipt;
           await this.checkpoint('prepared');
@@ -1674,6 +2187,14 @@ export class BridgeRunner {
     this.update('waiting_reply', reason);
   }
 
+  private async confirmBootstrapDraft(): Promise<void> {
+    const proof = this.options.lastReceipt?.bootstrapDraft;
+    if (proof) {
+      await this.dependencies.confirmBootstrapDraft?.(proof);
+      this.assertCanContinue();
+    }
+  }
+
   private async importEnvelope(envelope: ProposalEnvelope, worker: Worker, page: ChatView): Promise<void> {
     if (envelope.workerId !== worker.id || envelope.projectId !== worker.projectId) {
       throw new Error('Reply has the wrong worker/project IDs. No actions were imported.');
@@ -1692,10 +2213,9 @@ export class BridgeRunner {
       await this.send(await this.loadReportPrompt(worker), page);
       return;
     }
-    // Read-reference admission is a non-mutating host operation. A failed
-    // reference gets read/replan feedback, not an import retry or another Send
-    // of the old request. Import independently revalidates before queuing.
-    if (envelope.actions.some((action) => 'base' in action)) {
+    // Preflight paths and read references before import so rejected batches
+    // can be corrected without queuing any actions.
+    if (envelope.actions.some((action) => 'path' in action)) {
       const admission = await this.queryRpc('worker.validateReply', {
         workerId: worker.id,
         text: JSON.stringify(envelope),
@@ -1768,6 +2288,15 @@ export class BridgeRunner {
         }
         await this.checkpoint('local_batch');
         this.assertCanContinue();
+        if (envelope.replyTo && envelope.replyTo === this.options.lastReceipt?.exchangeId) {
+          await this.confirmBootstrapDraft();
+          try {
+            await this.dependencies.rememberAnsweredDraft?.(envelope.replyTo);
+          } catch {
+            this.dependencies.log('bridge.draft.history', 'Could not retain the answered draft fingerprint.');
+          }
+          this.assertCanContinue();
+        }
       }
       await this.queryRpc('worker.run', {
         workerId: worker.id,
@@ -2223,6 +2752,7 @@ export class BridgeRunner {
       if (page.draft) {
         return false;
       } // Own sent draft is still clearing; do not execute yet.
+      await this.confirmBootstrapDraft();
       return true;
     }
     if (page.lastUserCollapsed) {
@@ -2349,10 +2879,15 @@ export class BridgeRunner {
     const savedReport =
       this.progress?.stage === 'report_due' && ['running', 'waiting_approval'].includes(this.recoveryPhase);
     let reconnectLimitMs = 30000;
+    let reconnectStartedAt = this.reconnectSince;
+    if (this.recoveryPhase === 'connecting') {
+      reconnectLimitMs = 60000;
+      reconnectStartedAt = this.resumedAt;
+    }
     if (savedReport) {
       reconnectLimitMs = 300000;
     }
-    if (this.now() - this.reconnectSince >= reconnectLimitMs) {
+    if (this.now() - reconnectStartedAt >= reconnectLimitMs) {
       return false;
     }
     if (savedReport) {
@@ -2369,6 +2904,168 @@ export class BridgeRunner {
     this.update('reconnecting', reconnectReason);
     return true;
   }
+
+  private recoveryWorkerReady(worker: Worker | undefined): boolean {
+    return (
+      !!worker &&
+      this.ownsWorker(worker) &&
+      ['idle', 'review'].includes(worker.state) &&
+      worker.queue.length === 0 &&
+      !worker.pending &&
+      !worker.humanAcceptanceReady &&
+      (worker.control?.epoch ?? 0) === this.executionEpoch &&
+      worker.control?.mode !== 'stopped'
+    );
+  }
+
+  private async canRecoverUnreadableReply(page: ChatView): Promise<boolean> {
+    const receipt = parseReceipt(this.options.lastReceipt);
+    const observation = page.replyRecovery;
+    const route = this.progress?.conversationUrl || this.pinnedConversation || this.status.url;
+    if (
+      !receipt?.expectsReplyTo ||
+      !receipt.exchangeId ||
+      !observation ||
+      observation.exchangeId !== receipt.exchangeId ||
+      !observation.responseText.trim() ||
+      this.progress?.stage !== 'waiting_reply' ||
+      this.pendingDelivery ||
+      this.pendingSend ||
+      page.url !== route ||
+      this.status.url !== route ||
+      !route.includes('/c/') ||
+      page.stopped ||
+      page.busy ||
+      page.draft ||
+      page.ready === false ||
+      page.transcript?.scanLimited
+    ) {
+      return false;
+    }
+    if (!(await this.matchesSavedReceipt(observation.userText))) {
+      return false;
+    }
+    if (
+      observation.issue === 'PROJECT_ID_TYPO' &&
+      (this.correctionAttempts !== 0 ||
+        !mistypedProjectHeaders(page, receipt) ||
+        observation.responseText !== page.assistantText)
+    ) {
+      return false;
+    }
+    // A complete contradictory user turn wins over fallback discovery. The
+    // reader must never turn a stale adjacent carrier into permission to send.
+    return (
+      !page.lastUserText || (!page.lastUserTruncated && (await this.matchesSavedReceipt(page.lastUserText)))
+    );
+  }
+
+  /** Retire an unreadable/ambiguous exchange, not its source text. A fresh
+   * nonce and current host report let the model continue without selecting a
+   * duplicate reply, guessing JSON characters or replaying accepted actions. */
+  private async recoverUnreadableReply(page: ChatView, worker: Worker): Promise<boolean> {
+    if (!(await this.canRecoverUnreadableReply(page))) {
+      this.recoveryCandidate = undefined;
+      return false;
+    }
+    const observation = page.replyRecovery;
+    if (!observation) {
+      return false;
+    }
+    const fingerprint = await messageDigest(JSON.stringify(observation));
+    this.assertCanContinue();
+    if (fingerprint !== this.recoveryCandidate?.fingerprint) {
+      this.recoveryCandidate = { fingerprint, since: this.now() };
+      this.update('waiting_reply', 'Checking the reply before requesting an automatic correction…');
+      return true;
+    }
+    // Missing Stop controls must not turn a still-streaming source string into
+    // a correction. Fragments get the same two-minute quiet period as gaps.
+    let quietMs = 15000;
+    if (isReplyFragment(page) || isIncompleteReplyJSON(observation.responseText)) {
+      quietMs = REPLY_GAP_IDLE_MS;
+    }
+    if (this.now() - this.recoveryCandidate.since < quietMs) {
+      return true;
+    }
+    const snapshot = await this.queryRpc('state', {});
+    this.assertCanContinue();
+    const current = snapshot.workers.find(
+      (item) => item.id === worker.id && item.projectId === worker.projectId,
+    );
+    if (!this.recoveryWorkerReady(current)) {
+      this.recoveryCandidate = undefined;
+      return true;
+    }
+    if (observation.issue === 'PROJECT_ID_TYPO') {
+      const receipt = this.options.lastReceipt;
+      const typo = receipt && mistypedProjectHeaders(page, receipt);
+      if (
+        !typo ||
+        this.correctionAttempts !== 0 ||
+        snapshot.projects.some((item) => item.id === typo.projectId) ||
+        (await this.queryRpc('worker.handoffSeen', { workerId: worker.id, envelopeId: typo.id })).seen
+      ) {
+        throw new PageBridgeError(
+          'REPLY_LINK_MISSING',
+          'The reply addresses a different project. Nothing was imported or resent.',
+        );
+      }
+      this.assertCanContinue();
+    }
+    const report = await this.loadReportPrompt(worker);
+    this.assertCanContinue();
+    // Report loading can race a native import or completion. Re-query the host
+    // instead of depending only on its asynchronously published UI snapshot.
+    const refreshed = await this.queryRpc('state', {});
+    this.assertCanContinue();
+    if (
+      !this.recoveryWorkerReady(refreshed.workers.find((item) => item.id === worker.id)) ||
+      !this.recoveryWorkerReady(this.boundWorker())
+    ) {
+      this.recoveryCandidate = undefined;
+      return true;
+    }
+    const fresh = await this.requestPage('inspect');
+    this.assertCanContinue();
+    if (
+      !(await this.canRecoverUnreadableReply(fresh)) ||
+      (await messageDigest(JSON.stringify(fresh.replyRecovery))) !== fingerprint
+    ) {
+      this.recoveryCandidate = undefined;
+      return true;
+    }
+    this.assertCanContinue();
+    if (!this.recoveryWorkerReady(this.boundWorker())) {
+      this.recoveryCandidate = undefined;
+      return true;
+    }
+    if (this.correctionAttempts >= 2) {
+      throw new PageBridgeError(
+        'REPLY_RECOVERY_EXHAUSTED',
+        'The chat still has no usable reply after two automatic recovery requests. Progress is saved; Miter stopped sending corrections.',
+      );
+    }
+    this.correctionAttempts++;
+    await this.checkpoint();
+    this.assertCanContinue();
+    if (!this.recoveryWorkerReady(this.boundWorker())) {
+      this.recoveryCandidate = undefined;
+      return true;
+    }
+    this.dependencies.log(
+      'bridge.reply.recovery',
+      `Verified the current receipt and response twice. Retiring the ${observation.kind} exchange and requesting a fresh reply (${this.correctionAttempts}/2). No rejected actions ran.`,
+    );
+    let prompt = buildReplyRecoveryPrompt(report, observation.kind === 'duplicate_send');
+    if (observation.issue === 'PROJECT_ID_TYPO') {
+      prompt +=
+        '\nThe previous projectId did not match. Copy the workerId and projectId exactly from the current contract.';
+    }
+    await this.send(prompt, fresh);
+    return true;
+  }
+
   /** A sent prompt and an absent response are different from an uncertain
    * Send. Ask once for a fresh answer only after two idle minutes, a full exact
    * user receipt, an empty response tail and a second live check. The existing
@@ -2609,6 +3306,10 @@ export class BridgeRunner {
 
   private teamPhase: string | undefined;
   async tick(): Promise<void> {
+    if (this.hostReconnect) {
+      await this.reconnectWaitingHost();
+      return;
+    }
     if (this.status.monitoring) {
       await this.watchForReply();
       return;
@@ -2630,8 +3331,26 @@ export class BridgeRunner {
       // Snapshot loss and held teammates are still inside the same guarded
       // lifecycle. Neither is allowed to throw an unhandled timer rejection or
       // bypass the stopped epoch / active-time budget.
-      this.assertCanContinue();
       let worker = this.boundWorker();
+      const localExecution = ['running', 'waiting_approval'].includes(this.teamPhase ?? phase);
+      this.assertCanContinue(!localExecution);
+      if (localExecution) {
+        // Only the host knows how long the user really waited, particularly when Chrome
+        // suspended the tab. Read the current batch and its clock before charging time.
+        const fresh = await this.queryRpc('state', {});
+        const current = fresh.workers.find(
+          (item) => item.id === this.options.workerId && item.projectId === this.options.projectId,
+        );
+        if (!current) {
+          throw new Error('The task is no longer available.');
+        }
+        if (!this.ownsWorker(current)) {
+          throw new PageBridgeError('RUN_SUPERSEDED', 'Task stopped or replaced.');
+        }
+        this.accountForSetupWait(current);
+        this.assertCanContinue();
+        worker = current;
+      }
       if (worker.teamPaused) {
         this.teamPhase ??= phase;
         this.update('waiting_team', worker.teamPaused);
@@ -2642,20 +3361,6 @@ export class BridgeRunner {
         this.teamPhase = undefined;
         this.update(phase, 'Continuing after team coordination…');
       }
-      const localExecution = ['running', 'waiting_approval'].includes(phase);
-      // UI snapshots are deliberately debounced by the native host. Never use
-      // an older batch's 'review' event to decide that the current batch ended.
-      if (localExecution) {
-        const fresh = await this.queryRpc('state', {});
-        this.assertCanContinue();
-        const current = fresh.workers.find(
-          (item) => item.id === this.options.workerId && item.projectId === this.options.projectId,
-        );
-        if (!current) {
-          throw new Error('The task is no longer available.');
-        }
-        worker = current;
-      }
       if (localExecution) {
         this.pollLocalPause();
       }
@@ -2664,11 +3369,7 @@ export class BridgeRunner {
         return;
       }
       if (worker.state === 'complete') {
-        let completionReason = 'Finished — no automated checks configured';
-        if (worker.checks.length) {
-          completionReason = 'Goal complete — checks passed';
-        }
-        await this.stop(completionReason, 'complete');
+        await this.stop(taskPresentation(worker).detail, 'complete');
         return;
       }
       if (worker.humanAcceptanceReady) {
@@ -2754,6 +3455,9 @@ export class BridgeRunner {
           'waiting_reply',
           'Waiting for ChatGPT to clear the submitted prompt… Nothing is being sent twice.',
         );
+        return;
+      }
+      if (phase === 'waiting_reply' && (await this.recoverUnreadableReply(page, worker))) {
         return;
       }
       if (phase === 'waiting_reply' && (await this.recoverUnlinkedReply(page, worker))) {
@@ -2854,6 +3558,7 @@ export class BridgeRunner {
       // when transient recovery keeps the same send and overall wait alive.
       if (phase === 'waiting_reply') {
         this.replyCandidate = undefined;
+        this.recoveryCandidate = undefined;
       }
       if (this.status.active && !this.recover(error, phase)) {
         await this.stop(errorMessage(error), 'error', bridgeErrorCode(error));
@@ -2887,34 +3592,42 @@ export class BridgeRunner {
     return readPageState(observation, 'inspect');
   }
 
-  private async watchCandidateText(view: ChatView): Promise<string | undefined> {
+  private async watchCandidate(
+    view: ChatView,
+  ): Promise<{ text?: string; reason: ReaderDiagnostic['reason'] }> {
     const receipt = this.options.lastReceipt;
-    if (
-      !receipt?.expectsReplyTo ||
-      !receipt.exchangeId ||
-      view.stopped ||
-      view.busy ||
-      view.draft ||
-      view.ready === false ||
-      view.transcript?.scanLimited ||
-      view.transcript?.unclassifiedTail
-    ) {
-      return;
+    if (!receipt?.expectsReplyTo || !receipt.exchangeId || view.stopped) {
+      return { reason: 'awaiting_receipt' };
+    }
+    if (view.busy) {
+      return { reason: 'busy' };
+    }
+    if (view.draft) {
+      return { reason: 'draft' };
+    }
+    if (view.ready === false) {
+      return { reason: 'not_ready' };
+    }
+    if (view.transcript?.scanLimited) {
+      return { reason: 'scan_limit' };
+    }
+    if (view.transcript?.unclassifiedTail) {
+      return { reason: 'unclassified_tail' };
     }
     const route = this.progress?.conversationUrl || this.status.url;
     if (route.includes('/c/') && view.url !== route) {
-      return;
+      return { reason: 'different_conversation' };
     }
     try {
       conversationURL(view.url);
     } catch {
-      return;
+      return { reason: 'different_conversation' };
     }
-    if (view.codeReplyCount !== undefined && view.codeReplyCount > 1) {
-      return;
+    if ((view.codeReplyCount ?? 0) > 1 || view.codeReplyIssue === 'AMBIGUOUS_REPLIES') {
+      return { reason: 'ambiguous_reply' };
     }
-    if (['NEWER_USER_MESSAGE', 'AMBIGUOUS_REPLIES', 'NEWER_TASK_REPLY'].includes(view.codeReplyIssue || '')) {
-      return;
+    if (['NEWER_USER_MESSAGE', 'NEWER_TASK_REPLY'].includes(view.codeReplyIssue || '')) {
+      return { reason: 'newer_message' };
     }
     // Reuse the normal read-only authority checks. A collapsed/virtualized
     // sent bubble must not make late recovery stricter than the active reader,
@@ -2927,7 +3640,7 @@ export class BridgeRunner {
       !view.lastUserTruncated &&
       !(await this.matchesSavedReceipt(view.lastUserText))
     ) {
-      return;
+      return { reason: 'receipt_mismatch' };
     }
     await this.selectDirectReply(view);
     let raw = '';
@@ -2937,24 +3650,26 @@ export class BridgeRunner {
       raw = view.assistantText;
     }
     if (!raw || !view.complete) {
-      return;
+      return { reason: 'incomplete_reply' };
     }
+    let failure: ReaderDiagnostic['reason'] = 'invalid_reply';
     try {
       const envelope = boundReply(raw, this.options.workerId, this.options.projectId);
       if (view.assistantFormat === 'plain' && !isReadOnlyReply(envelope)) {
-        return;
+        return { reason: 'invalid_reply' };
       }
       if (envelope.replyTo !== receipt.exchangeId || envelope.id === this.progress?.lastImportedId) {
-        return;
+        return { reason: 'wrong_exchange' };
       }
-      if (envelope.actions.some((action) => 'base' in action)) {
+      if (envelope.actions.some((action) => 'path' in action)) {
+        failure = 'validation_rejected';
         const admission = await this.queryRpc('worker.validateReply', {
           workerId: this.options.workerId,
           text: JSON.stringify(envelope),
           epoch: this.executionEpoch,
         });
         if (admission.valid !== true) {
-          return;
+          return { reason: 'validation_rejected' };
         }
       }
       if (
@@ -2962,11 +3677,30 @@ export class BridgeRunner {
         view.lastUserText &&
         (view.lastUserTruncated || !(await this.matchesSavedReceipt(view.lastUserText)))
       ) {
-        return;
+        return { reason: 'receipt_mismatch' };
       }
-      return raw;
+      return { reason: 'verifying_reply', text: raw };
     } catch {
+      return { reason: failure };
+    }
+  }
+
+  private async recordWatchDiagnostic(view: ChatView, reason: ReaderDiagnostic['reason']): Promise<void> {
+    if (!this.status.monitoring) {
       return;
+    }
+    const detail = readerDiagnostic(view, reason);
+    if (JSON.stringify(this.progress?.readerDiagnostic) === JSON.stringify(detail)) {
+      return;
+    }
+    this.readerDiagnostic = detail;
+    this.logObservation('bridge.watch.reader', JSON.stringify(detail));
+    // The observation accompanies the existing watch. Its write cannot change
+    // the watch deadline, grant authority, or turn a reporting failure into Stop.
+    try {
+      await this.checkpoint();
+    } catch {
+      this.logObservation('bridge.watch.diagnostics', 'Could not save the latest reader diagnostic.');
     }
   }
 
@@ -2990,11 +3724,14 @@ export class BridgeRunner {
     }
     this.activeMillisecondsBeforeResume = used;
     this.resumedAt = this.now();
+    this.lastHostSetupWaitMs = worker.setupWaitMs ?? 0;
+    this.excludedSetupWaitMs = 0;
     this.activeTimeStoppedAt = undefined;
     this.activeTimeDeadline = this.now() + this.progress.maxMinutes * 60000 - used;
     this.status.monitoring = false;
     delete this.status.receiving;
     delete this.status.watchUntil;
+    this.readerDiagnostic = undefined;
     this.status.active = true;
     this.status.errorCode = undefined;
     this.reconnectSince = undefined;
@@ -3003,6 +3740,17 @@ export class BridgeRunner {
     this.userVisibilitySince = undefined;
     this.unlinkedCandidate = undefined;
     this.unlinkedWaitSince = undefined;
+  }
+
+  private publishWatchStatus(): void {
+    if (this.status.errorCode === 'TRANSCRIPT_UNSUPPORTED') {
+      this.update(
+        'waiting_reply',
+        'Checking the chat for a complete reply. Miter will continue automatically when it arrives.',
+      );
+      return;
+    }
+    this.update('error', this.lateReplyWatch.reason);
   }
 
   private async watchForReply(): Promise<void> {
@@ -3023,6 +3771,7 @@ export class BridgeRunner {
     this.operationIdle = new Promise((resolve) => {
       this.operationDone = resolve;
     });
+    const pollDone = this.operationDone;
     try {
       const worker = this.boundWorker();
       if (worker.control?.mode === 'stopped' || (worker.control?.epoch ?? 0) !== this.executionEpoch) {
@@ -3049,7 +3798,7 @@ export class BridgeRunner {
           'bridge.watch.reconnected',
           'The reply reader is responding again. No prompt was resent.',
         );
-        this.update('error', this.lateReplyWatch.reason);
+        this.publishWatchStatus();
       }
       if (view.stopped) {
         await this.stop('Paused from the chat page.');
@@ -3074,9 +3823,15 @@ export class BridgeRunner {
             'ChatGPT is generating a reply. Miter will verify its task link before continuing; nothing is being resent.';
         }
         this.update('waiting_reply', receivingReason);
+        let reason: ReaderDiagnostic['reason'] = 'incomplete_reply';
+        if (view.busy) {
+          reason = 'busy';
+        }
+        await this.recordWatchDiagnostic(view, reason);
         return;
       }
-      const text = await this.watchCandidateText(view);
+      const { text, reason } = await this.watchCandidate(view);
+      await this.recordWatchDiagnostic(view, reason);
       if (!this.status.monitoring) {
         return;
       }
@@ -3088,7 +3843,7 @@ export class BridgeRunner {
       if (!text && !correction) {
         if (this.status.receiving) {
           delete this.status.receiving;
-          this.update('error', this.lateReplyWatch.reason);
+          this.publishWatchStatus();
         }
         this.lateReplyWatch.clearCandidate();
         return;
@@ -3122,6 +3877,11 @@ export class BridgeRunner {
       }
       // Resume the SAME coordinator; it runs its ordinary receipt/schema/hash/
       // duplicate checks on the next tick. The watch never imports directly.
+      // An explicit recovery may be waiting for this read. Let it inspect the
+      // result before deciding whether the reviewed prompt still needs sending.
+      if (this.operationRunning) {
+        return;
+      }
       this.resumeWatchClock();
       const exactEcho = view.lastUserText && (await this.matchesSavedReceipt(view.lastUserText));
       this.assertCanContinue();
@@ -3169,7 +3929,7 @@ export class BridgeRunner {
       }
     } finally {
       this.lateReplyWatch.finishPoll();
-      this.operationDone?.();
+      pollDone?.();
     }
   }
 
@@ -3192,7 +3952,7 @@ export class BridgeRunner {
   }
 
   async resendPrompt(confirm: boolean, expectedPrompt: string): Promise<BridgeResendResult> {
-    if (confirm !== true || !this.status.monitoring || this.operationRunning || this.lateReplyWatch.running) {
+    if (confirm !== true || !this.status.monitoring || this.operationRunning) {
       throw Error('Resend is only available after your confirmation while waiting for a reply.');
     }
     if (typeof expectedPrompt !== 'string') {
@@ -3201,11 +3961,23 @@ export class BridgeRunner {
         'Review the exact pending prompt before resending. Nothing was resent.',
       );
     }
+    let pendingInspection: Promise<void> | undefined;
+    if (this.lateReplyWatch.running) {
+      pendingInspection = this.operationIdle;
+    }
+    // Reserve recovery before waiting so another poll or confirmation cannot
+    // overtake it. The read keeps its own completion callback and cannot release
+    // this operation's idle barrier.
     this.operationRunning = true;
     this.operationIdle = new Promise((resolve) => {
       this.operationDone = resolve;
     });
     try {
+      await pendingInspection;
+      this.boundWorker();
+      if (!this.status.monitoring) {
+        throw Error('Task stopped during resend.');
+      }
       const view = await this.watchView();
       if (!this.status.monitoring) {
         throw Error('Task stopped during resend.');
@@ -3213,7 +3985,7 @@ export class BridgeRunner {
       if (view.busy || view.draft || isReplyFragment(view)) {
         throw Error('ChatGPT is answering, receiving JSON, or has a draft. Nothing was resent.');
       }
-      if (await this.watchCandidateText(view)) {
+      if ((await this.watchCandidate(view)).text) {
         return { sent: false, replyFound: true };
       }
       if (
@@ -3244,7 +4016,7 @@ export class BridgeRunner {
       }
       this.dependencies.log(
         'bridge.resend',
-        'User explicitly resent the exact pending prompt. No action history was replayed.',
+        'User resent the reviewed task with a fresh reply ID. No action history was replayed.',
       );
       return { sent: true };
     } catch (error) {
@@ -3259,8 +4031,17 @@ export class BridgeRunner {
   }
 
   async stop(reason = 'Stopped by you', phase = 'stopped', errorCode?: string): Promise<void> {
+    this.hostReconnect = undefined;
     if (!this.status.active && !this.status.monitoring) {
       await this.stopPending;
+      return;
+    }
+    // A cold start only reads the checkpoint and prompts. A failed or cancelled
+    // admission does not own the page session or a newer host checkpoint.
+    if (this.options.waitingReplyRevision !== undefined && this.starting) {
+      this.status.active = false;
+      this.status.errorCode = errorCode;
+      this.update(phase, reason);
       return;
     }
     // A receive-side error is not a user Stop. Suspend sending/execution while
@@ -3280,7 +4061,7 @@ export class BridgeRunner {
       this.activeTimeStoppedAt = this.now();
       this.status.errorCode = errorCode;
       this.lateReplyWatch.start(reason);
-      this.update('error', this.lateReplyWatch.reason);
+      this.publishWatchStatus();
       this.dependencies.log(
         'bridge.attention',
         `Sending paused. Read-only late-reply watch is active for ${LATE_REPLY_WATCH_MS / 60000} minutes; no prompt is automatically resent.`,

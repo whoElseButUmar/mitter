@@ -130,10 +130,117 @@ test('idle unreadable content gets a fresh bounded layout grace after verified g
   assert.equal(harness.runner.status.active, false);
   assert.equal(harness.runner.status.errorCode, 'TRANSCRIPT_UNSUPPORTED');
   assert.equal(harness.runner.status.monitoring, true);
-  assert.match(harness.runner.status.reason, /Use reply/);
+  assert.equal(harness.runner.status.phase, 'waiting_reply');
+  assert.match(harness.runner.status.reason, /continue automatically/i);
+  assert.doesNotMatch(harness.runner.status.reason, /Use reply/);
   assertNoReplyEffects(harness);
   await harness.runner.stop();
   await harness.runner.settled();
+});
+
+test('a briefly unreadable first reply cannot spend the next exchange’s layout grace', async () => {
+  const harness = createHarness();
+  await harness.runner.start();
+  harness.setView(generatingView({ busy: false }));
+  await harness.runner.tick();
+  assert.equal(harness.runner.status.phase, 'reconnecting');
+  harness.advance(10500);
+
+  harness.showReply();
+  harness.setView({ transcript: undefined });
+  await harness.runner.tick();
+  harness.advance(1800);
+  await harness.runner.tick();
+  assert.equal(harness.imports.length, 1);
+  harness.worker.state = 'review';
+  await harness.runner.tick();
+  assert.equal(harness.commits.length, 2);
+
+  harness.setView(generatingView({ busy: false }));
+  await harness.runner.tick();
+  assert.equal(harness.runner.status.active, true);
+  assert.equal(harness.runner.status.phase, 'reconnecting');
+  harness.advance(11999);
+  await harness.runner.tick();
+  assert.equal(harness.runner.status.active, true);
+  harness.advance(1);
+  await harness.runner.tick();
+  assert.equal(harness.runner.status.monitoring, true);
+  assert.equal(harness.runner.status.phase, 'waiting_reply');
+  assert.equal(harness.commits.length, 2);
+  assert.equal(harness.imports.length, 1);
+  await harness.runner.stop();
+});
+
+test('a roleless growing JSON reply waits without a layout alarm or permission to import', async () => {
+  const harness = createHarness();
+  await harness.runner.start();
+  await harness.runner.tick();
+  const transcript = mixedTranscript({
+    roleAttributes: 0,
+    turnContainers: 0,
+    receiptDiscovery: {
+      state: 'unknown_tail',
+      candidates: 40,
+      matches: 1,
+      tailBranches: 2,
+      responseControls: 0,
+    },
+  });
+  harness.setView(generatingView({ busy: false, transcript, codeReplyIssue: 'REPLY_IN_PROGRESS' }));
+  for (const size of [1000, 4000, 18000]) {
+    harness.advance(15000);
+    harness.setView({
+      codeRead: { characters: size, fingerprint: String(size), issue: 'INVALID_JSON', incomplete: true },
+    });
+    await harness.runner.tick();
+    assert.equal(harness.runner.status.active, true);
+    assert.equal(harness.runner.status.phase, 'waiting_reply');
+    assert.equal(harness.runner.status.errorCode, undefined);
+    assertNoReplyEffects(harness);
+  }
+
+  harness.advance(120000);
+  await harness.runner.tick();
+  assert.equal(harness.runner.status.errorCode, 'REPLY_UNREADABLE');
+  assert.equal(harness.runner.status.monitoring, true);
+  assertNoReplyEffects(harness);
+  await harness.runner.stop();
+});
+
+test('a fragment cannot hide ambiguous receipts or recognized unknown transcript barriers', async (context) => {
+  for (const [label, roleAttributes, matches] of [
+    ['ambiguous roleless receipt', 0, 2],
+    ['unknown branch after a recognized user', 1, 1],
+  ]) {
+    await context.test(label, async () => {
+      const harness = createHarness();
+      await harness.runner.start();
+      harness.setView(
+        generatingView({
+          busy: false,
+          codeReplyIssue: 'REPLY_IN_PROGRESS',
+          codeRead: { characters: 1000, fingerprint: 'a123', issue: 'INVALID_JSON', incomplete: true },
+          transcript: mixedTranscript({
+            roleAttributes,
+            receiptDiscovery: {
+              state: 'unknown_tail',
+              candidates: 2,
+              matches,
+              tailBranches: 2,
+              responseControls: 0,
+            },
+          }),
+        }),
+      );
+      await harness.runner.tick();
+      harness.advance(13000);
+      await harness.runner.tick();
+      assert.equal(harness.runner.status.errorCode, 'TRANSCRIPT_UNSUPPORTED');
+      assertNoReplyEffects(harness);
+      await harness.runner.stop();
+    });
+  }
 });
 
 test('busy alone cannot bypass missing, ambiguous, mismatched, or intervening receipt proof', async (context) => {
@@ -283,4 +390,51 @@ test('a rejected or failed inspection restarts completion stability without rene
       await harness.runner.settled();
     });
   }
+});
+
+test('a late watch checkpoints changed reader states without saving chat text or resetting its deadline', async () => {
+  const harness = createHarness();
+  await harness.runner.start();
+  await harness.runner.stop('Reader could not classify the response.', 'error', 'TRANSCRIPT_UNSUPPORTED');
+  const first = structuredClone(harness.progress());
+  const transcript = mixedTranscript({
+    receiptDiscovery: {
+      state: 'unknown_tail',
+      candidates: 8,
+      matches: 1,
+      tailBranches: 2,
+      responseControls: 0,
+    },
+  });
+  harness.setView({ readerRevision: 3, transcript, lastUserText: 'private message contents' });
+  await harness.runner.tick();
+  const observation = {
+    readerRevision: 3,
+    transcript: 'partial',
+    receipt: 'unknown_tail',
+    matches: 1,
+    tail: 2,
+    reason: 'unclassified_tail',
+  };
+  assert.deepEqual(harness.progress().readerDiagnostic, observation);
+  const revision = harness.progress().revision;
+  harness.advance(2000);
+  await harness.runner.tick();
+  assert.equal(
+    harness.progress().revision,
+    revision,
+    'An identical observation does not write a checkpoint.',
+  );
+  harness.setView({ transcript: { ...transcript, unclassifiedTail: false } });
+  harness.advance(2000);
+  await harness.runner.tick();
+  assert.deepEqual(harness.progress().readerDiagnostic, { ...observation, reason: 'receipt_mismatch' });
+  assert.equal(harness.progress().revision, revision + 1);
+  assert.equal(harness.progress().watchUntil, first.watchUntil);
+  assert.equal(harness.progress().stage, first.stage);
+  assert.equal(harness.progress().activeMs, first.activeMs);
+  assert.equal(harness.progress().monitoring, true);
+  assert.deepEqual(harness.progress().lastReceipt, first.lastReceipt);
+  assertNoReplyEffects(harness);
+  await harness.runner.stop();
 });

@@ -8,3 +8,7 @@ coverage/
 pnpm-lock.yaml
 apps/extension/public/mitter-page.js
 apps/extension/public/preview-sandbox.js
+
+# Preserve installed third-party skill snapshots verbatim.
+apps/extension/public/skills/*/SKILL.md
+apps/extension/public/skills/no-ai-slop/eval.md

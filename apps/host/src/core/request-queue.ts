@@ -8,6 +8,7 @@ export class RequestQueue {
   private controls = 0;
   private dialogs = 0;
   private terminals = 0;
+  private appStarts = 0;
   private closed = false;
 
   constructor(
@@ -22,16 +23,32 @@ export class RequestQueue {
     }
 
     if (
-      ['worker.stop', 'worker.pause', 'worker.cancel', 'worker.steer', 'worker.steerValidate'].includes(
-        method,
-      )
+      [
+        'worker.stop',
+        'worker.pause',
+        'worker.cancel',
+        'worker.steer',
+        'worker.steerValidate',
+        'worker.previewStop',
+      ].includes(method)
     ) {
       if (this.controls >= this.controlLimit) {
         return false;
       }
       this.controls++;
       void this.run(execute).finally(() => this.controls--);
-    } else if (method.startsWith('terminal.')) {
+    } else if (method === 'worker.previewStart') {
+      // pnpm may take minutes. Keep project operations and its terminal usable during setup.
+      if (this.appStarts >= 4) {
+        return false;
+      }
+      this.appStarts++;
+      void this.run(execute).finally(() => this.appStarts--);
+    } else if (
+      method.startsWith('terminal.') ||
+      method === 'project.appRuns' ||
+      method === 'worker.previewStatus'
+    ) {
       if (this.terminals >= 24) {
         return false;
       }
@@ -65,7 +82,14 @@ export class RequestQueue {
   async whenIdle(timeoutMs = 135000): Promise<void> {
     const until = Date.now() + timeoutMs;
 
-    while (this.running || this.normal.length || this.controls || this.dialogs || this.terminals) {
+    while (
+      this.running ||
+      this.normal.length ||
+      this.controls ||
+      this.dialogs ||
+      this.terminals ||
+      this.appStarts
+    ) {
       if (Date.now() >= until) {
         throw Error(
           'Host requests did not stop. Close any folder chooser and retry; state ' + 'was not deleted.',

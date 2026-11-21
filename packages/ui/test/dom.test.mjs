@@ -235,7 +235,7 @@ test('menu skips disabled items and refreshes callbacks without replacing nodes'
   assert.equal(document.listenerCount, 0);
 });
 
-test('tab status updates preserve keyed DOM and roving focus, with separate close buttons', async () => {
+test('tab status updates preserve keyed DOM and roving focus with closing outside the tablist', async () => {
   const { root, document } = domFixture();
   const closed = [];
   const options = {
@@ -261,6 +261,7 @@ test('tab status updates preserve keyed DOM and roving focus, with separate clos
   assert.equal(root.querySelector('[role=tab]'), first);
   assert.equal(first.textContent, 'A changed');
   assert.equal(first.querySelector('button'), null);
+  assert.equal(root.querySelector('.tabbar').contains(root.querySelector('.close-active-tab')), false);
   assert.equal(first.querySelector('i').className, 'state-dot dot-working');
   await root.querySelector('.tabbar').emit('keydown', { key: 'ArrowRight', target: first });
   assert.equal(document.activeElement.dataset.tabId, 'b');
@@ -306,6 +307,23 @@ test('draft rewriting protects edited source and aborts disposed previews', asyn
   nextPending.resolve('late result');
   await late;
   assert.equal(root.children.length, 0);
+});
+
+test('a follow-up rewrite rejects NUL before it can replace the draft', async () => {
+  const { root } = domFixture();
+  const composer = mountFollowupComposer(root, {
+    workerId: 'a',
+    running: false,
+    rewrite: async () => 'invalid\0draft',
+    send: async () => assert.fail('A rewrite cannot send a follow-up'),
+  });
+
+  composer.focus('keep this draft');
+  await button(root, 'Preview rewrite').emit('click');
+  assert.match(root.querySelector('.followup-status').textContent, /valid draft/);
+  assert.equal(button(root, 'Apply to draft').hidden, true);
+  assert.equal(root.querySelector('textarea').value, 'keep this draft');
+  composer.dispose();
 });
 
 test('follow-up rewriting aborts on task changes and retrying send keeps its idempotency key', async () => {
@@ -397,9 +415,16 @@ test('model settings validate tokens and ignore post-disposal saves', async () =
     },
     reset() {},
   });
+  const advanced = root.querySelector('[data-model-advanced]');
+  assert.equal(advanced.hasAttribute('open'), false);
   root.querySelector('[name="maxTokens"]').value = '8192';
   await root.querySelector('form').emit('submit');
   assert.match(root.querySelector('.error').textContent, /smaller than context/);
+  assert.equal(
+    advanced.hasAttribute('open'),
+    true,
+    'Custom validation reveals the fields needing correction.',
+  );
   assert.equal(saved, undefined);
   root.querySelector('[name="maxTokens"]').value = '2048';
   const saving = root.querySelector('form').emit('submit');
@@ -410,6 +435,118 @@ test('model settings validate tokens and ignore post-disposal saves', async () =
   await saving;
   assert.equal(closed, 0);
 });
+
+test('native model validation reveals its collapsed ancestors before focusing the invalid draft', async () => {
+  const { root, document } = domFixture();
+  let saves = 0;
+  const mounted = mountModelSettingsForm(root, {
+    settings: { coderModelPath: '/draft/model.gguf', gpu: 'auto', contextSize: 8192, maxTokens: 2048 },
+    save: async () => {
+      saves += 1;
+    },
+    close() {},
+    reset() {},
+  });
+  const advanced = root.querySelector('[data-model-advanced]');
+  const data = root.querySelector('.settings-data');
+  const form = root.querySelector('form');
+  const input = root.querySelector('[name="contextSize"]');
+  input.value = '';
+  form.reportValidity = () => {
+    // The fixture dispatches directly; a browser sends this non-bubbling event through form capture.
+    void form.emit('invalid', { target: input });
+    assert.equal(advanced.hasAttribute('open'), true);
+    input.focus();
+    return false;
+  };
+  await form.emit('submit');
+  assert.equal(document.activeElement, input);
+  assert.equal(saves, 0);
+  assert.equal(input.value, '');
+  assert.equal(root.querySelector('[name="coderModelPath"]').value, '/draft/model.gguf');
+  assert.equal(
+    data.hasAttribute('open'),
+    false,
+    'Validation does not reveal unrelated destructive controls.',
+  );
+  mounted.dispose();
+  assert.equal(form.listenerCount, 0);
+});
+
+test('a failed model save reopens collapsed fields and preserves the draft and reset boundary', async () => {
+  const { root } = domFixture();
+  const pending = Promise.withResolvers();
+  const busy = [];
+  let resets = 0;
+  let saves = 0;
+  const mounted = mountModelSettingsForm(root, {
+    settings: { coderModelPath: '', gpu: 'cpu', contextSize: 8192, maxTokens: 2048 },
+    save: () => {
+      saves += 1;
+      return pending.promise;
+    },
+    close() {},
+    reset: () => {
+      resets += 1;
+    },
+    busyChanged: (value) => busy.push(value),
+  });
+  const advanced = root.querySelector('[data-model-advanced]');
+  const form = root.querySelector('form');
+  const path = root.querySelector('[name="coderModelPath"]');
+  const reset = root.querySelector('[data-reset]');
+  path.value = '/edited/model.gguf';
+  advanced.setAttribute('open', '');
+  const saving = form.emit('submit');
+  advanced.removeAttribute('open');
+  await form.emit('submit');
+  await reset.emit('click');
+  assert.equal(saves, 1);
+  assert.equal(resets, 0);
+  pending.reject(new Error('The model file cannot be read. Choose another file.'));
+  await saving;
+  assert.equal(advanced.hasAttribute('open'), true);
+  assert.equal(path.value, '/edited/model.gguf');
+  assert.equal(root.querySelector('.error').hidden, false);
+  assert.match(root.querySelector('.error').textContent, /Choose another file/);
+  assert.deepEqual(busy, [true, false]);
+  assert.equal(reset.disabled, false);
+  await reset.emit('click');
+  assert.equal(resets, 1);
+  mounted.dispose();
+});
+
+for (const dispose of [false, true]) {
+  test('late failed model saves cannot reveal a closed owner; disposed=' + dispose, async () => {
+    const { root } = domFixture();
+    const pending = Promise.withResolvers();
+    const busy = [];
+    const mounted = mountModelSettingsForm(root, {
+      settings: { coderModelPath: '', gpu: 'auto', contextSize: 8192, maxTokens: 2048 },
+      save: () => pending.promise,
+      close() {},
+      reset() {},
+      busyChanged: (value) => busy.push(value),
+    });
+    const form = root.querySelector('form');
+    const advanced = root.querySelector('[data-model-advanced]');
+    const error = root.querySelector('.error');
+    const saving = form.emit('submit');
+    if (dispose) {
+      mounted.dispose();
+    } else {
+      root.remove();
+    }
+    pending.reject(new Error('Late failure'));
+    await saving;
+    assert.equal(advanced.hasAttribute('open'), false);
+    assert.equal(error.hidden, true);
+    assert.equal(error.textContent, '');
+    assert.deepEqual(busy, [true]);
+    mounted.dispose();
+    assert.equal(form.listenerCount, 0);
+  });
+}
 
 test('selection capture keeps exact UTF-16 offsets and rejects changed source or external ranges', () => {
   const { root, document } = domFixture();

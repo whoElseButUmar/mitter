@@ -1,6 +1,6 @@
 import { sameMessage } from '../message-wire.js';
 import { normalizeMessageText } from '../schemas/primitives.js';
-import { pageElements } from './page-elements.js';
+import { composerSelector, pageElements } from './page-elements.js';
 import type { ComposerState } from './session-state.js';
 import { editableText } from './user-reader.js';
 import type { ChatView, DomRequest, PreparedMessage } from './types.js';
@@ -21,9 +21,7 @@ function isVisible(element: Element | null): element is HTMLElement {
 }
 
 export function findComposer(): HTMLElement | undefined {
-  const selector =
-    '#prompt-textarea[contenteditable="true"],textarea#prompt-textarea,textarea[data-testid="composer-input"],[contenteditable="true"][data-testid="composer-input"],form [contenteditable="true"][role="textbox"]';
-  return pageElements().elements.find((element) => element.matches(selector) && isVisible(element));
+  return pageElements().elements.find((element) => element.matches(composerSelector) && isVisible(element));
 }
 
 export function composerText(element: HTMLElement): string {

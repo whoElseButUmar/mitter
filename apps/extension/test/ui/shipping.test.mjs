@@ -160,6 +160,145 @@ test('project save captures its fields, prevents overlapping submits, and report
   }
 });
 
+test('project modes preserve entered fields and auto-names change only until the user chooses a name', () => {
+  const owner = projectOwner({ create: async () => project });
+  try {
+    owner.draft.setRoot('/first-folder');
+    assert.equal(owner.draft.name(), 'first-folder');
+    owner.draft.setRoot('/second-folder');
+    assert.equal(owner.draft.name(), 'second-folder');
+    owner.draft.setName('My chosen name');
+    owner.draft.setRoot('/third-folder');
+    assert.equal(owner.draft.name(), 'My chosen name');
+    owner.draft.setMode('create');
+    owner.draft.setRoot('/parent');
+    owner.draft.setFolderName('New folder');
+    assert.equal(owner.draft.name(), 'New folder');
+    owner.draft.setMode('open');
+    assert.equal(owner.draft.root(), '/third-folder');
+    assert.equal(owner.draft.name(), 'My chosen name');
+    owner.draft.setMode('create');
+    assert.equal(owner.draft.root(), '/parent');
+    assert.equal(owner.draft.folderName(), 'New folder');
+  } finally {
+    owner.dispose();
+  }
+});
+
+test('Create new uses parent selection and submits one captured folder without replaying duplicate clicks', async () => {
+  const pending = Promise.withResolvers();
+  const choices = [];
+  const calls = [];
+  const opened = [];
+  const owner = projectOwner({
+    initialMode: 'create',
+    pick: async (purpose) => {
+      choices.push(purpose);
+      return { cancelled: false, root: '/parent' };
+    },
+    create: async (fields) => {
+      calls.push(fields);
+      return pending.promise;
+    },
+    save: async () => assert.fail('New folder creation cannot use registration directly.'),
+    opened: (value) => opened.push(value),
+  });
+  try {
+    owner.draft.setFolderName('Café project');
+    await owner.draft.choose();
+    assert.deepEqual(choices, ['parent']);
+    assert.equal(owner.draft.name(), 'Café project');
+    const saving = owner.draft.save();
+    await owner.draft.save();
+    owner.draft.setMode('open');
+    assert.equal(owner.draft.mode(), 'create', 'Busy submissions keep their original mode.');
+    assert.equal(owner.draft.saving(), true);
+    assert.equal(owner.draft.choosing(), false);
+    assert.deepEqual(calls, [{ parentRoot: '/parent', folderName: 'Café project', name: 'Café project' }]);
+    pending.resolve({ ...project, root: '/parent/Café project', name: 'Café project' });
+    await saving;
+    assert.equal(opened.length, 1);
+  } finally {
+    owner.dispose();
+  }
+});
+
+test('project opening derives an optional name and missing location fails before host work', async () => {
+  const calls = [];
+  const owner = projectOwner({
+    save: async (fields) => {
+      calls.push(fields);
+      return project;
+    },
+  });
+  try {
+    await owner.draft.save();
+    assert.match(owner.draft.error(), /Choose a folder first/);
+    assert.deepEqual(calls, []);
+    owner.draft.setRoot('/chosen/folder');
+    owner.draft.setName('');
+    await owner.draft.save();
+    assert.deepEqual(calls, [{ root: '/chosen/folder', name: 'folder' }]);
+  } finally {
+    owner.dispose();
+  }
+});
+
+test('invalid new folder names fail before creation and uncertain results preserve the draft without retry', async () => {
+  const calls = [];
+  const owner = projectOwner({
+    initialMode: 'create',
+    create: async (fields) => {
+      calls.push(fields);
+      throw new Error('Acknowledgement lost');
+    },
+  });
+  try {
+    owner.draft.setRoot('/parent');
+    owner.draft.setFolderName('../outside');
+    await owner.draft.save();
+    assert.deepEqual(calls, []);
+    assert.match(owner.draft.error(), /one folder name/);
+    owner.draft.setFolderName('Inside');
+    await owner.draft.save();
+    assert.equal(calls.length, 1);
+    assert.match(
+      owner.draft.error(),
+      /may already exist.*Open existing.*no request was retried.*Acknowledgement lost/,
+    );
+    assert.equal(owner.draft.root(), '/parent');
+    assert.equal(owner.draft.folderName(), 'Inside');
+    assert.equal(owner.draft.busy(), false);
+  } finally {
+    owner.dispose();
+  }
+});
+
+for (const dismissal of ['close', 'dispose']) {
+  test('late project creation cannot select a project after ' + dismissal, async () => {
+    const pending = Promise.withResolvers();
+    const opened = [];
+    const owner = projectOwner({
+      initialMode: 'create',
+      create: () => pending.promise,
+      opened: (value) => opened.push(value),
+    });
+    owner.draft.setRoot('/parent');
+    owner.draft.setFolderName('New');
+    const saving = owner.draft.save();
+    if (dismissal === 'close') {
+      owner.draft.close();
+    } else {
+      owner.dispose();
+    }
+    pending.resolve({ ...project, root: '/parent/New' });
+    await saving;
+    assert.deepEqual(opened, []);
+    assert.equal(owner.draft.busy(), false);
+    owner.dispose();
+  });
+}
+
 function teamOwner() {
   const reads = [];
   const sends = [];
@@ -432,12 +571,16 @@ function workspaceOwner(context, options = {}) {
   Object.defineProperty(globalThis, 'location', { configurable: true, value: { search: '' } });
   const reads = [];
   const notices = [];
+  let center;
+  let receive = () => assert.fail('The workspace client has not connected.');
   const push = ToastCenter.prototype.push;
   context.mock.method(ToastCenter.prototype, 'push', function (input) {
+    center = this;
     notices.push(input);
     return push.call(this, input);
   });
   context.mock.method(HostClient.prototype, 'connect', function () {
+    receive = (message) => this.onAux(message);
     if (options.bridges) {
       this.onAux({ event: 'bridges', data: options.bridges });
     }
@@ -479,8 +622,101 @@ function workspaceOwner(context, options = {}) {
       projectId: 'project_a',
       taskByProject: { project_a: workerId },
     });
-  return { ...owner, ...fixture, reads, notices, navigate };
+  return {
+    ...owner,
+    ...fixture,
+    reads,
+    notices,
+    navigate,
+    receive: (message) => receive(message),
+    visibleNotices: () => center?.items().map((item) => item.message) || [],
+  };
 }
+
+test('the open setup dialog removes only its own redundant notification in either delivery order', async (context) => {
+  const owner = workspaceOwner(context);
+  await flush();
+  const notify = (workerId, message, setupApproval) =>
+    owner.receive({
+      event: 'taskNotification',
+      data: { workerId, message, kind: 'warning', setupApproval },
+    });
+  notify('worker_a', 'First approval', true);
+  assert.deepEqual(owner.visibleNotices(), ['First approval']);
+  const close = owner.controller.reviewingSetup('worker_a');
+  assert.deepEqual(owner.visibleNotices(), []);
+  notify('worker_a', 'Same approval', true);
+  notify('worker_b', 'Other task needs approval', true);
+  notify('worker_a', 'Another event in this task', undefined);
+  assert.deepEqual(owner.visibleNotices(), ['Other task needs approval', 'Another event in this task']);
+  close();
+  notify('worker_a', 'Approval outside dialog', true);
+  assert.ok(owner.visibleNotices().includes('Approval outside dialog'));
+});
+
+for (const boundary of ['dialog', 'dialog round trip', 'dispose', 'newer navigation']) {
+  for (const outcome of ['success', 'failure']) {
+    test(`notification task navigation ${outcome} cannot change a replacement after ${boundary}`, async (context) => {
+      const owner = workspaceOwner(context);
+      await flush();
+      owner.navigate('worker_a', 1);
+      owner.receive({
+        event: 'taskNotification',
+        data: { workerId: 'worker_b', kind: 'success', message: 'Task complete' },
+      });
+      const opening = owner.notices[0].action.run();
+      assert.deepEqual(owner.reads[0].params, { action: { type: 'open', kind: 'task', id: 'worker_b' } });
+      if (boundary === 'dispose') {
+        owner.dispose();
+      } else if (boundary === 'newer navigation') {
+        owner.navigate('worker_a', 3);
+      } else {
+        owner.controller.setModal('settings');
+        if (boundary === 'dialog round trip') {
+          owner.controller.setModal('');
+        }
+      }
+      if (outcome === 'failure') {
+        owner.reads[0].reject(new Error('Old notification failed.'));
+      } else {
+        owner.reads[0].resolve({
+          ...emptyWorkspace(),
+          revision: 2,
+          projectId: project.id,
+          taskByProject: { [project.id]: 'worker_b' },
+        });
+      }
+      await opening;
+      assert.equal(owner.controller.selected(), 'worker_a');
+      if (boundary === 'dialog') {
+        assert.equal(owner.controller.modal(), 'settings');
+      }
+    });
+  }
+}
+
+test('notification navigation may close its original dialog after its own workspace broadcast', async (context) => {
+  const owner = workspaceOwner(context);
+  await flush();
+  owner.navigate('worker_a', 1);
+  owner.controller.setModal('settings');
+  owner.receive({
+    event: 'taskNotification',
+    data: { workerId: 'worker_b', kind: 'success', message: 'Task complete' },
+  });
+  const opening = owner.notices[0].action.run();
+  const next = {
+    ...emptyWorkspace(),
+    revision: 2,
+    projectId: project.id,
+    taskByProject: { [project.id]: 'worker_b' },
+  };
+  owner.receive({ event: 'workspace', data: next });
+  owner.reads[0].resolve(next);
+  await opening;
+  assert.equal(owner.controller.selected(), 'worker_b');
+  assert.equal(owner.controller.modal(), '');
+});
 
 for (const action of [
   { name: 'prompt', run: (controller) => controller.showText('bootstrap'), result: 'Old setup prompt' },
@@ -550,6 +786,92 @@ test('concurrent dialog reads apply only the latest intent and disposal rejects 
   await disposed;
   assert.equal(owner.controller.modal(), '');
   assert.equal(owner.controller.textValue(), 'Current report');
+});
+
+const syntaxResult = {
+  path: 'app.mjs',
+  hash: 'a'.repeat(64),
+  ok: true,
+  code: 0,
+  scope: 'Parsing only; this does not test behavior.',
+  details: 'No syntax errors.',
+};
+
+test('syntax checks use the selected task and file and show a validated result', async (context) => {
+  const owner = workspaceOwner(context);
+  await flush();
+  owner.navigate('worker_a', 1);
+  owner.controller.output.preview('app.mjs');
+  const checking = owner.controller.checkSelectedSyntax();
+  assert.deepEqual(
+    { method: owner.reads[0].method, params: owner.reads[0].params },
+    { method: 'worker.syntax', params: { workerId: 'worker_a', path: 'app.mjs' } },
+  );
+  owner.reads[0].resolve(syntaxResult);
+  await checking;
+  assert.equal(owner.controller.modal(), 'report');
+  assert.equal(
+    owner.controller.textValue(),
+    'Syntax check passed.\nParsing only; this does not test behavior.\nNo syntax errors.',
+  );
+});
+
+for (const departure of ['navigation', 'dialog', 'file', 'file round trip', 'run', 'disposal']) {
+  for (const outcome of ['success', 'failure']) {
+    test('late syntax ' + outcome + ' is ignored after ' + departure, async (context) => {
+      const owner = workspaceOwner(context);
+      await flush();
+      owner.navigate('worker_a', 1);
+      owner.controller.output.preview('app.mjs');
+      const checking = owner.controller.checkSelectedSyntax();
+      let expectedModal = '';
+      if (departure === 'navigation') {
+        owner.navigate('worker_b', 2);
+        owner.navigate('worker_a', 3);
+      } else if (departure === 'dialog') {
+        owner.controller.setModal('worker');
+        expectedModal = 'worker';
+      } else if (departure === 'disposal') {
+        owner.dispose();
+      } else if (departure === 'run') {
+        owner.controller.setSnapshot((snapshot) => ({
+          ...snapshot,
+          workers: snapshot.workers.map((task) => ({ ...task, runId: 'replacement_run' })),
+        }));
+      } else {
+        owner.controller.output.preview('another.mjs');
+        if (departure === 'file round trip') {
+          owner.controller.output.preview('app.mjs');
+        }
+      }
+      if (outcome === 'success') {
+        owner.reads[0].resolve(syntaxResult);
+      } else {
+        owner.reads[0].reject(new Error('Obsolete syntax request failed.'));
+      }
+      await checking;
+      assert.equal(owner.controller.modal(), expectedModal);
+      assert.equal(owner.controller.textValue(), '');
+      assert.doesNotMatch(owner.document.body.textContent, /Obsolete syntax request failed/);
+    });
+  }
+}
+
+test('syntax checking requires a selected JavaScript file and rejects a foreign result', async (context) => {
+  const owner = workspaceOwner(context);
+  await flush();
+  await owner.controller.checkSelectedSyntax();
+  owner.navigate('worker_a', 1);
+  owner.controller.output.preview('styles.css');
+  await owner.controller.checkSelectedSyntax();
+  assert.equal(owner.reads.length, 0);
+  owner.controller.output.preview('app.mjs');
+  const checking = owner.controller.checkSelectedSyntax();
+  owner.reads[0].resolve({ ...syntaxResult, path: 'another.mjs' });
+  await checking;
+  assert.equal(owner.controller.modal(), '');
+  assert.equal(owner.controller.textValue(), '');
+  assert.match(owner.document.body.textContent, /syntax result belongs to another file/);
 });
 
 test('dialog read scope ignores repeated snapshots but remembers another dialog opening and closing', async (context) => {
@@ -633,6 +955,27 @@ async function startWorkspaceAction(owner, phase) {
   }
   return { completion, request: owner.reads.at(-1) };
 }
+
+test('a restored reply error keeps Resume available before reconnecting the saved chat', async (context) => {
+  const owner = await actionOwner(context, { state: 'review' }, [
+    bridge({ workerId: 'worker_a', phase: 'stopped', errorCode: 'TRANSCRIPT_UNSUPPORTED' }),
+  ]);
+  assert.equal(owner.controller.preferReply(), false);
+  const pending = await startWorkspaceAction(owner, 'chat resume');
+  assert.equal(pending.request.method, 'bridge.resume');
+  assert.equal(pending.request.params.workerId, 'worker_a');
+  pending.request.resolve({ resumed: true });
+  await pending.completion;
+  assert.equal(owner.controller.modal(), '');
+});
+
+test('a current reader error still offers the existing reply without a blind resume', async (context) => {
+  const owner = await actionOwner(context, { state: 'review' }, [
+    bridge({ workerId: 'worker_a', phase: 'error', errorCode: 'TRANSCRIPT_UNSUPPORTED' }),
+  ]);
+  assert.equal(owner.controller.preferReply(), true);
+  assert.deepEqual(owner.reads, []);
+});
 
 for (const phase of [
   'resend',

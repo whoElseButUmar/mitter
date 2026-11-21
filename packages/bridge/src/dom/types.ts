@@ -1,15 +1,36 @@
 import { z } from 'zod';
+import { bootstrapDraftSchema } from '../bootstrap-draft.js';
+import {
+  readerRevisionSchema,
+  receiptDiscoveryStateSchema,
+  transcriptDiscoveryStateSchema,
+} from '../../../protocol/src/schemas/reader-diagnostic.js';
 import { proposalEnvelopeSchema } from '../../../protocol/src/proposal.js';
+import { exceedsHandoffBytes } from '../../../protocol/src/reply-json.js';
 import { outboundReceiptSchema } from '../message-wire.js';
 import { identifierSchema, nonNegativeIntegerSchema } from '../schemas/primitives.js';
 
-export const ASSISTANT_READER_VERSION =
-  'logical-pre/4-user-turn/6-discovery/3-code-reply/5-send/2-control/1' as const;
+export const USER_READER_VERSION = 'user-turn/8';
+// Increment when packaged DOM behavior changes without changing the compatible reader protocol.
+export const PAGE_READER_REVISION = 8;
+// Build verification checks this exact marker in the packaged page script.
+export const ASSISTANT_READER_VERSION = 'logical-pre/5-user-turn/8-discovery/8-code-reply/6-send/3-control/2';
 
 export const domRequestSchema = z
   .object({
     op: z
-      .enum(['control', 'probe', 'reply', 'inspect', 'prepare', 'commit', 'send', 'stop', 'interrupt'])
+      .enum([
+        'control',
+        'probe',
+        'reply',
+        'inspect',
+        'prepare',
+        'commit',
+        'send',
+        'clear_draft',
+        'stop',
+        'interrupt',
+      ])
       .describe('Page operation to perform.'),
     token: z.string().max(100).describe('Token identifying the runner that owns this session.'),
     url: z.string().describe('Linked page URL; the root route is allowed while a conversation loads.'),
@@ -20,12 +41,19 @@ export const domRequestSchema = z
     text: z.string().optional().describe('Outgoing composer text, unchanged by the bridge.'),
     messageId: z.string().optional().describe('Send intent ID used to prevent duplicate clicks.'),
     composerSession: identifierSchema.optional().describe('Document that prepared this send intent.'),
+    staleDraft: bootstrapDraftSchema
+      .optional()
+      .describe('Exact confirmed stale draft authorized by the coordinator.'),
     receipt: outboundReceiptSchema.optional().describe('Saved receipt for an exact outgoing message.'),
     expiresAt: z.number().describe('Session expiration time in milliseconds since the Unix epoch.'),
     allowConversationBind: z
       .boolean()
       .optional()
       .describe('Allow read-only observation while the route settles.'),
+    preservePause: z
+      .literal(true)
+      .optional()
+      .describe('Respect a page pause when reconnecting a saved reply.'),
     includeHistory: z.boolean().optional().describe('Include bounded historical task-turn counts.'),
   })
   .describe('Request sent to the DOM-only page adapter.');
@@ -78,6 +106,29 @@ export type AssistantReadResult = AssistantReadObservation & {
   source?: HTMLElement;
 };
 
+export const replyRecoverySchema = z
+  .object({
+    kind: z
+      .enum(['unreadable_reply', 'duplicate_send'])
+      .describe(
+        'A malformed or unclassified response, or repeated exact sent messages requiring a new exchange.',
+      ),
+    exchangeId: identifierSchema.describe('The saved exchange used to match the complete outgoing message.'),
+    userText: z
+      .string()
+      .max(160000)
+      .describe('The complete latest outgoing body matched against its receipt.'),
+    responseText: z
+      .string()
+      .max(400001)
+      .refine((text) => !exceedsHandoffBytes(text))
+      .describe('Bounded text from one adjacent response carrier; never an import authorization.'),
+    format: assistantReadObservationSchema.shape.format,
+    issue: z.string().max(100).optional().describe('Why the observed source carrier needs correction.'),
+  })
+  .describe('Read-only evidence for a bounded fresh-exchange correction, never for importing actions.');
+export type ReplyRecovery = z.infer<typeof replyRecoverySchema>;
+
 /** Message discovery is intentionally separate from reading a message's text.
  * A successful script handshake is NOT proof that a transcript was found.
  * Attribute variants are combined per turn, never guessed from code contents
@@ -96,19 +147,7 @@ export type MessageRole = 'user' | 'assistant' | 'unknown' | '';
  */
 export const receiptDiscoveryStatsSchema = z
   .object({
-    state: z
-      .enum([
-        'searching',
-        'missing',
-        'mismatch',
-        'ambiguous',
-        'collapsed',
-        'matched',
-        'waiting_reply',
-        'unknown_tail',
-        'limit',
-      ])
-      .describe('Result of receipt-bound message discovery.'),
+    state: receiptDiscoveryStateSchema,
     candidates: nonNegativeIntegerSchema.describe('Potential receipt-containing message bubbles.'),
     matches: nonNegativeIntegerSchema.describe('Disjoint bubbles matching the full saved receipt.'),
     tailBranches: nonNegativeIntegerSchema.describe('Content branches following the verified bubble.'),
@@ -128,7 +167,7 @@ export type CodeAncestor = z.infer<typeof codeAncestorSchema>;
 export const transcriptStatsSchema = z
   .object({
     version: z.enum(['message-discovery/1', 'message-discovery/2']).describe('Transcript-discovery version.'),
-    state: z.enum(['ready', 'empty', 'unrecognized', 'partial']).describe('Transcript-discovery result.'),
+    state: transcriptDiscoveryStateSchema,
     roleAttributes: nonNegativeIntegerSchema.describe('Turns found through the primary role attribute.'),
     alternativeRoles: nonNegativeIntegerSchema.describe('Turns found through alternative role attributes.'),
     semanticRoles: nonNegativeIntegerSchema.describe('Turns found through outer message headings.'),
@@ -157,7 +196,7 @@ export type TranscriptStats = z.infer<typeof transcriptStatsSchema>;
  * No code, names, IDs, or paths are included in these structural statistics. */
 export const userReadStatsSchema = z
   .object({
-    serializer: z.literal('user-turn/6').describe('Version of the user-message serializer.'),
+    serializer: z.literal(USER_READER_VERSION).describe('Version of the user-message serializer.'),
     roleElements: nonNegativeIntegerSchema.describe('Role elements inside the user message.'),
     preElements: nonNegativeIntegerSchema.describe('PRE elements inside the user message.'),
     codeElements: nonNegativeIntegerSchema.describe('CODE elements inside the user message.'),
@@ -187,6 +226,7 @@ export type MessageDiscovery = {
   stats: TranscriptStats;
   assistantRead?: AssistantReadResult;
   userRead?: UserReadResult;
+  replyRecovery?: ReplyRecovery;
 };
 
 /** Independent code-widget lane. Reads the bytes of the code associated with
@@ -265,6 +305,7 @@ export type ObservedTaskTurn = z.infer<typeof observedTaskTurnSchema>;
 
 export const chatViewSchema = z
   .object({
+    readerRevision: readerRevisionSchema.optional(),
     url: z.string().describe('Observed page origin and path; root/loading routes are valid observations.'),
     count: nonNegativeIntegerSchema.describe('Discovered transcript turns.'),
     userCount: nonNegativeIntegerSchema.describe('Discovered user turns.'),
@@ -294,6 +335,9 @@ export const chatViewSchema = z
       .describe('Latest discovered user identity, including document-local hints.'),
     userIds: z.array(z.string()).optional().describe('Bounded discovered user identities.'),
     transcript: transcriptStatsSchema.optional().describe('Structural transcript-discovery diagnostics.'),
+    replyRecovery: replyRecoverySchema
+      .optional()
+      .describe('Receipt-adjacent evidence for correction only, never reply selection or import.'),
     codeReply: codeReplySchema
       .optional()
       .describe('Observed correlated code reply, still subject to coordinator gates.'),
@@ -357,7 +401,7 @@ export const chatViewSchema = z
       .optional()
       .describe('Document visibility when the view was read.'),
     outcome: z
-      .enum(['pending', 'prepared', 'clicked', 'already_clicked', 'already_sent'])
+      .enum(['pending', 'prepared', 'clicked', 'already_clicked', 'already_sent', 'cleared'])
       .optional()
       .describe('Composer transaction outcome, absent for read-only operations.'),
   })

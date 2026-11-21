@@ -18,8 +18,8 @@ The original nine module paths and their exports remain available:
 - `src/rewrite.ts`: draft-only rewrite requests, responses, prompts, and local templates.
 - `src/task-brief.ts`: deterministic, display-only task shaping.
 
-`APP_VERSION` retains the current worktree value (`1.0.0-rc.21`), re-exported through
-`index.ts` from `constants.ts`. No baseline was restored from Git HEAD.
+`APP_VERSION` identifies the current release and is re-exported through
+`index.ts` from `constants.ts`. Views reject a mismatched host and ask for a reload.
 
 Serialized data types are exported `z.infer` aliases from described schemas.
 Callbacks, parser callback results, clocks, and live assembly state use ordinary
@@ -67,6 +67,10 @@ import graph acyclic. The architecture test checks both type and runtime imports
   threshold; complete outgoing transfers remain bounded at **32 MiB**.
 - Rich-text whitespace normalization runs only outside quoted JSON strings.
   Paths, source code, search text, bases, and hashes are never repaired or trimmed.
+  A whole reply may use matching normal or singly escaped triple-backtick fences,
+  including a single backslash before a physical linebreak. Prose, multiple blocks,
+  mismatched markers, and double escapes remain invalid. `hasCompleteReplyFence`
+  identifies the outer transport only; JSON and full envelope validation still apply.
 - Defaults exist only at the original boundaries: nullish list paths (`.`),
   nullish pause durations (`120`), nullish request parameters (`{}`), and settings
   RPC/recovery defaults. Follow-up instructions explicitly trim. Incoming `autoStart`

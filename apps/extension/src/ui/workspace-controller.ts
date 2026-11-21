@@ -1,4 +1,5 @@
 import { createSignal, createMemo, createEffect, onMount, onCleanup, batch } from 'solid-js';
+import { showConfirmation } from './confirmation';
 
 import {
   taskBoundarySchema,
@@ -7,6 +8,7 @@ import {
   type Worker,
 } from '../../../../packages/protocol/src/index';
 import { reviewedTaskBoundary } from './task-boundary';
+import type { TerminalRunFocus, SetupTerminalFocus } from './terminal-runs';
 import { parseProposalEnvelope } from '../../../../packages/protocol/src/proposal';
 import { exceedsHandoffBytes } from '../../../../packages/protocol/src/reply-json';
 import { DEFAULT_SETTINGS } from '../../../../packages/protocol/src/model-settings';
@@ -35,6 +37,7 @@ import {
   continuePendingResultSchema,
   resendResultSchema,
   resendNotice,
+  syntaxResultSchema,
 } from './rpc-results';
 import { callResult } from './rpc';
 
@@ -76,6 +79,8 @@ export function createWorkspaceController() {
   const [busy, setBusy] = createSignal(false);
   const [terminalOpen, setTerminalOpen] = createSignal(false);
   const [terminalMounted, setTerminalMounted] = createSignal(false);
+  const [runFocus, setRunFocus] = createSignal<TerminalRunFocus>();
+  const [setupFocus, setSetupFocus] = createSignal<SetupTerminalFocus>();
   const [debugOpen, setDebugOpen] = createSignal(false);
   const [logs, setLogs] = createSignal<DebugEntry[]>([]);
   const [bridges, setBridges] = createSignal<BridgeStatus[]>([]);
@@ -92,6 +97,7 @@ export function createWorkspaceController() {
   const [resendWorker, setResendWorker] = createSignal('');
   let alive = true;
   let dialogGeneration = 0;
+  let modalGeneration = 0;
   let dialogRead = 0;
   let runGeneration = 0;
   let handoffRevision = 0;
@@ -109,6 +115,11 @@ export function createWorkspaceController() {
       }
     | undefined;
   const dialogScope = createMemo(() => navigation().revision + ':' + modal());
+
+  createEffect(() => {
+    modal();
+    modalGeneration++;
+  });
 
   // Returning to the same task or dialog does not revive a read begun before leaving it.
   createEffect(() => {
@@ -179,8 +190,19 @@ export function createWorkspaceController() {
   };
 
   const toasts = new ToastCenter();
+  let visibleSetupReview: { workerId: string } | undefined;
+  const reviewingSetup = (workerId: string) => {
+    const review = { workerId };
+    visibleSetupReview = review;
+    // The notice can reach this view just before the snapshot that opens the dialog.
+    toasts.dismissKey('setup-approval:' + workerId);
+    return () => {
+      if (visibleSetupReview === review) {
+        visibleSetupReview = undefined;
+      }
+    };
+  };
   const success = (message: string) => toasts.push({ message, kind: 'success' });
-  const info = (message: string) => toasts.push({ message, kind: 'info' });
 
   // Clear calls from existing forms do not erase another operation's feedback.
   const setNotice = (message: string) => {
@@ -195,6 +217,31 @@ export function createWorkspaceController() {
     setTerminalMounted(true);
     setTerminalOpen((value) => !value);
     setDebugOpen(false);
+  };
+
+  const showAppTerminal = (task: Worker) => {
+    const [failure, setFailure] = createSignal('');
+    batch(() => {
+      setSetupFocus(undefined);
+      setRunFocus({ projectId: task.projectId, workerId: task.id, ...reviewedTaskBoundary(task), failure });
+      setTerminalMounted(true);
+      setTerminalOpen(true);
+      setDebugOpen(false);
+    });
+    return (message: string) => setFailure(message);
+  };
+
+  const showSetupTerminal = (focus: SetupTerminalFocus) => {
+    if (navigation().projectId !== focus.projectId || selected() !== focus.workerId) {
+      return;
+    }
+    batch(() => {
+      setRunFocus(undefined);
+      setSetupFocus(focus);
+      setTerminalMounted(true);
+      setTerminalOpen(true);
+      setDebugOpen(false);
+    });
   };
 
   const useReply = () => {
@@ -249,19 +296,47 @@ export function createWorkspaceController() {
         const notification = message.data;
 
         if (typeof notification?.workerId === 'string' && typeof notification.message === 'string') {
+          let key = 'task:' + notification.workerId;
+          if (notification.setupApproval) {
+            if (visibleSetupReview?.workerId === notification.workerId) {
+              return;
+            }
+            key = 'setup-approval:' + notification.workerId;
+          }
           toasts.push({
             message: notification.message,
             kind: notification.kind,
-            key: 'task:' + notification.workerId,
+            key,
             duration: 8000,
             action: {
               label: 'Open task',
               run: async () => {
-                const state = await callResult(rpc, workspaceStateSchema, 'workspace.action', {
-                  action: { type: 'open', kind: 'task', id: notification.workerId },
-                });
-                applyNavigation(state);
-                setModal('');
+                if (!alive) {
+                  return;
+                }
+                const dialog = modalGeneration;
+                const operation = ++dialogRead;
+                const navigationRevision = navigation().revision;
+                const isCurrent = () =>
+                  alive &&
+                  dialog === modalGeneration &&
+                  operation === dialogRead &&
+                  (navigation().revision === navigationRevision || selected() === notification.workerId);
+                try {
+                  const state = await callResult(rpc, workspaceStateSchema, 'workspace.action', {
+                    action: { type: 'open', kind: 'task', id: notification.workerId },
+                  });
+                  if (isCurrent()) {
+                    applyNavigation(state);
+                    if (navigation().revision === state.revision && selected() === notification.workerId) {
+                      setModal('');
+                    }
+                  }
+                } catch (error) {
+                  if (isCurrent()) {
+                    throw error;
+                  }
+                }
               },
             },
           });
@@ -310,7 +385,12 @@ export function createWorkspaceController() {
     snapshot().workers.filter((task) => task.projectId === navigation().projectId),
   );
   const bridge = createMemo(() => bridges().find((bridgeStatus) => bridgeStatus.workerId === selected()));
-  const preferReply = createMemo(() => !bridge()?.active && preferReplyRecovery(bridge()?.errorCode));
+  const preferReply = createMemo(() => {
+    const status = bridge();
+    // Saved errors survive reload, but the stopped session must first reconnect
+    // before it can watch the reply or offer an explicitly reviewed resend.
+    return !status?.active && status?.phase !== 'stopped' && preferReplyRecovery(status?.errorCode);
+  });
 
   const action = async (method: string, params: Record<string, unknown> = {}) => {
     if (!alive || busy()) {
@@ -407,6 +487,7 @@ export function createWorkspaceController() {
     modal,
     setModal,
   });
+  const syntaxSelection = createMemo(() => ({ workerId: selected(), path: output.file() }));
 
   const newWorker = (projectId = navigation().projectId) => {
     const projectEntry = snapshot().projects.find((entry) => entry.id === projectId);
@@ -664,6 +745,39 @@ export function createWorkspaceController() {
     }
   };
 
+  const checkSelectedSyntax = async () => {
+    const selection = syntaxSelection();
+    if (!worker() || !/\.(js|mjs|cjs)$/.test(selection.path)) {
+      return;
+    }
+    const ownsDialog = beginDialogRead();
+    if (!ownsDialog) {
+      return;
+    }
+    const generation = runGeneration;
+    const isCurrent = () => ownsDialog() && generation === runGeneration && selection === syntaxSelection();
+
+    try {
+      const result = await callResult(rpc, syntaxResultSchema, 'worker.syntax', selection);
+      if (!isCurrent()) {
+        return;
+      }
+      if (result.path !== selection.path) {
+        throw new Error('The syntax result belongs to another file. Select the file and check it again.');
+      }
+      let summary = 'Syntax check failed.';
+      if (result.ok) {
+        summary = 'Syntax check passed.';
+      }
+      setTextValue(summary + '\n' + result.scope + '\n' + result.details);
+      setModal('report');
+    } catch (error) {
+      if (isCurrent()) {
+        setNotice(errorMessage(error));
+      }
+    }
+  };
+
   const runWithChat = async () => {
     if (!alive || busy()) {
       return;
@@ -838,9 +952,35 @@ export function createWorkspaceController() {
     }
   };
 
-  const confirmAction = (method: string, message: string) => {
-    if (confirm(message)) {
-      void action(method, { confirm: true });
+  const confirmationLifetime = new AbortController();
+  const confirmAction = async (method: string, message: string) => {
+    const task = worker();
+    if (!task) {
+      return;
+    }
+    const scope = runGeneration;
+    const isCurrent = () => alive && selected() === task.id && runGeneration === scope;
+    let label = 'Continue';
+    if (method === 'worker.rollback') {
+      label = 'Restore file edits';
+    } else if (method === 'worker.cancel') {
+      label = 'Cancel task';
+    }
+    try {
+      const accepted = await showConfirmation({
+        title: label,
+        message,
+        confirmLabel: label,
+        signal: confirmationLifetime.signal,
+        isCurrent,
+      });
+      if (accepted && isCurrent()) {
+        await action(method, { confirm: true });
+      }
+    } catch (error) {
+      if (isCurrent()) {
+        setNotice(errorMessage(error));
+      }
     }
   };
 
@@ -906,6 +1046,7 @@ export function createWorkspaceController() {
 
   onCleanup(() => {
     alive = false;
+    confirmationLifetime.abort();
     activeMutation = undefined;
     resendTarget = undefined;
     setAutomationTarget(undefined);
@@ -922,7 +1063,6 @@ export function createWorkspaceController() {
     selected,
     formProjectId,
     success,
-    info,
     setNotice,
     modal,
     setModal,
@@ -934,6 +1074,11 @@ export function createWorkspaceController() {
     terminalOpen,
     setTerminalOpen,
     terminalMounted,
+    runFocus,
+    showAppTerminal,
+    setupFocus,
+    showSetupTerminal,
+    reviewingSetup,
     toggleTerminal,
     debugOpen,
     setDebugOpen,
@@ -966,6 +1111,7 @@ export function createWorkspaceController() {
     showFollowups,
     showNotifications,
     showText,
+    checkSelectedSyntax,
     newWorker,
     runWithChat,
     continuePending,

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { identifierSchema as protocolIdentifierSchema } from '../../../protocol/src/schemas/primitives.js';
+import { chatgptAddress } from '../connections/chatgpt.js';
 
 export const identifierSchema = protocolIdentifierSchema().describe(
   'An ID with up to 100 letters, numbers, underscores, or hyphens.',
@@ -23,15 +24,7 @@ export const nonNegativeIntegerSchema = z
   .describe('A whole number that is zero or greater.');
 
 export function isSavedConversationUrl(address: string): boolean {
-  try {
-    const url = new URL(address);
-    const supportedOrigin = url.origin === 'https://chatgpt.com' || url.origin === 'https://chat.openai.com';
-    const conversationPath = /^\/(?:g\/[^/]+\/)?c\/[a-zA-Z0-9-]+$/.test(url.pathname);
-
-    return supportedOrigin && conversationPath && !url.search && !url.hash;
-  } catch {
-    return false;
-  }
+  return chatgptAddress(address) === address;
 }
 
 export const conversationUrlSchema = z

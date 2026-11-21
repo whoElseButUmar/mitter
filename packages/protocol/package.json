@@ -1,6 +1,6 @@
 {
   "name": "@mitter/protocol",
-  "version": "1.0.0-rc.21",
+  "version": "1.0.0-rc.59",
   "private": true,
   "type": "module",
   "exports": {

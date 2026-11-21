@@ -4,7 +4,7 @@ import { SandboxedDocument } from './components/SandboxedDocument';
 import { SelectedSource } from './components/SelectedSource';
 import type { ChangeRequest } from './schemas/requests';
 import { fileViewerMenu } from '../../../packages/ui/src/file-menu';
-import { Show, For } from 'solid-js';
+import { createEffect, onCleanup, Show, For } from 'solid-js';
 import { isTextAsset, type PreviewRPC } from '../../../packages/ui/src/preview';
 import { ContextArea } from './ContextArea';
 import { MenuButton } from './controls';
@@ -21,9 +21,40 @@ export function FileViewer(props: {
   copy: (text: string) => Promise<void>;
   success?: (message: string) => void;
   openWindow: () => void;
+  focusRequest?: number;
 }) {
   const { asset, source, hash, html, url, mode, setMode, error, loading, warnings, setReload } =
     createFilePreview(props);
+  let caption: HTMLDivElement | undefined;
+
+  createEffect(() => {
+    const request = props.focusRequest;
+    const workerId = props.workerId;
+    const path = props.path;
+    if (request === undefined) {
+      return;
+    }
+    let current = true;
+    onCleanup(() => {
+      current = false;
+    });
+    // File selection closes its dialog first; focus the selected file after
+    // that dialog has restored its opener, without reviving an old selection.
+    queueMicrotask(() => {
+      if (
+        current &&
+        props.focusRequest === request &&
+        props.workerId === workerId &&
+        props.path === path &&
+        caption?.isConnected &&
+        caption.checkVisibility() &&
+        !caption.ownerDocument.querySelector('dialog[open]')
+      ) {
+        caption.focus({ preventScroll: true });
+        caption.scrollIntoView({ block: 'start', inline: 'nearest' });
+      }
+    });
+  });
 
   const open = (application: 'finder' | 'vscode') => {
     void props
@@ -61,7 +92,15 @@ export function FileViewer(props: {
 
   return (
     <ContextArea label="File actions" items={menu()} class="file-viewer">
-      <div class="file-caption">
+      <div
+        class="file-caption"
+        ref={(element) => {
+          caption = element;
+        }}
+        tabindex="-1"
+        role="group"
+        aria-label={'File: ' + props.path}
+      >
         <span title={props.path}>{props.path}</span>
         <div class="spacer" />
         <Show when={hasTextAsset()}>
@@ -102,77 +141,84 @@ export function FileViewer(props: {
         </p>
       </Show>
       <Show when={error()}>
-        <p class="error" role="alert">
-          {error()}
-        </p>
+        <div class="read-error">
+          <p class="error" role="alert">
+            Could not load this file. {error()}
+          </p>
+          <button type="button" disabled={loading()} onClick={() => setReload((value) => value + 1)}>
+            Retry file
+          </button>
+        </div>
       </Show>
       <Show when={!loading() && !error() && asset()}>
         {(currentAsset) => (
-          <Show
-            when={mode() === 'source'}
-            fallback={
-              <div class="rendered-preview">
-                <Show keyed when={html()}>
-                  {(value) => <SandboxedDocument html={value} />}
-                </Show>
-                <Show when={!html() && currentAsset().mime.startsWith('image/')}>
-                  <img src={url()} alt={props.path} />
-                </Show>
-                <Show when={currentAsset().mime.startsWith('video/')}>
-                  <video controls src={url()} preload="metadata" />
-                </Show>
-                <Show when={currentAsset().mime.startsWith('audio/')}>
-                  <audio controls src={url()} preload="metadata" />
-                </Show>
-                <Show when={currentAsset().mime === 'application/pdf'}>
-                  <iframe class="rendered-document" title="PDF preview" src={url()} />
-                  <p class="preview-hint">
-                    PDF uses Chrome’s viewer. Use File → Open in new window if the embedded viewer is
-                    unavailable.
-                  </p>
-                </Show>
-                <Show
-                  when={
-                    !html() &&
-                    !/^(image|audio|video)\//.test(currentAsset().mime) &&
-                    currentAsset().mime !== 'application/pdf'
-                  }
-                >
-                  <p class="preview-hint">No rendered preview for this file. Open it in your editor.</p>
-                </Show>
-                <Show when={warnings().length}>
-                  <details class="preview-warnings">
-                    <summary>Preview limitations ({warnings().length})</summary>
-                    <For each={warnings()}>{(warning) => <p>{warning}</p>}</For>
-                  </details>
-                </Show>
-              </div>
-            }
-          >
+          <Show when={currentAsset().size > 0} fallback={<p class="preview-hint">This file is empty.</p>}>
             <Show
-              keyed
-              when={hash() && props.workerId + ':' + props.path + ':' + hash()}
+              when={mode() === 'source'}
               fallback={
-                <pre class="file-content" tabindex="0">
-                  {source()}
-                </pre>
+                <div class="rendered-preview">
+                  <Show keyed when={html()}>
+                    {(value) => <SandboxedDocument html={value} />}
+                  </Show>
+                  <Show when={!html() && currentAsset().mime.startsWith('image/')}>
+                    <img src={url()} alt={props.path} />
+                  </Show>
+                  <Show when={currentAsset().mime.startsWith('video/')}>
+                    <video controls src={url()} preload="metadata" />
+                  </Show>
+                  <Show when={currentAsset().mime.startsWith('audio/')}>
+                    <audio controls src={url()} preload="metadata" />
+                  </Show>
+                  <Show when={currentAsset().mime === 'application/pdf'}>
+                    <iframe class="rendered-document" title="PDF preview" src={url()} />
+                    <p class="preview-hint">
+                      PDF uses Chrome’s viewer. Use File → Preview in new window if the embedded viewer is
+                      unavailable.
+                    </p>
+                  </Show>
+                  <Show
+                    when={
+                      !html() &&
+                      !/^(image|audio|video)\//.test(currentAsset().mime) &&
+                      currentAsset().mime !== 'application/pdf'
+                    }
+                  >
+                    <p class="preview-hint">No rendered preview for this file. Open it in your editor.</p>
+                  </Show>
+                  <Show when={warnings().length}>
+                    <details class="preview-warnings">
+                      <summary>Preview limitations ({warnings().length})</summary>
+                      <For each={warnings()}>{(warning) => <p>{warning}</p>}</For>
+                    </details>
+                  </Show>
+                </div>
               }
             >
-              {(_previewIdentity) => (
-                <>
-                  <p class="selection-hint">
-                    Select code to request a change. Alt + Enter also opens the request.
-                  </p>
-                  <SelectedSource
-                    workerId={props.workerId}
-                    path={props.path}
-                    source={source()}
-                    hash={hash()}
-                    request={props.request}
-                    copy={props.copy}
-                  />
-                </>
-              )}
+              <Show
+                keyed
+                when={hash() && props.workerId + ':' + props.path + ':' + hash()}
+                fallback={
+                  <pre class="file-content" tabindex="0">
+                    {source()}
+                  </pre>
+                }
+              >
+                {(_previewIdentity) => (
+                  <>
+                    <p class="selection-hint">
+                      Select code to request a change. Alt + Enter also opens the request.
+                    </p>
+                    <SelectedSource
+                      workerId={props.workerId}
+                      path={props.path}
+                      source={source()}
+                      hash={hash()}
+                      request={props.request}
+                      copy={props.copy}
+                    />
+                  </>
+                )}
+              </Show>
             </Show>
           </Show>
         )}

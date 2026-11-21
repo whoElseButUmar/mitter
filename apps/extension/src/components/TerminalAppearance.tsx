@@ -2,6 +2,7 @@ import { terminalSettings } from '../ui/terminal-settings';
 import { For, Show, type Accessor } from 'solid-js';
 import { SelectSurface } from '../controls';
 import { Modal } from '../components';
+import { Icon } from '../icons';
 import {
   BUNDLED_FONT,
   BUILTIN_THEMES,
@@ -51,244 +52,250 @@ export function TerminalAppearance(props: TerminalAppearanceProps) {
   return (
     <Modal title="Terminal appearance" close={() => props.close()}>
       <SelectSurface>
-        <label class="field">
-          <span>Theme</span>
-          <select
-            disabled={!ready()}
-            value={prefs().themeId}
-            onChange={(event) =>
-              void apply({
-                ...prefs(),
-                themeId: event.currentTarget.value,
-              }).catch(fail)
-            }
-          >
-            <For each={[...BUILTIN_THEMES, ...prefs().customThemes]}>
-              {(theme) => <option value={theme.id}>{theme.name}</option>}
-            </For>
-          </select>
-        </label>
-        <div
-          class="terminal-theme-preview"
-          style={{
-            background: resolvedTheme(prefs()).colors.background,
-            color: resolvedTheme(prefs()).colors.foreground,
-            'font-family': terminalSettings(prefs()).fontFamily,
-          }}
-        >
-          <span
-            style={{
-              color: resolvedTheme(prefs()).colors.green,
-            }}
-          >
-            ~/Projects
-          </span>{' '}
-          <span
-            style={{
-              color: resolvedTheme(prefs()).colors.cursor,
-            }}
-          >
-            ❯
-          </span>{' '}
-          pwd
-          <br />
-          <span
-            style={{
-              color: resolvedTheme(prefs()).colors.brightBlack,
-            }}
-          >
-            Aa Bb 0123456789 (appearance preview)
-          </span>
-        </div>
-        <div class="button-row">
-          <label class="file-import">
-            Install theme…
-            <input
-              type="file"
-              accept=".json,application/json"
-              onChange={(event) => {
-                void importTheme(event.currentTarget.files?.[0]);
-                event.currentTarget.value = '';
-              }}
-            />
+        <div class="settings-page terminal-appearance">
+          <label class="field">
+            <span>Theme</span>
+            <select
+              disabled={!ready()}
+              value={prefs().themeId}
+              onChange={(event) =>
+                void apply({
+                  ...prefs(),
+                  themeId: event.currentTarget.value,
+                }).catch(fail)
+              }
+            >
+              <For each={[...BUILTIN_THEMES, ...prefs().customThemes]}>
+                {(theme) => <option value={theme.id}>{theme.name}</option>}
+              </For>
+            </select>
           </label>
-          <Show when={prefs().themeId.startsWith('custom-')}>
+          <div class="terminal-settings-grid">
+            <label class="field">
+              <span>Font</span>
+              <select
+                disabled={!ready()}
+                value={prefs().fontFamily}
+                onChange={(event) =>
+                  void apply({
+                    ...prefs(),
+                    fontFamily: event.currentTarget.value,
+                  }).catch(fail)
+                }
+              >
+                <option value={BUNDLED_FONT}>{BUNDLED_FONT}</option>
+                <Show when={prefs().useSystemFonts}>
+                  <For each={systemFonts()}>
+                    {(font) => <option value={font.fontId}>{font.displayName}</option>}
+                  </For>
+                </Show>
+                <For each={fonts()}>{(font) => <option value={font.family}>{font.name}</option>}</For>
+              </select>
+            </label>
+            <label class="field">
+              <span>Font size</span>
+              <input
+                type="number"
+                disabled={!ready()}
+                min="10"
+                max="28"
+                value={prefs().fontSize}
+                onChange={(event) =>
+                  void apply({
+                    ...prefs(),
+                    fontSize: Number(event.currentTarget.value),
+                  }).catch(fail)
+                }
+              />
+            </label>
+          </div>
+          <div
+            class="terminal-theme-preview"
+            style={{
+              background: resolvedTheme(prefs()).colors.background,
+              color: resolvedTheme(prefs()).colors.foreground,
+              'font-family': terminalSettings(prefs()).fontFamily,
+              'font-size': prefs().fontSize + 'px',
+              'line-height': String(prefs().lineHeight),
+            }}
+          >
+            <span style={{ color: resolvedTheme(prefs()).colors.green }}>~/Projects</span>{' '}
+            <span style={{ color: resolvedTheme(prefs()).colors.cursor }}>❯</span> pwd
+            <br />
+            <span>Aa Bb 0123456789</span>
+          </div>
+          <details class="form-advanced terminal-appearance-options">
+            <summary>
+              <Icon name="down" />
+              Advanced options
+            </summary>
+            <div class="terminal-appearance-group">
+              <h3>Font sources</h3>
+              <label class="checkline">
+                <input
+                  type="checkbox"
+                  checked={prefs().useSystemFonts}
+                  disabled={fontBusy() || !ready()}
+                  onChange={(event) => {
+                    const enabled = event.currentTarget.checked;
+                    event.currentTarget.checked = prefs().useSystemFonts;
+                    void useSystemFonts(enabled);
+                  }}
+                />
+                <span>Use system fonts</span>
+              </label>
+              <p class="muted small">
+                Adds installed monospace fonts. Font names stay on this computer; Chrome’s font settings are
+                unchanged. Missing fonts fall back to FiraCode Nerd Font Mono or another monospace font.
+              </p>
+              <div class="button-row">
+                <label class="file-import">
+                  Install font…
+                  <input
+                    type="file"
+                    accept=".ttf,.otf,.woff,.woff2"
+                    onChange={(event) => {
+                      void importFont(event.currentTarget.files?.[0]);
+                      event.currentTarget.value = '';
+                    }}
+                  />
+                </label>
+                <Show when={fonts().some((font) => font.family === prefs().fontFamily)}>
+                  <button type="button" onClick={() => void removeFont().catch(fail)}>
+                    Remove font
+                  </button>
+                </Show>
+              </div>
+            </div>
+            <div class="terminal-appearance-group">
+              <h3>Theme files</h3>
+              <div class="button-row">
+                <label class="file-import">
+                  Install theme…
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    onChange={(event) => {
+                      void importTheme(event.currentTarget.files?.[0]);
+                      event.currentTarget.value = '';
+                    }}
+                  />
+                </label>
+                <Show when={prefs().themeId.startsWith('custom-')}>
+                  <button
+                    type="button"
+                    disabled={!ready()}
+                    onClick={() =>
+                      void apply({
+                        ...prefs(),
+                        themeId: 'graphite',
+                        customThemes: prefs().customThemes.filter((theme) => theme.id !== prefs().themeId),
+                      }).catch(fail)
+                    }
+                  >
+                    Remove theme
+                  </button>
+                </Show>
+              </div>
+              <p class="muted small">
+                Theme files use JSON. Imported themes and fonts stay in this Chrome profile; nothing is
+                uploaded.
+              </p>
+            </div>
+            <div class="terminal-appearance-group">
+              <h3>Terminal behavior</h3>
+              <div class="terminal-settings-grid">
+                <label class="field">
+                  <span>Cursor</span>
+                  <select
+                    disabled={!ready()}
+                    value={prefs().cursorStyle}
+                    onChange={(event) =>
+                      void apply({
+                        ...prefs(),
+                        cursorStyle: parseCursorStyle(event.currentTarget.value),
+                      }).catch(fail)
+                    }
+                  >
+                    <option value="block">Block</option>
+                    <option value="bar">Bar</option>
+                    <option value="underline">Underline</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Line height</span>
+                  <input
+                    type="number"
+                    disabled={!ready()}
+                    min="1"
+                    max="1.8"
+                    step="0.1"
+                    value={prefs().lineHeight}
+                    onChange={(event) =>
+                      void apply({
+                        ...prefs(),
+                        lineHeight: Number(event.currentTarget.value),
+                      }).catch(fail)
+                    }
+                  />
+                </label>
+              </div>
+              <label class="checkline">
+                <input
+                  type="checkbox"
+                  disabled={!ready()}
+                  checked={prefs().cursorBlink}
+                  onChange={(event) =>
+                    void apply({
+                      ...prefs(),
+                      cursorBlink: event.currentTarget.checked,
+                    }).catch(fail)
+                  }
+                />
+                <span>Blink cursor</span>
+              </label>
+              <label class="field">
+                <span>Scrollback lines</span>
+                <input
+                  type="number"
+                  disabled={!ready()}
+                  min="500"
+                  max="10000"
+                  step="500"
+                  value={prefs().scrollback}
+                  onChange={(event) =>
+                    void apply({
+                      ...prefs(),
+                      scrollback: Number(event.currentTarget.value),
+                    }).catch(fail)
+                  }
+                />
+              </label>
+            </div>
             <button
+              type="button"
               disabled={!ready()}
               onClick={() =>
                 void apply({
-                  ...prefs(),
-                  themeId: 'graphite',
-                  customThemes: prefs().customThemes.filter((theme) => theme.id !== prefs().themeId),
+                  ...DEFAULT_TERMINAL_PREFERENCES,
+                  customThemes: prefs().customThemes,
                 }).catch(fail)
               }
             >
-              Remove theme
+              Reset appearance
             </button>
+          </details>
+          <Show when={error()}>
+            <p class="error" role="alert">
+              {error()}
+            </p>
           </Show>
-        </div>
-        <label class="field">
-          <span>Font</span>
-          <select
-            disabled={!ready()}
-            value={prefs().fontFamily}
-            onChange={(event) =>
-              void apply({
-                ...prefs(),
-                fontFamily: event.currentTarget.value,
-              }).catch(fail)
-            }
-          >
-            <option value={BUNDLED_FONT}>{BUNDLED_FONT}</option>
-            <Show when={prefs().useSystemFonts}>
-              <For each={systemFonts()}>
-                {(font) => <option value={font.fontId}>{font.displayName}</option>}
-              </For>
-            </Show>
-            <For each={fonts()}>{(font) => <option value={font.family}>{font.name}</option>}</For>
-          </select>
-        </label>
-        <label class="checkline">
-          <input
-            type="checkbox"
-            checked={prefs().useSystemFonts}
-            disabled={fontBusy() || !ready()}
-            onChange={(event) => {
-              const enabled = event.currentTarget.checked;
-              event.currentTarget.checked = prefs().useSystemFonts;
-              void useSystemFonts(enabled);
-            }}
-          />
-          <span>Use system fonts</span>
-        </label>
-        <p class="muted small">
-          Off: bundled and imported fonts only. On: also show installed monospace fonts. Missing fonts fall
-          back to FiraCode Nerd Font Mono or another monospace font. Chrome grants font access when Miter is
-          installed. This switch controls local font discovery; Miter never changes Chrome’s font settings or
-          uploads the font list.
-        </p>
-        <div class="button-row">
-          <label class="file-import">
-            Install font…
-            <input
-              type="file"
-              accept=".ttf,.otf,.woff,.woff2"
-              onChange={(event) => {
-                void importFont(event.currentTarget.files?.[0]);
-                event.currentTarget.value = '';
-              }}
-            />
-          </label>
-          <Show when={fonts().some((font) => font.family === prefs().fontFamily)}>
-            <button onClick={() => void removeFont().catch(fail)}>Remove font</button>
-          </Show>
-        </div>
-        <div class="terminal-settings-grid">
-          <label class="field">
-            <span>Size</span>
-            <input
-              type="number"
-              disabled={!ready()}
-              min="10"
-              max="28"
-              value={prefs().fontSize}
-              onChange={(event) =>
-                void apply({
-                  ...prefs(),
-                  fontSize: Number(event.currentTarget.value),
-                }).catch(fail)
-              }
-            />
-          </label>
-          <label class="field">
-            <span>Line height</span>
-            <input
-              type="number"
-              disabled={!ready()}
-              min="1"
-              max="1.8"
-              step="0.1"
-              value={prefs().lineHeight}
-              onChange={(event) =>
-                void apply({
-                  ...prefs(),
-                  lineHeight: Number(event.currentTarget.value),
-                }).catch(fail)
-              }
-            />
-          </label>
-          <label class="field">
-            <span>Cursor</span>
-            <select
-              disabled={!ready()}
-              value={prefs().cursorStyle}
-              onChange={(event) =>
-                void apply({
-                  ...prefs(),
-                  cursorStyle: parseCursorStyle(event.currentTarget.value),
-                }).catch(fail)
-              }
-            >
-              <option value="block">Block</option>
-              <option value="bar">Bar</option>
-              <option value="underline">Underline</option>
-            </select>
-          </label>
-        </div>
-        <label class="checkline">
-          <input
-            type="checkbox"
-            disabled={!ready()}
-            checked={prefs().cursorBlink}
-            onChange={(event) =>
-              void apply({
-                ...prefs(),
-                cursorBlink: event.currentTarget.checked,
-              }).catch(fail)
-            }
-          />
-          <span>Blink cursor</span>
-        </label>
-        <label class="field">
-          <span>Scrollback lines</span>
-          <input
-            type="number"
-            disabled={!ready()}
-            min="500"
-            max="10000"
-            step="500"
-            value={prefs().scrollback}
-            onChange={(event) =>
-              void apply({
-                ...prefs(),
-                scrollback: Number(event.currentTarget.value),
-              }).catch(fail)
-            }
-          />
-        </label>
-        <p class="muted small">
-          Themes are local JSON color files. Fonts are stored only inside this extension; none are uploaded.
-        </p>
-        <Show when={error()}>
-          <p class="error" role="alert">
-            {error()}
-          </p>
-        </Show>
-        <div class="button-row end">
-          <button
-            disabled={!ready()}
-            onClick={() =>
-              void apply({
-                ...DEFAULT_TERMINAL_PREFERENCES,
-                customThemes: prefs().customThemes,
-              }).catch(fail)
-            }
-          >
-            Reset appearance
-          </button>
-          <button class="primary" onClick={() => props.close()}>
-            Done
-          </button>
+          <div class="button-row settings-footer">
+            <span class="muted small">Changes save automatically.</span>
+            <button type="button" class="primary" onClick={() => props.close()}>
+              Done
+            </button>
+          </div>
         </div>
       </SelectSurface>
     </Modal>

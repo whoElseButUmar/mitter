@@ -1,63 +1,54 @@
 # Miter
 
-Chrome extension for running local project tasks through a ChatGPT conversation or an optional local GGUF model. Version: 1.0.0-rc.21.
+Miter is a Chrome workspace for building and editing local projects. Give it a task in plain language. The extension works with your signed-in ChatGPT session, and a native host applies file edits and runs checks on your computer. You can also configure a local GGUF model.
 
-## Setup
+## Get started on macOS
 
-Requires Node.js 22.16 or later and pnpm 12.11.2. Dependencies and the bundled terminal font need internet access.
+1. Unzip the Miter bundle and open **Install Miter.command**. The bundle includes Node and its dependencies.
+2. In Chrome, open **Extensions**, enable **Developer mode**, choose **Load unpacked**, and select `~/Library/Application Support/Miter/extension`.
+3. Open Miter and choose **Create project** or **Open existing project**.
+4. Select **New task**, describe what you want, and start. For example, “Build a reading list where I can save books, mark them as read, and find them again after a reload.”
 
-```sh
-node scripts/setup.mjs
-```
+To install from source, use Node.js 26 or newer and run `node scripts/setup.mjs`. Setup downloads the pinned dependencies and terminal font. For updates, reload the Miter card in Chrome and reopen the workspace. If Chrome already loads Miter from a source checkout, follow the [installation and migration guide](scripts/installation/README.md) before moving it. Local installer bundles are unsigned.
 
-Setup installs the pinned dependencies, opens pnpm's build approval prompt if needed, builds the app, verifies its assets, and registers the native host. For a first installation, enable Developer mode in `chrome://extensions` and load `apps/extension/.output/chrome-mv3`. For an update, reload the existing extension. Keep the registered project folder in place.
+## How a task runs
 
-Use `--build-only` to skip registration or `--chromium` to register with Chromium.
+The extension sends the task and relevant project context to the selected model. The native host checks proposed file edits against recorded reads, journals changes, and runs registered project commands with approval. Approved commands run with your user permissions. Stopping a task cannot undo their external effects. Projects and task history live in `~/.mitter` or the configured `MITTER_HOME`.
+
+For a framework or another language, ask for the stack you want. Miter can write project files such as `package.json`, `pyproject.toml` and `Cargo.toml`. If you say “I’ll run pnpm install,” Miter opens the setup dialog once the project manifest is ready. The dialog shows the command, working folder, purpose and expected changes. You can copy it, decline, suggest an alternative, or approve it once with **Run it**. **I’ll do it myself** opens a fresh terminal in the task folder and waits for you to enter a command. Miter reports its exit status and limited, redacted output to the task. Your keystrokes and ordinary shell history stay private.
+
+**Ponytail** applies to coding tasks by default. It directs the model to reuse existing code and shared components, keep changes easy to read, and check the behavior it changed. **Caveman** keeps task updates concise. **No AI Slop** guides writing and UI copy. New local and ChatGPT tasks get the bundled guidance automatically. See the [skill definitions and credits](packages/protocol/src/task-skills/README.md).
+
+For dependency-free Node projects, Miter runs the `*.test.mjs` files a task creates or edits in a sandbox and records the result at completion. Projects that need installed packages can use a registered test command.
+
+For supported web apps, Miter checks shared controls, runs domain tests, and exercises browser journeys in isolated Chrome profiles. It flags a status printed twice in the same row, subtitles that repeat nearby controls or empty-state instructions, and common promotional phrases, unless you asked for that copy. Every scored Lighthouse category must reach 100 on desktop and mobile. Findings go back to the model for repair within the task budget. The reports describe the tested version and workflows. See [what the quality checks cover](apps/host/src/core/quality/README.md).
+
+For a Vite or Next.js project, open its folder in Miter, choose **New task**, and enter **“Install dependencies with pnpm, start the dev server, and open the app preview.”** Miter installs dependencies in a private working copy and opens the app in Chrome when the server is ready. This launch runs locally without a chat account. Coding tasks that build or change a supported framework app open its preview after verification.
+
+Choose **Run** on a completed app to start it in the project’s **Terminal**. Its header shows the selected app with **Open app**, **Restart**, and **Stop** controls; hover or focus an icon for its label. Server status stays visible, and **Logs** opens startup output when needed. Use the session picker to switch apps and shells, and **Settings → Terminal appearance** to change fonts and colors. Choosing **Run** again selects the existing session. Apps with a Node backend can serve an API and keep data across preview sessions. **Setup & connection** shows how to recover a disconnected host or chat. For scripting, the [terminal command](apps/host/src/cli/README.md) starts and monitors tasks through the same running extension.
+
+## Where to find the code
+
+| Location                                                                        | Responsibility                                                                                                   |
+| ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| [apps/extension](apps/extension)                                                | Chrome workspace, background controller, preview, and terminal UI. Built with SolidJS and WXT.                   |
+| [packages/bridge](packages/bridge/README.md)                                    | Chat tabs, prompt delivery, reply reading, and reconnecting interrupted tasks.                                   |
+| [packages/protocol](packages/protocol/README.md)                                | Shared message schemas, task skills, and validation of proposed actions.                                         |
+| [apps/host](apps/host/README.md)                                                | Native messaging, project files, SQLite state, command approvals, and task execution.                            |
+| [apps/inference](apps/inference/README.md)                                      | Optional local model process. Install its runtime with `pnpm models:install` and select a GGUF file in Settings. |
+| [packages/ui](packages/ui/README.md) and [packages/terminal](packages/terminal) | Shared UI behavior, preview messages, and terminal settings.                                                     |
+| [scripts](scripts)                                                              | Installation, build verification, diagnostics, and release checks.                                               |
 
 ## Development
 
+From a source checkout with Node.js 26 or newer:
+
 ```sh
+node scripts/setup.mjs --build-only
 pnpm check
-pnpm build
 pnpm dev
 ```
 
-`pnpm check` runs all source tests, typechecks, formatting, and code/security checks. Use `pnpm format` before checking. See [coding standards](CODING_STANDARDS.md) for the type, schema, and file-splitting conventions.
+`pnpm check` runs formatting, source standards, type checks, and tests. `pnpm build` builds and verifies the native host, page bridge, preview sandbox, and unpacked extension. `pnpm run doctor` checks Miter’s native host registration and installed build. `pnpm bundle:local` produces the macOS installer folder and ZIP for the current architecture. For an offline font build, point `MITER_FONT_FILE` and `MITER_FONT_LICENSE` at the licensed terminal font and its SIL OFL license.
 
-`pnpm build` regenerates the native host, page bridge, isolated preview sandbox, and unpacked extension. `pnpm register` registers a verified build. `pnpm doctor` checks the built installation without changing project files.
-
-For an offline font build, set `MITER_FONT_FILE` to a licensed `FiraCodeNerdFontMono-Regular.ttf` and `MITER_FONT_LICENSE` to its SIL OFL license text.
-
-## Release verification
-
-After `pnpm check` and `pnpm build`, run the live checks on macOS or Linux:
-
-```sh
-pnpm verify:pty
-pnpm verify:chrome
-pnpm verify:fresh-install
-```
-
-- `verify:pty` uses the installed native PTY and a real shell with startup files disabled. It checks input/output, resize, exit, and reset in temporary HOME/project folders.
-- `verify:chrome` opens headless Chrome in a temporary profile. It checks the packaged workspace, a real client/background/native-host project round trip, and production dialogs, previews, and fonts with controlled asynchronous responses. It checks task attention layout using only the current packaged workspace stylesheets, with no source-CSS fallback. It also checks focus, validation, visible errors, stale completions, and resource release across 30 mount/dispose cycles. It also checks the packaged preview sandbox's sender identity, malformed messages, exact HTML, isolation, and one-use payload gate. Collected DOM counters are a regression check, not proof that every possible leak is absent.
-- `verify:fresh-install` copies the current source, including untracked work, without dependencies, generated output, caches, state, or the lockfile. It runs build-only setup with fresh package-manager caches, reuses only the built licensed font inputs, and verifies the new build. It downloads dependencies and preserves the release-age/build-approval policy; it does not register a host.
-
-The Chrome check defaults to `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` on macOS. Set `CHROME_PATH` to an absolute executable path elsewhere. Chrome must support the DevTools `Extensions.loadUnpacked` command; the check enables extension debugging only in its temporary process. It refuses to run when a system-wide `ai.mitter.host` registration exists, so it cannot fall back to a launcher pointing at real app data. User registrations are not changed.
-
-Chrome preparation and execution have a two-minute limit. The fresh-install check defaults to eight minutes; use `pnpm verify:fresh-install --timeout-ms=300000` to change it. Owned processes, profiles, checkouts, and state are removed on completion or failure. Chrome logs remain in `.cache/release-checks/chrome.log`; the fresh-install command prints its retained log path.
-
-These checks do not verify an authenticated ChatGPT conversation, OS permission prompts, Windows behavior, or GGUF generation. Test those in the target environment; local generation needs the optional runtime and a configured model file.
-
-## Project
-
-- `apps/extension`: SolidJS + WXT interface, previews, and xterm terminal.
-- `apps/host`: native messaging, SQLite state, file operations, approved commands, and PTY sessions.
-- `apps/inference`: optional local model process. Install its runtime with `pnpm models:install` and configure your GGUF file in Settings.
-- `packages`: shared protocol, chat bridge, UI helpers, and terminal settings.
-- `scripts`: build, setup, native registration, and asset verification.
-
-State lives in `~/.mitter` or `MITTER_HOME`. Task edits use file hashes and journals. Commands require approval. Approved commands can affect files outside the project; Stop cannot undo every external effect. ChatGPT tab automation depends on the current browser session and website behavior.
-
-This remains a release candidate. A passing local build does not prove authenticated ChatGPT behavior.
-
-MIT license. See `LICENSE` and `THIRD_PARTY.md`.
+See the [coding standards](CODING_STANDARDS.md) and [release checks](scripts/release-checks/README.md) for contributor instructions. Miter is a release candidate. [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY.md).

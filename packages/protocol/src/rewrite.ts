@@ -2,6 +2,7 @@
 import { parseSchema } from './helpers.js';
 import { isRecord } from './schemas/primitives.js';
 import { rewriteReplySchema, rewriteRequestSchema, type RewriteRequest } from './schemas/rewrite.js';
+import { writingSkillsText } from './task-skills.js';
 
 export {
   rewriteModeSchema,
@@ -97,6 +98,9 @@ export function rewritePrompt(request: RewriteRequest, requestId: string): strin
     '\nPreserve language, filenames, quoted literals, and ' +
     'explicit constraints. Do not add unrelated features, credentials, dependencies, or permissions. ' +
     'Output at most 4,000 characters in text.\n' +
+    '\n' +
+    writingSkillsText() +
+    '\n\n' +
     'Return ONLY one fenced json block with exactly these fields:\n' +
     JSON.stringify({
       protocol: 'miter-rewrite/1',

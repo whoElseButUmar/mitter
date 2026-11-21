@@ -22,7 +22,7 @@ import {
   previewFixtureSchema,
   previewFrameTreeSchema,
   previewProbeSchema,
-  previewTargetsSchema,
+  browserTargetsSchema,
   previewWorldSchema,
   protocolMessageSchema,
   protocolRequestSchema,
@@ -201,10 +201,7 @@ test('void browser actions complete without inventing a returned JSON value', as
 });
 
 test('control selectors retain their exact quotes and escaping in browser expressions', async () => {
-  for (const selector of [
-    '[aria-label="Connection and health"]',
-    '[data-value="quotes \\" and newline\\n"]',
-  ]) {
+  for (const selector of ['.health-button', '[data-value="quotes \\" and newline\\n"]']) {
     let clicked = false;
     class Control {
       click() {
@@ -493,6 +490,9 @@ test('attention live-check failure disposes only its fixture and always clears o
         geometry.status.bottom = 55;
         return { result: { type: 'object', value: geometry } };
       }
+      if (method === 'Runtime.evaluate' && parameters.expression.includes('aria-atomic')) {
+        return { result: { type: 'boolean', value: true } };
+      }
       return { result: { type: 'undefined' } };
     },
   };
@@ -757,7 +757,7 @@ test('preview driver schemas reject malformed identities, counters and literal H
     false,
   );
   assert.equal(
-    previewTargetsSchema.safeParse({ targetInfos: [{ targetId: '', type: 'iframe', url: '' }] }).success,
+    browserTargetsSchema.safeParse({ targetInfos: [{ targetId: '', type: 'iframe', url: '' }] }).success,
     false,
   );
   assert.equal(previewWorldSchema.safeParse({ executionContextId: 0 }).success, false);
@@ -1002,7 +1002,7 @@ test('local preview fixture uses canonical schemas, pins readiness sources and r
 
 test('native observation proves a fresh isolated round trip rather than accepting arbitrary counts', () => {
   const observation = {
-    version: '1.0.0-rc.21',
+    version: '1.0.0-rc.27',
     projectId: 'temporary-project',
     root: '/owned/project',
     initialProjects: 0,

@@ -1,28 +1,22 @@
-# Isolated local inference
+# Local inference
 
-`src/worker.ts` is the child-process entrypoint. It accepts only checked IPC requests from
-`src/protocol.ts` and serializes them through `InferenceQueue` in `src/inference.ts`. Shared model
-settings use the protocol package's described schema.
+The native host runs [worker.ts](src/worker.ts) in a separate process. The worker validates requests with
+the [IPC schema](src/protocol.ts) and queues them so only one prompt uses the model at a time.
 
-`LocalInference` owns the loaded model and disposes per-request sessions and contexts, including on
-failure. It requires an existing absolute local GGUF path; it never downloads a model. Changing the
-model path retires the previous model before loading the replacement. The model and its path share one
-cache slot, cleared before awaiting retirement or replacement so a failed transition cannot reuse a
-retired model. Required resource slots are explicitly clearable rather than optional.
+[LocalInference](src/inference.ts) loads a GGUF file from an absolute path. It keeps one model in memory
+and releases each request's session and context after use. Changing the path clears the cached model
+before disposing it. A failed replacement can then be retried safely.
 
-`src/llama-adapter.ts` treats the dynamically imported module as `unknown`. It checks native method
-capabilities, preserves receivers, and validates prompt results before exposing plain resource
-types. Valid IPC requests are parsed once; rejected requests are checked for a usable correlation ID
-before returning the original validation error. A failed IPC send does not poison the request queue. Disconnect terminates the isolated
-process; host cancellation kills it rather than replaying an interrupted operation.
+The [llama adapter](src/llama-adapter.ts) checks the native module's methods and prompt results.
+When an invalid request has a usable ID, the worker returns the validation error with that ID.
+A failed reply does not prevent the next queued request from running. Disconnecting the host ends
+the worker process.
 
-Run the source tests from the repository root:
+Run the inference tests from the repository root:
 
 ```sh
 node --import ./packages/bridge/src/runner/test-source-loader.mjs --test apps/inference/test/*.test.mjs
 ```
 
-The fixtures cover malformed modules/messages, request serialization, model replacement, and
-cleanup after construction, inference, or disposal failures, including retries after failed model retirement
-or replacement. They require no model installation and
-make no network requests.
+The fixtures cover invalid requests, model changes, queue ordering and cleanup on failure. They run
+without downloading or loading a model.

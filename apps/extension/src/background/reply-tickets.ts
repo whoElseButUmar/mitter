@@ -5,6 +5,7 @@ import { replyTicketSchema, type ReplyTicket } from '../schemas/requests.js';
 type TicketEntry = {
   ticket: ReplyTicket;
   epoch: number;
+  fresh: boolean;
 };
 
 /** Bounded, one-use proof for an exact reply in one pinned task conversation and run. */
@@ -13,7 +14,7 @@ export class ReplyTickets {
 
   constructor(private now = Date.now) {}
 
-  issue(key: string, raw: ReplyTicket, epoch = 0): void {
+  issue(key: string, raw: ReplyTicket, control?: Worker['control']): void {
     const ticket = replyTicketSchema.parse(raw);
 
     if (ticket.envelope.workerId !== ticket.workerId || ticket.envelope.projectId !== ticket.projectId) {
@@ -26,7 +27,7 @@ export class ReplyTickets {
       }
     }
 
-    this.tickets.set(key, { ticket, epoch });
+    this.tickets.set(key, { ticket, epoch: control?.epoch ?? 0, fresh: control?.mode === 'fresh' });
 
     while (this.tickets.size > 12) {
       const oldest = this.tickets.keys().next().value;
@@ -62,6 +63,8 @@ export class ReplyTickets {
     if (
       !entry ||
       entry.epoch !== (worker.control?.epoch ?? 0) ||
+      (entry.fresh && worker.control?.mode !== 'fresh') ||
+      link.providerId !== ticket.link.providerId ||
       link.id !== ticket.link.id ||
       link.url !== ticket.link.url ||
       worker.id !== ticket.workerId ||

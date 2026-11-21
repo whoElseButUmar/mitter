@@ -1,30 +1,34 @@
-export const modelSettingsTemplate = `<form class="model-settings-form"
-  aria-label="Local coding model settings">
-  <p class="muted">Optional local coding model. ChatGPT tasks do not need these settings.
-    Choose a GGUF file already on this computer.</p>
-  <fieldset class="model-settings-fields">
-    <label class="field"><span>Coding model (.gguf)</span>
-      <input name="coderModelPath" placeholder="/absolute/path/coder.gguf" spellcheck="false"
-        maxlength="2000" autocomplete="off"></label>
-    <label class="field"><span>Compute</span><select name="gpu">
-      <option value="auto">Auto-detect GPU</option><option value="cpu">CPU only</option></select></label>
-    <div class="form-row">
-      <label class="field"><span>Context tokens</span>
-        <input name="contextSize" type="number" min="2048" max="32768" step="1" required></label>
-      <label class="field"><span>Output token cap</span>
-        <input name="maxTokens" type="number" min="256" max="8192" step="1" required></label>
-    </div>
-  </fieldset>
-  <p class="notice">The runtime is installed separately; no weights are downloaded automatically.
-    One shared inference process generates proposals. File validation, hash checks, command approvals
-    and completion checks always apply.</p>
-  <p class="error" role="alert" hidden></p>
-  <button class="primary full" type="submit">Save model settings</button>
-  <section class="reset-danger-zone"><h3>Application data</h3>
-    <p class="muted small">Permanently remove Miter’s projects, tasks, history, terminal imports,
-      approvals, and settings. Your actual project folders and files stay untouched.</p>
-    <button type="button" class="danger" data-reset>Clear all Miter data…</button></section>
-</form>`;
+export const modelSettingsTemplate = `<details class="form-advanced settings-advanced" data-model-advanced>
+  <summary>Advanced options</summary>
+  <div class="settings-advanced-content">
+    <form class="model-settings-form" aria-label="Local coding model settings">
+      <fieldset class="model-settings-fields">
+        <legend>Local coding model</legend>
+        <p class="muted small">Optional. ChatGPT tasks work without a local model.</p>
+        <label class="field"><span>Model file (.gguf)</span>
+          <input name="coderModelPath" placeholder="/absolute/path/coder.gguf" spellcheck="false"
+            maxlength="2000" autocomplete="off" autocapitalize="none" autocorrect="off"></label>
+        <p class="muted small">Use a model already on this computer. The local runtime is installed separately.</p>
+        <label class="field"><span>Compute</span><select name="gpu">
+          <option value="auto">Auto-detect GPU</option><option value="cpu">CPU only</option></select></label>
+        <div class="form-row">
+          <label class="field"><span>Context tokens</span>
+            <input name="contextSize" type="number" min="2048" max="32768" step="1" required></label>
+          <label class="field"><span>Output token cap</span>
+            <input name="maxTokens" type="number" min="256" max="8192" step="1" required></label>
+        </div>
+      </fieldset>
+      <p class="error" role="alert" hidden></p>
+      <div class="button-row"><button class="primary" type="submit">Save model settings</button></div>
+    </form>
+    <details class="settings-data">
+      <summary>Application data</summary>
+      <p class="muted small">Permanently clear saved projects, tasks, history, approvals, imports, and settings.
+        Your project folders and files stay on disk.</p>
+      <button type="button" class="danger" data-reset>Clear all Miter data…</button>
+    </details>
+  </div>
+</details>`;
 
 export const resetTemplate = `<form class="data-reset-form">
   <p class="notice reset-warning"><strong>This permanently deletes all Miter application data from

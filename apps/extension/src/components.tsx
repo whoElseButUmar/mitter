@@ -66,7 +66,7 @@ export function Modal(props: {
           <Icon name="close" />
         </button>
       </div>
-      {props.children}
+      <div class="modal-body">{props.children}</div>
     </dialog>
   );
 }
@@ -84,9 +84,6 @@ export function Field(props: { label: string; hint?: string; children: JSX.Eleme
 export function Empty(props: { title: string; text: string; children?: JSX.Element }) {
   return (
     <div class="empty">
-      <div class="empty-glyph">
-        <Icon name="bolt" size={26} />
-      </div>
       <h2>{props.title}</h2>
       <p>{props.text}</p>
       {props.children}
@@ -95,10 +92,5 @@ export function Empty(props: { title: string; text: string; children?: JSX.Eleme
 }
 
 export function Status(props: { value: string }) {
-  return (
-    <span class={`status status-${props.value}`}>
-      <i />
-      {props.value.replaceAll('_', ' ')}
-    </span>
-  );
+  return <span class={`status status-${props.value}`}>{props.value.replaceAll('_', ' ')}</span>;
 }

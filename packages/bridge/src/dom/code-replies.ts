@@ -3,10 +3,12 @@ import {
   isReadOnlyReply,
   isIncompleteReplyJSON,
   exceedsHandoffBytes,
+  hasCompleteReplyFence,
 } from '../../../protocol/src/reply-json.js';
 import { identifierSchema } from '../schemas/primitives.js';
 import { readAssistantMessage } from './assistant-reader.js';
 import { contentHidden, htmlElements, pageElements, parentAcrossShadow } from './page-elements.js';
+import { isAnalysisCode } from './provider-activity.js';
 import { explicitRole } from './transcript-discovery.js';
 import {
   taskReplyObservationSchema,
@@ -21,6 +23,7 @@ export function readCodeReply(
   projectId: string,
   replyId?: string,
   replyTo?: string,
+  anchoredAssistant?: HTMLElement,
 ): CodeReplyScan {
   if (!identifierSchema.safeParse(workerId).success || !identifierSchema.safeParse(projectId).success) {
     return { count: 0, issue: 'TASK_REQUIRED' };
@@ -57,12 +60,15 @@ export function readCodeReply(
   };
   const candidateRoots = pageScan.elements.filter(
     (element) =>
-      (element.matches(codeSelector) ||
+      (element === anchoredAssistant ||
+        element.matches(codeSelector) ||
         (isOuterAssistant(element) && !element.querySelector(codeSelector))) &&
       !contentHidden(element) &&
+      !isAnalysisCode(element) &&
       !element.closest(
         'form,textarea,[contenteditable="true"],nav,aside,blockquote,[data-mitter-ui],#mitter-automation-control',
-      ),
+      ) &&
+      !element.querySelector('form,textarea,[contenteditable="true"]'),
   );
   for (const [order, root] of candidateRoots.entries()) {
     let insideUserMessage = false;
@@ -104,10 +110,13 @@ export function readCodeReply(
         envelope = readReplyJSON(payloadText);
       }
     } catch {}
-    const containsTaskIds =
-      payloadText.includes(workerId) && payloadText.includes(projectId) && /^\s*\{/.test(payloadText);
-    const looksLikeJSON = /^\s*\{/.test(payloadText) || (!payloadText.trim() && !isPlainRoot);
-    if (!looksLikeJSON && !containsTaskIds) {
+    const incomplete = !envelope && (!payloadText.trim() || isIncompleteReplyJSON(payloadText));
+    const looksLikeJSON =
+      /^\s*\{/.test(payloadText) ||
+      hasCompleteReplyFence(payloadText) ||
+      (incomplete && !!payloadText.trim()) ||
+      (!payloadText.trim() && !isPlainRoot);
+    if (!looksLikeJSON) {
       continue;
     }
     let fingerprintHash = 2166136261;
@@ -122,7 +131,7 @@ export function readCodeReply(
       characters: Math.min(payloadText.length, 400001),
       fingerprint: (fingerprintHash >>> 0).toString(16),
       issue: assistantRead.issue || issue,
-      incomplete: !envelope && (!payloadText.trim() || isIncompleteReplyJSON(payloadText)),
+      incomplete,
     };
     const taskReplyResult = taskReplyObservationSchema.safeParse(envelope);
     let taskReply: TaskReplyObservation | undefined;

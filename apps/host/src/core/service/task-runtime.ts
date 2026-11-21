@@ -18,6 +18,9 @@ type ActiveRun = { controller: AbortController; promise: Promise<void> };
 export class TaskRuntime {
   private readonly workflow: Workflow;
   private active: ActiveRun | undefined;
+  private previousSetupWaitMs = 0;
+  private setupWaitSince: number | undefined;
+  private waitAtBudgetStart = 0;
 
   constructor(
     readonly worker: Worker,
@@ -45,7 +48,31 @@ export class TaskRuntime {
     this.workflow.move(state);
   }
 
+  get setupWaitMs(): number {
+    if (this.setupWaitSince !== undefined) {
+      return this.previousSetupWaitMs + Math.max(0, Date.now() - this.setupWaitSince);
+    }
+    return this.previousSetupWaitMs;
+  }
+
+  startBudget(): void {
+    this.worker.startedAt = Date.now();
+    this.waitAtBudgetStart = this.setupWaitMs;
+  }
+
+  get remainingMs(): number {
+    const elapsed = Math.max(0, Date.now() - this.worker.startedAt);
+    const waiting = this.setupWaitMs - this.waitAtBudgetStart;
+    return this.worker.maxMinutes * 60000 - Math.max(0, elapsed - waiting);
+  }
+
   save(): void {
+    if (this.worker.state === 'awaiting_approval' && this.worker.pending?.action.type === 'setupCommand') {
+      this.setupWaitSince ??= Date.now();
+    } else if (this.setupWaitSince !== undefined) {
+      this.previousSetupWaitMs = this.setupWaitMs;
+      this.setupWaitSince = undefined;
+    }
     this.store.saveWorker(this.worker);
     this.changed();
   }
@@ -87,6 +114,8 @@ export class TaskRuntime {
       worker.humanAcceptanceReady = false;
       worker.completion = undefined;
       worker.runId = randomUUID();
+      this.previousSetupWaitMs = 0;
+      this.setupWaitSince = undefined;
       worker.iteration = 0;
       worker.repeatCount = 0;
       worker.lastProposal = undefined;
@@ -145,16 +174,22 @@ export class TaskRuntime {
     throw new ApprovalNeeded();
   }
 
-  start(execute: (signal: AbortSignal) => Promise<void>): void {
+  start(execute: (signal: AbortSignal) => Promise<void>, budget: 'task' | 'user' = 'task'): void {
     this.assertIdle();
     const worker = this.worker;
     const controller = new AbortController();
-    const budgetTimer = setTimeout(() => {
-      worker.error = 'Active run time budget reached. Inspect the report before resuming.';
-      this.event('budget', worker.error);
-      controller.abort(new Error(worker.error));
-    }, worker.maxMinutes * 60000);
-    budgetTimer.unref();
+    let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+    if (budget === 'task') {
+      budgetTimer = setTimeout(
+        () => {
+          worker.error = 'Active run time budget reached. Inspect the report before resuming.';
+          this.event('budget', worker.error);
+          controller.abort(new Error(worker.error));
+        },
+        Math.max(1, this.remainingMs),
+      );
+      budgetTimer.unref();
+    }
 
     // Admission is synchronous; execution starts on the next microtask.
     const record: ActiveRun = { controller, promise: Promise.resolve() };

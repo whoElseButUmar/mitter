@@ -4,12 +4,14 @@ import { MAX_FRAME } from '../src/index.ts';
 import {
   MAX_HANDOFF_BYTES,
   exceedsHandoffBytes,
+  hasCompleteReplyFence,
   isIncompleteReplyJSON,
   isReadOnlyReply,
   normalizeReplySyntax,
   readReplyJSON,
   utf8Bytes,
 } from '../src/reply-json.ts';
+import { parseProposalEnvelope } from '../src/proposal.ts';
 import { MAX_NATIVE_TRANSFER, NativeMessageInbox, nativeMessages } from '../src/native-transfer.ts';
 import { PART_CHARS } from '../src/schemas/native-transfer.ts';
 
@@ -67,6 +69,98 @@ test('streaming and read-only observations do not pretend to validate executable
   assert.equal(isReadOnlyReply({ actions: [{ type: 'read', path: null, extra: 'still invalid' }] }), true);
   assert.equal(isReadOnlyReply({ actions: [{ type: 'write' }] }), false);
   assert.equal(isReadOnlyReply({ actions: [] }), false);
+});
+
+test('literal escaped fences preserve every quoted byte through full envelope validation', () => {
+  const fence = '\\`'.repeat(3);
+  const envelope = {
+    protocol: 'mitter/1',
+    id: 'reply_1',
+    replyTo: 'exchange_1',
+    workerId: 'worker_1',
+    projectId: 'project_1',
+    summary: 'Preserve exact source.',
+    actions: [
+      {
+        type: 'write',
+        path: 'notes &#x20;.txt',
+        base: 'missing',
+        content: '  literal &#x20; &nbsp; &amp;nbsp; \u00a0 \\n \\` "quoted"\r\n```json\n{}\n```\n',
+      },
+      { type: 'search', query: 'exact &#x20; \\n \u00a0' },
+    ],
+  };
+  const source = JSON.stringify(envelope, null, 2)
+    .replace(/^ +/gm, (spaces) => '&#x20;'.repeat(spaces.length))
+    .replace(/\n/g, '\\\n');
+  const reply = fence + 'json\\\n' + source + '\\\n' + fence;
+
+  assert.equal(hasCompleteReplyFence(reply), true);
+  assert.deepEqual(readReplyJSON(reply), envelope);
+  assert.deepEqual(parseProposalEnvelope(reply), parseProposalEnvelope(JSON.stringify(envelope)));
+  assert.equal(isIncompleteReplyJSON(reply), false);
+
+  for (const marker of ['```', fence]) {
+    assert.equal(hasCompleteReplyFence(marker + 'json\r\n{}\r\n' + marker), true);
+    assert.deepEqual(readReplyJSON(marker + '\\\r\n{}\\\r\n' + marker), {});
+  }
+});
+
+test('fence detection rejects ambiguous wrappers without seeking a JSON substring', () => {
+  const fence = '\\`'.repeat(3);
+  const complete = fence + 'json\\\n{}\\\n' + fence;
+
+  for (const rejected of [
+    'Before\n' + complete,
+    complete + '\nAfter',
+    complete + '\n' + complete,
+    fence + 'json\n{}\n```',
+    '```json\n{}\n' + fence,
+    '\\\\`'.repeat(3) + 'json\n{}\n' + '\\\\`'.repeat(3),
+    fence + 'json\\\\\n{}\n' + fence,
+    fence + 'JSON\n{}\n' + fence,
+    fence + 'json\n{}',
+    '{}\n' + fence,
+  ]) {
+    assert.equal(hasCompleteReplyFence(rejected), false, rejected);
+    assert.throws(() => readReplyJSON(rejected), { code: 'INVALID_HANDOFF_JSON' });
+  }
+
+  assert.equal(hasCompleteReplyFence('{}'), false);
+  assert.equal(hasCompleteReplyFence(complete + ' '.repeat(MAX_HANDOFF_BYTES)), false);
+  assert.throws(() => readReplyJSON(complete + ' '.repeat(MAX_HANDOFF_BYTES)), /too large/);
+  assert.equal(isIncompleteReplyJSON(fence + 'json\\\n{\\\n&#x20;"actions":['), true);
+});
+
+test('a complete literal fence cannot repair invalid quoted source or invalid actions', () => {
+  const fence = '\\`'.repeat(3);
+
+  for (const body of [
+    '{"source":"bad\\`escape"}',
+    '{"source":"unfinished}',
+    '{\\\\\n"value":1}',
+    '{&amp;#x20;"value":1}',
+    '{"value":tr&#x20;ue}',
+    '{"value":&quot;quoted&quot;}',
+    '{"value":1} {"other":2}',
+    '{"value":1',
+  ]) {
+    const reply = fence + 'json\\\n' + body + '\\\n' + fence;
+    assert.equal(hasCompleteReplyFence(reply), true);
+    assert.throws(() => readReplyJSON(reply), { code: 'INVALID_HANDOFF_JSON' });
+  }
+
+  const invalidEnvelope = {
+    protocol: 'mitter/1',
+    id: 'reply_1',
+    workerId: 'worker_1',
+    projectId: 'project_1',
+    summary: 'Invalid action remains invalid.',
+    actions: [{ type: 'write', path: 'file.txt', content: 'Unreviewed edit has no base.' }],
+  };
+  const reply = fence + 'json\\\n' + JSON.stringify(invalidEnvelope) + '\\\n' + fence;
+  assert.deepEqual(readReplyJSON(reply), invalidEnvelope);
+  assert.throws(() => parseProposalEnvelope(reply), /base|expectedHash/);
 });
 
 test('native response threshold counts bytes while fragments count UTF-16 characters', () => {

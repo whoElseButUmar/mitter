@@ -35,7 +35,7 @@ const digestScenarios = new Set([
 // One result per scenario, a follow-up for each candidate mutation, and fresh,
 // established, and stopped-session probe observations.
 export const DOM_READER_EVIDENCE_LIMIT =
-  domReaderScenarioNameSchema.options.length + digestCandidateScenarios.size + 3;
+  domReaderScenarioNameSchema.options.length + digestCandidateScenarios.size + 6;
 
 export const domReaderEvidenceSchema = z
   .strictObject({
@@ -64,9 +64,208 @@ async function readerEvaluate(chrome, session, expression, label, contextId = un
   }
 }
 
+const longTranscriptResultSchema = z
+  .strictObject({
+    scenario: z
+      .enum(['current', 'missing', 'stopped'])
+      .describe('Current receipt, absent receipt, or Stop while hashing.'),
+    elapsedMs: z.number().int().nonnegative().describe('Elapsed inspection time in milliseconds.'),
+    matched: z.boolean().describe('The exact current reply was found, without importing it.'),
+    issue: z.string().describe('Content-free reader or transport diagnosis.'),
+    styles: z.number().int().nonnegative().describe('Computed-style reads during this observation.'),
+    clones: z.number().int().nonnegative().describe('Subtree clones during this observation.'),
+    digests: z.number().int().nonnegative().describe('Full-text WebCrypto digest requests.'),
+    retiredWithoutRead: z
+      .boolean()
+      .describe('A stopped read performed no further subtree serialization after hashing.'),
+  })
+  .describe('Bounded work on a 100 KB receipt under nested highlighted wrappers and ten older exchanges.');
+
+export function assertLongTranscriptResults(raw) {
+  const results = z.array(longTranscriptResultSchema).length(3).parse(raw);
+  assert.deepEqual(
+    results.map((result) => result.scenario),
+    ['current', 'missing', 'stopped'],
+  );
+  for (const result of results) {
+    assert.ok(
+      result.elapsedMs < 5000,
+      result.scenario + ': finish before the unchanged six-second read timeout',
+    );
+    assert.ok(
+      result.styles < 250000,
+      result.scenario + ': reuse CSS only within a synchronous serialization',
+    );
+    assert.ok(result.clones <= 70, result.scenario + ': sanitize each candidate once per snapshot');
+    assert.ok(result.digests <= 2, result.scenario + ': hash each distinct full representation once');
+    assert.equal(result.retiredWithoutRead, true);
+    assert.equal(result.matched, result.scenario === 'current');
+    if (result.scenario === 'current') {
+      assert.equal(result.issue, '');
+    } else if (result.scenario === 'stopped') {
+      assert.equal(result.issue, 'STOPPED');
+    } else {
+      assert.equal(result.issue, 'MISSING_REPLY_TO');
+    }
+  }
+  return results;
+}
+
+const disclosureRecoverySchema = z
+  .strictObject({
+    scenario: z
+      .enum(['expanded_label', 'expanded_ancestor', 'older_ancestor', 'collapsed', 'expanded_aria'])
+      .describe('The visible/accessibility label and receipt ancestry under test.'),
+    firstCollapsed: z.boolean().describe('Collapsed state after the first inspection.'),
+    nextCollapsed: z.boolean().describe('Collapsed state after the repeated inspection.'),
+    firstUsers: z.number().int().nonnegative().describe('User bubbles admitted on the first read.'),
+    nextUsers: z.number().int().nonnegative().describe('User bubbles admitted on the repeated read.'),
+    codeExact: z.boolean().describe('The existing exact nonce-linked code remains readable.'),
+    currentClicks: z.number().int().nonnegative().describe('Clicks on the current disclosure.'),
+    olderClicks: z.number().int().nonnegative().describe('Clicks on unrelated older disclosures.'),
+  })
+  .describe('Disclosure behavior without source text or import authority.');
+
+export function assertDisclosureRecovery(raw) {
+  const results = z.array(disclosureRecoverySchema).length(5).parse(raw);
+  assert.deepEqual(
+    results.map((result) => result.scenario),
+    disclosureRecoverySchema.shape.scenario.options,
+  );
+  for (const result of results) {
+    assert.equal(result.firstCollapsed, false, result.scenario);
+    assert.equal(result.nextCollapsed, false, result.scenario);
+    assert.equal(result.olderClicks, 0, result.scenario + ': older messages stay untouched');
+    let expectedUsers = 1;
+    if (['expanded_ancestor', 'older_ancestor'].includes(result.scenario)) {
+      expectedUsers = 0;
+    }
+    assert.equal(
+      result.firstUsers,
+      expectedUsers,
+      result.scenario + ': only the current bubble may be promoted',
+    );
+    assert.equal(result.nextUsers, expectedUsers, result.scenario);
+    let expectedClicks = 0;
+    if (result.scenario === 'collapsed') {
+      expectedClicks = 1;
+    }
+    assert.equal(
+      result.currentClicks,
+      expectedClicks,
+      result.scenario + ': reveal a real collapsed bubble once',
+    );
+    assert.equal(result.codeExact, true, result.scenario);
+  }
+  return results;
+}
+
 export function assertDomReaderObservation(raw) {
   const view = domReaderObservationSchema.parse(raw);
   const label = view.scenario;
+  if (label.startsWith('roleless-code-')) {
+    assert.equal(view.recoveryKind, null);
+    assert.equal(view.complete, false, label + ': only the runner may select independently correlated code');
+    assert.equal(view.assistantCharacters, 0);
+    if (label === 'roleless-code-unanchored-receipt') {
+      assert.equal(view.receiptState, 'unknown_tail');
+      assert.equal(view.receiptMatches, 1);
+      assert.equal(view.tailBranches, 0);
+      assert.equal(
+        view.userCount,
+        0,
+        'A synthetic user cannot replace the independent lane’s native baseline',
+      );
+      assert.equal(view.transcriptUsers, 0);
+      assert.equal(view.unclassifiedTail, false);
+      assert.equal(view.receiptMatched, true);
+      assert.equal(view.codeReply, true);
+      assert.equal(view.codeExact, true);
+      assert.equal(view.codeIssue, null);
+    } else if (label === 'roleless-code-unanchored-duplicate') {
+      assert.equal(view.receiptState, 'ambiguous');
+      assert.equal(view.receiptMatches, 2);
+      assert.equal(view.codeReply, false);
+    } else {
+      assert.equal(view.userCount >= 1, true, label + ': retain genuine or unresolved transcript barriers');
+      if (label === 'roleless-code-unanchored-human' || label === 'roleless-code-unanchored-edited') {
+        assert.equal(view.receiptMatched, false);
+      } else {
+        assert.equal(view.unclassifiedTail, true);
+      }
+      if (label === 'roleless-code-intervening-branch') {
+        assert.equal(view.tailBranches, 2);
+      }
+    }
+    return;
+  }
+  if (label.startsWith('recovery-')) {
+    const duplicate = [
+      'recovery-duplicate-send',
+      'recovery-duplicate-known',
+      'recovery-duplicate-known-malformed',
+      'recovery-duplicate-known-conflicting',
+    ].includes(label);
+    const eligible =
+      duplicate || ['recovery-roleless-literal', 'recovery-roleless-malformed'].includes(label);
+    let expectedKind = null;
+    if (eligible) {
+      expectedKind = 'unreadable_reply';
+      if (duplicate) {
+        expectedKind = 'duplicate_send';
+      }
+    }
+    assert.equal(
+      view.recoveryKind,
+      expectedKind,
+      label + ': only the complete latest receipt permits correction',
+    );
+    const conflicting = label === 'recovery-duplicate-known-conflicting';
+    assert.equal(view.recoveryExact, eligible && !conflicting, label + ': preserve bounded response bytes');
+    assert.equal(view.recoveryConflictPreserved, conflicting);
+    assert.equal(view.recoveryUserExact, eligible);
+    assert.equal(view.recoveryExchangeMatched, eligible);
+    assert.equal(view.complete, false, label + ': correction evidence cannot complete a reply');
+    assert.equal(view.assistantCharacters, 0);
+    assert.equal(
+      view.codeReply,
+      false,
+      label + ': ambiguous or malformed content cannot select a code reply',
+    );
+    assert.equal(view.draft, false);
+    if (label.startsWith('recovery-duplicate-')) {
+      assert.equal(view.receiptState, 'ambiguous');
+      assert.equal(view.receiptMatches, 2);
+    }
+    return;
+  }
+  let expectedRecovery = null;
+  if (['literal-malformed-fence', 'copy-only', 'mixed-generating-correlated'].includes(label)) {
+    expectedRecovery = 'unreadable_reply';
+  } else if (['digest-duplicate-before-user', 'digest-earlier-user-receipt'].includes(label)) {
+    expectedRecovery = 'duplicate_send';
+  }
+  assert.equal(view.recoveryKind, expectedRecovery, label + ': preserve correction barriers');
+  if (label === 'roleless-resend-draft' || label === 'roleless-composer-only') {
+    const sent = label === 'roleless-resend-draft';
+    assert.equal(view.receiptMatches, Number(sent), label + ': a composer ancestor is not a sent turn');
+    assert.equal(view.userCount, Number(sent));
+    assert.equal(view.receiptMatched, sent);
+    assert.equal(view.userExact, sent);
+    assert.equal(view.complete, false);
+    assert.equal(view.assistantCharacters, 0);
+    assert.equal(view.codeReply, false);
+    assert.equal(view.busy, false);
+    assert.equal(view.draft, true, label + ': an unsent draft cannot acknowledge Send');
+    assert.equal(view.ready, true);
+    if (sent) {
+      assert.equal(view.receiptState, 'waiting_reply');
+      assert.equal(view.lastUserId, 'receipt-reader_send');
+    } else {
+      assert.equal(view.lastUserId, '');
+    }
+    return;
+  }
   const conflict = label === 'receipt-role-conflict';
   const differentUser = label === 'different-known-user' || label === 'iframe-only-receipt';
   let expectedLastUser = currentUserId;
@@ -94,7 +293,12 @@ export function assertDomReaderObservation(raw) {
   assert.equal(view.history[0]?.workerId, 'reader_worker', label + ': preserve history task identity');
   assert.equal(view.history[0]?.projectId, 'reader_project', label + ': preserve history project identity');
 
-  if (label === 'complete-roleless' || label === 'complete-roleless-copy-code') {
+  const literalFence = [
+    'literal-fenced-roleless',
+    'literal-escaped-fence',
+    'literal-malformed-fence',
+  ].includes(label);
+  if (label === 'complete-roleless' || label === 'complete-roleless-copy-code' || literalFence) {
     assert.equal(view.count, 4, label + ': retain both prior turns and the current adjacent pair');
     assert.equal(view.userCount, 2, label + ': do not replace recognized user history');
     assert.deepEqual(view.userIds, [priorUserId, currentUserId]);
@@ -109,8 +313,18 @@ export function assertDomReaderObservation(raw) {
     assert.equal(view.assistantExact, true, label + ': preserve literal source bytes');
     assert.equal(view.assistantFormat, 'code');
     assert.equal(view.assistantIssue, null);
-    assert.equal(view.codeReply, true, label + ': exercise the correlated code fast lane too');
-    assert.equal(view.codeExact, true);
+    const validLiteral = ['literal-fenced-roleless', 'literal-escaped-fence'].includes(label);
+    const readable = !literalFence || validLiteral;
+    assert.equal(
+      view.codeReply,
+      readable,
+      label + ': receipt-bound literal text joins the current code scan',
+    );
+    assert.equal(view.codeExact, readable);
+    assert.equal(view.literalPayloadExact, validLiteral);
+    if (validLiteral) {
+      assert.equal(view.codeIssue, null, label + ': old widget diagnostics cannot hold the current reply');
+    }
     assert.equal(view.copyControl, label === 'complete-roleless-copy-code');
     assert.equal(view.receiptMatched, true);
     return;
@@ -130,6 +344,7 @@ export function assertDomReaderObservation(raw) {
   assert.notEqual(view.receiptState, null, label + ': do not skip fallback for a mixed-role tail');
   if (
     label === 'mixed-generating' ||
+    label === 'mixed-generating-modern-stop' ||
     label === 'mixed-generating-correlated' ||
     label === 'copy-only' ||
     label === 'digest-assistant-progress'
@@ -502,6 +717,17 @@ export async function checkDomReader(
         );
         await record(name, { ok: true, observation });
         assertDomReaderObservation(observation);
+        if (['recovery-duplicate-send', 'literal-fenced-roleless', 'literal-escaped-fence'].includes(name)) {
+          const refreshed = domReaderObservationSchema.parse(
+            await action(reader + '.observe()', 'repeat the same receipt-bound response observation'),
+          );
+          await record(name, { ok: true, observation: refreshed }, 'refresh');
+          assert.deepEqual(
+            refreshed,
+            observation,
+            'Repeated views retain the same reply or correction evidence.',
+          );
+        }
         if (name === 'mixed-generating') {
           const before = await pageState();
           const probe = domReaderObservationSchema.parse(
@@ -527,6 +753,49 @@ export async function checkDomReader(
       assert.equal(effects.frames, Number(name === 'iframe-only-receipt'));
       offline.check();
     }
+    console.log(
+      'Disclosure recovery:',
+      JSON.stringify(
+        assertDisclosureRecovery(await action(reader + '.disclosureRecovery()', 'check disclosure recovery')),
+      ),
+    );
+    assert.deepEqual(
+      await action(reader + '.sentSourceRecovery()', 'verify the sent source in the native message editor'),
+      {
+        sourceHashMatched: true,
+        replyMatched: true,
+        edits: 1,
+        cancels: 1,
+        sends: 0,
+        inputs: 0,
+        composerPreserved: true,
+        editorClosed: true,
+      },
+    );
+    const draftResults = z
+      .array(
+        z.object({
+          name: z.string(),
+          cleared: z.boolean(),
+          unchanged: z.boolean(),
+          clicks: z.number(),
+        }),
+      )
+      .length(11)
+      .parse(await action(reader + '.staleDraftRecovery()', 'verify guarded stale draft cleanup'));
+    for (const result of draftResults) {
+      assert.equal(result.cleared, ['textarea', 'editable'].includes(result.name), result.name);
+      assert.equal(result.unchanged, true, result.name + ': preserve the exact expected composer bytes');
+      assert.equal(result.clicks, 0, result.name + ': clearing never sends');
+    }
+    console.log(
+      'Long transcript work:',
+      JSON.stringify(
+        assertLongTranscriptResults(
+          await action(reader + '.longTranscript()', 'measure bounded long transcript work'),
+        ),
+      ),
+    );
     return domReaderEvidenceListSchema.parse(evidence);
   } finally {
     try {

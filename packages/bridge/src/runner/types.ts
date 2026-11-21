@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { BootstrapDraft } from '../bootstrap-draft.js';
 import { taskBoundarySchema, type Snapshot } from '../../../protocol/src/index.js';
 import type { DomRequest } from '../chat-dom.js';
 import { outboundReceiptSchema, type OutboundReceipt } from '../message-wire.js';
@@ -36,7 +37,7 @@ export const bridgeResendResultSchema = z
     replyFound: z.boolean().optional().describe('Whether an existing verified reply prevented a resend.'),
     pending: z.boolean().optional().describe('Whether the confirmed resend is waiting for the composer.'),
   })
-  .describe('The outcome of one user-confirmed resend of the exact saved prompt.');
+  .describe('The outcome of one user-confirmed resend of the reviewed instructions with a fresh reply ID.');
 
 export type BridgeResendResult = z.infer<typeof bridgeResendResultSchema>;
 
@@ -103,6 +104,9 @@ export const bridgeOptionsSchema = z
     expectedRun: taskBoundarySchema
       .optional()
       .describe('The original reviewed run and epoch retained across runner startup and native requests.'),
+    waitingReplyRevision: nonNegativeIntegerSchema
+      .optional()
+      .describe('The exact active reply checkpoint being reattached after the background worker restarted.'),
     expectedBatchId: identifierSchema
       .optional()
       .describe('The exact queued batch admitted by pending continuation, without lost-ack substitution.'),
@@ -131,12 +135,16 @@ export type BridgeOptions = z.infer<typeof bridgeOptionsSchema>;
 export type BridgeDependencies = {
   checkAvailable?(): void;
   verifyStartup?(): Promise<void>;
+  reconnectHost?(): Promise<Snapshot>;
   rpc(method: string, params: Record<string, unknown>): Promise<unknown>;
   page(tabId: number, request: DomRequest): Promise<unknown>;
   snapshot(): Snapshot | undefined;
   publish(status: BridgeStatus): void;
   log(kind: string, message: string): void;
   saveReceipt?(receipt: OutboundReceipt): Promise<void>;
+  confirmBootstrapDraft?(proof: BootstrapDraft): Promise<void>;
+  rememberAnsweredDraft?(exchangeId: string): Promise<void>;
+  findCompletedBootstrapDraft?(text: string): Promise<BootstrapDraft | undefined>;
   loadProgress?(): Promise<unknown>;
   saveProgress?(progress: TaskProgress, epoch?: number): Promise<unknown>;
   now?(): number;

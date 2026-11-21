@@ -1,5 +1,5 @@
 import { domRequestSchema, type ChatView, type DomRequest } from './dom/types.js';
-import { PAGE_CHANNEL, PAGE_READER, pageHelloSchema, pageReplyHeaderSchema } from './transport/messages.js';
+import { PAGE_CHANNEL, pageHelloSchema, pageReplyHeaderSchema } from './transport/messages.js';
 import { PageBridgeError } from './transport/page-error.js';
 import { readPageState } from './transport/page-state.js';
 
@@ -129,7 +129,7 @@ export class PageTransport {
       }
     };
 
-    const handshake = async (): Promise<void> => {
+    const handshake = async () => {
       const identity = await this.exchange(tabId, 'hello');
 
       const hello = pageHelloSchema.safeParse(identity);
@@ -145,11 +145,13 @@ export class PageTransport {
           { cause: hello.error },
         );
       }
+      return hello.data;
     };
 
     const connect = async (): Promise<void> => {
+      let hello;
       try {
-        await handshake();
+        hello = await handshake();
       } catch {
         checkDocument();
         this.log('bridge.attach', `Installing packaged bridge in tab ${tabId}.`);
@@ -168,14 +170,14 @@ export class PageTransport {
         }
 
         checkDocument();
-        await handshake();
+        hello = await handshake();
       }
 
       checkDocument();
       this.attachedTabs.add(tabId);
       this.log(
         'bridge.ready',
-        `Page handshake confirmed in tab ${tabId}; ${PAGE_CHANNEL}; reader=${PAGE_READER}.`,
+        `Page handshake confirmed in tab ${tabId}; ${hello.version}; reader=${hello.reader}; revision=${hello.readerRevision ?? 'unreported'}.`,
       );
     };
 
@@ -200,7 +202,7 @@ export class PageTransport {
     this.documentGenerations.delete(tabId);
   }
 
-  async request(tabId: number, action: DomRequest): Promise<ChatView> {
+  async request(tabId: number, action: DomRequest, beforeSend?: () => void): Promise<ChatView> {
     const parsedAction = domRequestSchema.safeParse(action);
     if (!parsedAction.success) {
       throw new PageBridgeError('BAD_REQUEST', 'Invalid page bridge request.', false, {
@@ -241,6 +243,9 @@ export class PageTransport {
             true,
           );
         }
+        // Recheck mutation ownership after browser availability and handshake
+        // awaits. No asynchronous work may separate this guard from dispatch.
+        beforeSend?.();
         const rawState = await this.exchange(tabId, 'request', action);
 
         if (this.documentGenerations.get(tabId) !== generation) {

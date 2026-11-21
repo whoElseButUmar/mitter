@@ -1,4 +1,5 @@
 import { createPopover, uiId } from './popover.js';
+import { createIcon } from './icons.js';
 import type { CodeSelection, FollowupRequest } from '../../protocol/src/requests.js';
 
 export type SelectionEditorOptions = {
@@ -65,7 +66,7 @@ export function mountSelectionEditor(root: HTMLElement, options: SelectionEditor
   const dismiss = document.createElement('button');
   dismiss.type = 'button';
   dismiss.className = 'icon-button';
-  dismiss.textContent = '×';
+  dismiss.append(createIcon(document, 'close'));
   dismiss.setAttribute('aria-label', 'Close selection prompt');
   header.append(title, dismiss);
   const metadata = document.createElement('div');

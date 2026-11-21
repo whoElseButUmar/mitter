@@ -1,6 +1,6 @@
 export const startSheetTemplate = `
-    <p class="start-intro">Miter uses an empty chat or opens a fresh one, sends your task, and works through the replies.</p>
-    <div class="start-destination"><span class="destination-dot" aria-hidden="true"></span><div><strong data-destination>New ChatGPT chat</strong><span data-destination-hint>A separate conversation for this task.</span></div></div>
+    <p class="start-intro">Miter sends this task to ChatGPT and works through the replies.</p>
+    <div class="start-destination"><div><strong data-destination>New ChatGPT chat</strong><span data-destination-hint>A separate conversation for this task.</span></div></div>
     <p class="start-disclosure">Starting authorizes Miter to send this task’s prompts, code excerpts, and command results to ChatGPT until it stops. Commands still need your approval.</p>
     <details class="form-advanced start-options"><summary>Options</summary>
       <label class="field"><span>Conversation</span><select data-chat><option value="new">New ChatGPT chat</option></select></label>

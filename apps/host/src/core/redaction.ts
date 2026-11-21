@@ -1,5 +1,13 @@
 import { StringDecoder } from 'node:string_decoder';
 
+/** Audit origins and their temporary capabilities do not help a model repair a project. */
+export function repairFindingText(input: string): string {
+  return redact(input)
+    .replace(/http:\/\/miter-[a-f0-9]{32}\.localhost:\d+\/(?:[a-f0-9]{32}\/)?/g, '/')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** Best-effort credential masking, not a secrecy guarantee. Output is still
  * private project data; review it before sharing. Keep the input unmodified in
  * the actual project: this helper is for logs and reports only. */

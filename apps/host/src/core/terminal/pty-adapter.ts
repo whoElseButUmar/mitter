@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { isRecord } from '../types.js';
+import { hasErrorCode, isRecord } from '../types.js';
 
 export type PtySubscription = {
   dispose(): void;
@@ -15,6 +15,7 @@ export type PtyProcess = {
   resize(cols: number, rows: number): void;
 
   kill(signal?: string): void;
+  killGroup?(): void;
 
   pause(): void;
 
@@ -100,6 +101,21 @@ export function adaptPtyProcess(value: unknown): PtyProcess {
     },
     kill(signal) {
       kill(signal);
+    },
+    killGroup() {
+      if (process.platform === 'win32') {
+        // ConPTY closes the attached process tree together with the console.
+        kill();
+      } else {
+        // node-pty makes the command supervisor the leader of its own PTY process group.
+        try {
+          process.kill(-pid, 'SIGKILL');
+        } catch (error) {
+          if (!hasErrorCode(error, 'ESRCH')) {
+            throw error;
+          }
+        }
+      }
     },
     pause() {
       pause();

@@ -10,6 +10,7 @@ export {
 } from './constants.js';
 export { object, text, integer, only, id } from './helpers.js';
 export { parseAction, parseCheck, parseChecks } from './parsing/actions.js';
+export { formatSetupCommand } from './setup-command.js';
 export { parseEnvelopeWith, parseEnvelope, parseRequest } from './parsing/envelopes.js';
 export { actionSchema, checkSchema, checksSchema, type Action, type Check } from './schemas/actions.js';
 export {
@@ -28,6 +29,7 @@ export {
   taskBoundarySchema,
   taskControlSchema,
   completionRecordSchema,
+  completionEvidenceSchema,
   workerSchema,
   activitySchema,
   bridgeProgressSummarySchema,
@@ -44,5 +46,10 @@ export {
   type BridgeProgressSummary,
   type Snapshot,
 } from './schemas/domain.js';
+export {
+  readerRevisionSchema,
+  readerDiagnosticSchema,
+  type ReaderDiagnostic,
+} from './schemas/reader-diagnostic.js';
 export { settingsSchema, type Settings } from './schemas/model-settings.js';
 export * from './rpc.js';

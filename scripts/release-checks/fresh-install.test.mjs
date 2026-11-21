@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -109,6 +109,31 @@ test(
     );
     assert.equal(await readFile(path.join(directory, 'canary'), 'utf8'), 'caller-owned bytes');
     await assert.rejects(access(path.join(directory, 'work')), { code: 'ENOENT' });
+    await assert.rejects(access(path.join(directory, 'build.log')), { code: 'ENOENT' });
+  },
+);
+
+test(
+  'fresh-install compares source aliases before launching a worker or creating output',
+  posix,
+  async (context) => {
+    const directory = await fixture(context);
+    const run = path.join(directory, 'run');
+    const alias = path.join(directory, 'source-alias');
+    await mkdir(run);
+    await write(run, 'canary', 'preserve source');
+    await symlink(await realpath(run), alias);
+
+    for (const source of [alias, path.join(alias, 'work/missing/source')]) {
+      await assert.rejects(
+        verifyFreshInstall({ source, directory: run, timeoutMs: 1000 }),
+        /source and work trees must not overlap/,
+      );
+    }
+
+    assert.equal(await readFile(path.join(run, 'canary'), 'utf8'), 'preserve source');
+    await assert.rejects(access(path.join(run, 'work')), { code: 'ENOENT' });
+    await assert.rejects(access(path.join(run, 'build.log')), { code: 'ENOENT' });
   },
 );
 

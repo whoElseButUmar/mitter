@@ -12,6 +12,7 @@ import type { Store } from '../database.js';
 import { redact } from '../redaction.js';
 import { digest } from '../workspace.js';
 import { advanceCounter } from './counters.js';
+import { exchangeKey } from '../handoff-delivery.js';
 
 export function parseProgressUpdate(value: unknown): TaskProgress {
   const parsed = taskProgressSchema.safeParse(value);
@@ -164,6 +165,21 @@ export class TaskProgressStore {
         revision: advanceCounter(next.revision, 'Task progress revision'),
         reason,
       });
+      const previousId = prior?.lastReceipt?.exchangeId;
+      if (
+        previousId &&
+        prior?.lastReceipt?.expectsReplyTo &&
+        ['commit_intent', 'waiting_reply'].includes(prior.stage) &&
+        saved.stage === 'prepared' &&
+        saved.lastReceipt?.expectsReplyTo &&
+        saved.lastReceipt.exchangeId !== previousId
+      ) {
+        const key = exchangeKey(worker.id, previousId);
+        if (this.store.get(key) === 'admitted') {
+          throw new Error('The pending reply has already been imported. No replacement was sent.');
+        }
+        this.store.set(key, 'retired');
+      }
       this.store.set(progressKey(worker.id), saved);
 
       return saved;
