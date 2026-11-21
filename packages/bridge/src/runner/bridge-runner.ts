@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { bootstrapDraftSchema, rawDraftDigest, type BootstrapDraft } from '../bootstrap-draft.js';
+import {
+  bootstrapDraftSchema,
+  matchesBootstrapDraft,
+  rawDraftDigest,
+  type BootstrapDraft,
+} from '../bootstrap-draft.js';
 import {
   ReplyGapTracker,
   REPLY_GAP_IDLE_MS,
@@ -17,7 +22,8 @@ import { parseRpcParams, RpcResultValidationError } from '../../../protocol/src/
 import type { ChatView, DomRequest } from '../chat-dom.js';
 import { PageBridgeError } from '../page-transport.js';
 import {
-  matchesWaitingReply,
+  matchesRecoverableWait,
+  holdsSetupApproval,
   isUnsentBootstrap,
   taskProgressSchema,
   type TaskProgress,
@@ -242,9 +248,14 @@ export class BridgeRunner {
       activeMs: options.previousProgress?.activeMs,
       maxMinutes: options.previousProgress?.maxMinutes,
     };
-    if (options.waitingReplyRevision !== undefined) {
-      this.status.phase = 'waiting_reply';
-      this.status.reason = 'Reconnecting to the saved reply…';
+    if (options.reattachRevision !== undefined) {
+      if (options.expectedBatchId) {
+        this.status.phase = 'waiting_approval';
+        this.status.reason = 'Reconnecting to the project setup…';
+      } else {
+        this.status.phase = 'waiting_reply';
+        this.status.reason = 'Reconnecting to the saved reply…';
+      }
     }
     const worker = dependencies.snapshot()?.workers.find((worker) => worker.id === options.workerId);
 
@@ -291,14 +302,16 @@ export class BridgeRunner {
     const goalHash = await messageDigest(worker.goal);
     this.assertCanContinue();
     let recoveryOptions = this.options;
-    if (this.options.waitingReplyRevision !== undefined) {
-      const saved = bridgeProgressLoadSchema.parse(loaded).progress;
+    if (this.options.reattachRevision !== undefined) {
+      const { progress: saved, setupResultBatchId } = bridgeProgressLoadSchema.parse(loaded);
       if (
-        !matchesWaitingReply(
+        !matchesRecoverableWait(
           saved,
-          this.options.waitingReplyRevision,
+          this.options.reattachRevision,
           this.status.url,
           this.options.lastReceipt,
+          worker,
+          setupResultBatchId,
         )
       ) {
         throw new PageBridgeError(
@@ -316,7 +329,8 @@ export class BridgeRunner {
 
     if (
       expectedBatchId !== undefined &&
-      (progress.stage !== 'local_batch' ||
+      ((progress.stage !== 'local_batch' &&
+        !(this.options.reattachRevision !== undefined && progress.stage === 'report_due')) ||
         progress.lastImportedId !== expectedBatchId ||
         !progress.conversationUrl)
     ) {
@@ -402,7 +416,7 @@ export class BridgeRunner {
     this.activeTimeDeadline = this.now() + Math.max(0, progress.maxMinutes * 60000 - progress.activeMs);
     await this.dependencies.verifyStartup?.();
     this.assertCanContinue();
-    if (this.options.waitingReplyRevision === undefined) {
+    if (this.options.reattachRevision === undefined) {
       await this.checkpoint();
       this.assertCanContinue();
     }
@@ -481,7 +495,31 @@ export class BridgeRunner {
 
   /** Closing a Chrome window can be part of quitting the browser. Retire
    * the reader without replacing its confirmed waiting checkpoint with Stop. */
-  detachWaitingReply(): boolean {
+  detachSetupApproval(): boolean {
+    const worker = this.dependencies.snapshot()?.workers.find((item) => item.id === this.options.workerId);
+    if (
+      !this.status.active ||
+      this.status.monitoring ||
+      !worker ||
+      !this.ownsWorker(worker) ||
+      this.progress?.stage !== 'local_batch' ||
+      !this.progress.lastImportedId ||
+      !holdsSetupApproval(worker, this.progress.lastImportedId) ||
+      !['running', 'waiting_approval'].includes(this.status.phase) ||
+      this.pendingDelivery ||
+      this.pendingSend
+    ) {
+      return false;
+    }
+    this.status.active = false;
+    this.hostReconnect = undefined;
+    return true;
+  }
+
+  detachSavedWait(): boolean {
+    if (this.detachSetupApproval()) {
+      return true;
+    }
     if (
       !this.status.active ||
       this.status.monitoring ||
@@ -732,7 +770,11 @@ export class BridgeRunner {
       worker.mode === owner.mode &&
       (!this.starting ||
         (JSON.stringify(worker.queue[0]) === owner.batch &&
-          (owner.expectedBatchId === undefined || worker.queue[0]?.id === owner.expectedBatchId)))
+          (owner.expectedBatchId === undefined ||
+            worker.queue[0]?.id === owner.expectedBatchId ||
+            (this.options.reattachRevision !== undefined &&
+              worker.state === 'review' &&
+              !worker.queue.length))))
     );
   }
 
@@ -968,7 +1010,7 @@ export class BridgeRunner {
       staleDraft,
       expiresAt: this.activeTimeDeadline,
       allowConversationBind: this.pendingConversationBind,
-      preservePause: this.options.waitingReplyRevision !== undefined || undefined,
+      preservePause: this.options.reattachRevision !== undefined || undefined,
       includeHistory: op === 'inspect' && this.status.phase === 'connecting',
       receipt: inspectionReceipt,
       workerId: this.options.workerId,
@@ -1378,6 +1420,33 @@ export class BridgeRunner {
       const worker = this.boundWorker();
       await this.restoreProgress();
       this.assertCanContinue();
+      if (this.options.reattachRevision !== undefined) {
+        // Cold setup attaches a monitor. Only the host's recorded user decision
+        // may release the accepted batch or start a terminal.
+        if (
+          !this.options.expectedBatchId &&
+          (worker.mode !== 'handoff' ||
+            !['idle', 'review'].includes(worker.state) ||
+            worker.pending ||
+            worker.queue.length ||
+            worker.humanAcceptanceReady ||
+            worker.teamPaused)
+        ) {
+          throw new Error('The worker no longer has an outstanding reply.');
+        }
+        await this.loadTaskPrompts(worker.id);
+        await this.dependencies.verifyStartup?.();
+        this.assertCanContinue();
+        this.starting = false;
+        this.restoringPendingSend = true;
+        this.sentAt = this.now();
+        if (this.options.expectedBatchId) {
+          this.update('waiting_approval', 'Waiting for the project setup result…');
+        } else {
+          this.update('waiting_reply', 'Checking the saved ChatGPT reply…');
+        }
+        return;
+      }
       const continueBatch =
         this.options.resumeExisting === true &&
         !!worker.queue.length &&
@@ -1395,15 +1464,6 @@ export class BridgeRunner {
       }
       if (worker.humanAcceptanceReady) {
         throw new Error('The result is ready for your review. Another chat is not needed.');
-      }
-      if (this.options.waitingReplyRevision !== undefined) {
-        await this.loadTaskPrompts(worker.id);
-        this.assertCanContinue();
-        this.starting = false;
-        this.restoringPendingSend = true;
-        this.sentAt = this.now();
-        this.update('waiting_reply', 'Checking the saved ChatGPT reply…');
-        return;
       }
       this.update('connecting', 'Connecting to ChatGPT…');
       await this.loadTaskPrompts(worker.id);
@@ -1431,7 +1491,7 @@ export class BridgeRunner {
       this.starting = false;
       await this.initialise();
     } catch (error) {
-      if (this.options.waitingReplyRevision !== undefined && this.starting) {
+      if (this.options.reattachRevision !== undefined && this.starting) {
         await this.stop(errorMessage(error), 'error', bridgeErrorCode(error));
         throw error;
       }
@@ -1443,6 +1503,23 @@ export class BridgeRunner {
       this.operationRunning = false;
       this.operationDone?.();
     }
+  }
+
+  async hasOutgoingDraft(text: string, exchangeId: string): Promise<boolean> {
+    const receipt = this.options.lastReceipt;
+    if (!this.status.active || !receipt || receipt.exchangeId !== exchangeId) {
+      return false;
+    }
+    if (text === this.expectedUserText) {
+      return true;
+    }
+    if (!receipt.composerHash) {
+      return false;
+    }
+    return matchesBootstrapDraft(text, {
+      exchangeId,
+      rawHash: receipt.composerHash,
+    });
   }
 
   private async initialise(): Promise<void> {
@@ -1480,6 +1557,12 @@ export class BridgeRunner {
       );
       return;
     }
+    const freshComposer =
+      this.options.newChat === true && isUnsentBootstrap(this.progress) && !this.options.lastReceipt;
+    if (freshComposer && this.dependencies.canBootstrap?.() === false) {
+      this.update('connecting', 'Waiting for the other task to open its conversation…');
+      return;
+    }
     let page = await this.requestPage('inspect');
     if (page.ready === false) {
       this.update('connecting', 'Waiting for the ChatGPT page to be ready…');
@@ -1494,15 +1577,17 @@ export class BridgeRunner {
     if (
       page.draft &&
       !page.busy &&
-      this.options.newChat === true &&
+      freshComposer &&
       page.url === this.bootstrapOrigin &&
-      isUnsentBootstrap(this.progress) &&
-      !this.options.lastReceipt &&
       page.count === 0 &&
       page.transcript?.state === 'empty'
     ) {
-      const proof = await this.dependencies.findCompletedBootstrapDraft?.(page.draftText);
+      const proof = await this.dependencies.inspectBootstrapDraft?.(page.draftText);
       this.assertCanContinue();
+      if (proof === 'pending') {
+        this.update('connecting', 'Waiting for the other task’s reply before using this chat…');
+        return;
+      }
       if (proof) {
         const verified = bootstrapDraftSchema.parse(proof);
         page = await this.requestPage(
@@ -4038,7 +4123,7 @@ export class BridgeRunner {
     }
     // A cold start only reads the checkpoint and prompts. A failed or cancelled
     // admission does not own the page session or a newer host checkpoint.
-    if (this.options.waitingReplyRevision !== undefined && this.starting) {
+    if (this.options.reattachRevision !== undefined && this.starting) {
       this.status.active = false;
       this.status.errorCode = errorCode;
       this.update(phase, reason);

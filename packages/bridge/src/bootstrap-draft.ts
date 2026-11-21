@@ -27,7 +27,10 @@ export async function rawDraftDigest(text: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export async function matchesBootstrapDraft(text: string, proof: BootstrapDraft): Promise<boolean> {
+export async function matchesBootstrapDraft(
+  text: string,
+  proof: Pick<BootstrapDraft, 'exchangeId' | 'rawHash'>,
+): Promise<boolean> {
   if (
     !text ||
     /[\uD800-\uDFFF]/u.test(text) ||

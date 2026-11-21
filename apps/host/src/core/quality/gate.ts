@@ -50,16 +50,22 @@ function webEntry(relative: string): boolean {
  * gates. Model summaries, project source and standing conventions are not task intent. */
 export function requestsWebVerification(instruction: string, projectName: string): boolean {
   const name = projectName.toLowerCase().replace(/[-_]+/g, ' ').trim();
+  const sourceReviewOnly =
+    /\b(?:source[- ]only|static) (?:code )?review\b/i.test(instruction) ||
+    /\b(?:do not|don't|never) (?:write files or )?run commands\b/i.test(instruction);
   const clauses = instruction.toLowerCase().split(/[,;.!?\n]+|\s+(?:and(?: then)?|then)\s+/);
   for (const clause of clauses) {
     const action =
-      /^\s*(?:(?:please|can you|could you|i want you to|also)\s+)*(?:(?:re)?(?:check|test|audit)|verify|validate|exercise|review|repair|fix|debug|make sure|run(?: the)?(?: quality)? (?:checks|tests|audits|lighthouse))\b(.*)/.exec(
+      /^\s*(?:(?:please|can you|could you|i want you to|also)\s+)*((?:re)?(?:check|test|audit)|verify|validate|exercise|review|repair|fix|debug|make sure|run(?: the)?(?: quality)? (?:checks|tests|audits|lighthouse))\b(.*)/.exec(
         clause,
       );
     if (!action) {
       continue;
     }
-    const target = action[1]?.trim() ?? '';
+    if (sourceReviewOnly && action[1] === 'review') {
+      continue;
+    }
+    const target = action[2]?.trim() ?? '';
     if (
       /^(?:(?:the|our|its|this|my|a)\s+)*(?:readme|documentation|docs?|comments?|instructions?|installation guide)\b/.test(
         target,

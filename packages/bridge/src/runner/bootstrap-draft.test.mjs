@@ -118,7 +118,7 @@ test('a first accepted nonce-linked reply confirms the fingerprint without a rea
 
 test('confirmed stale draft clearing precedes exactly one new send', async () => {
   const harness = freshHarness({ draft: true, draftText: oldText });
-  harness.dependencies.findCompletedBootstrapDraft = async (text) => {
+  harness.dependencies.inspectBootstrapDraft = async (text) => {
     assert.equal(text, oldText);
     return proof;
   };
@@ -161,17 +161,48 @@ test('an unavailable draft-history store cannot interrupt an accepted batch', as
   await harness.runner.stop();
 });
 
+test('fresh tabs wait for their turn and recheck the composer before preparing a send', async () => {
+  const harness = freshHarness();
+  let available = false;
+  harness.dependencies.canBootstrap = () => available;
+  await harness.runner.start();
+  assert.equal(harness.runner.status.phase, 'connecting');
+  assert.equal(harness.events.includes('page:prepare'), false);
+  available = true;
+  await harness.runner.tick();
+  assert.equal(harness.commits.length, 1);
+  await harness.runner.stop();
+});
+
+test('an unanswered sibling draft is preserved until it is safely cleared or disappears', async () => {
+  const harness = freshHarness({ draft: true, draftText: oldText });
+  harness.dependencies.inspectBootstrapDraft = async (text) => {
+    assert.equal(text, oldText);
+    return 'pending';
+  };
+  await harness.runner.start();
+  await harness.runner.tick();
+  assert.equal(harness.runner.status.phase, 'connecting');
+  assert.equal(harness.events.includes('page:clear_draft'), false);
+  assert.equal(harness.commits.length, 0);
+  harness.setView({ draft: false, draftText: '' });
+  await harness.runner.tick();
+  assert.equal(harness.commits.length, 1);
+  assert.notEqual(harness.commits[0].text, oldText);
+  await harness.runner.stop();
+});
+
 test('unknown draft and late completed-task verification preserve the draft and do not send', async (context) => {
   await context.test('no confirmed proof', async () => {
     const harness = freshHarness({ draft: true, draftText: oldText });
-    harness.dependencies.findCompletedBootstrapDraft = async () => undefined;
+    harness.dependencies.inspectBootstrapDraft = async () => undefined;
     await assert.rejects(harness.runner.start(), { code: 'DRAFT_CONFLICT' });
     assert.equal(harness.commits.length, 0);
   });
   await context.test('Stop while checking the previous task', async () => {
     const harness = freshHarness({ draft: true, draftText: oldText });
     const pending = Promise.withResolvers();
-    harness.dependencies.findCompletedBootstrapDraft = () => pending.promise;
+    harness.dependencies.inspectBootstrapDraft = () => pending.promise;
     const starting = harness.runner.start().catch(() => {});
     for (let attempt = 0; attempt < 30 && !harness.events.includes('page:inspect'); attempt++) {
       await new Promise((resolve) => setImmediate(resolve));

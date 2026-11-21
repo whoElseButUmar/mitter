@@ -26,6 +26,20 @@ export type HandoffDelivery = z.infer<typeof handoffDeliverySchema>;
 
 export const deliveryKey = (envelopeId: string) => 'miter.handoffDelivery.v1.' + envelopeId;
 
+export function setupResultKey(worker: Worker, exchangeId: string): string {
+  return (
+    'miter.setupResult.' +
+    JSON.stringify([worker.id, worker.projectId, worker.runId, worker.control?.epoch ?? 0, exchangeId])
+  );
+}
+
+export function recordSetupResult(store: Store, worker: Worker): void {
+  const batch = worker.queue[0];
+  if (worker.mode === 'handoff' && batch?.replyTo) {
+    store.set(setupResultKey(worker, batch.replyTo), batch.id);
+  }
+}
+
 /** A linked exchange gets one admission, or can be retired before admission. */
 export const exchangeKey = (workerId: string, exchangeId: string) =>
   'miter.handoffExchange.' + JSON.stringify([workerId, exchangeId]);

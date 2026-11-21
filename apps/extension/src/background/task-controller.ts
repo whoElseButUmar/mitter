@@ -94,7 +94,8 @@ import {
 import {
   isActiveReplyWait,
   isUnsentBootstrap,
-  matchesWaitingReply,
+  matchesRecoverableWait,
+  holdsSetupApproval,
   taskProgressSchema,
 } from '../../../../packages/bridge/src/progress.js';
 
@@ -184,6 +185,21 @@ function canReattachReply(worker: Worker): boolean {
     worker.control?.mode !== 'stopped' &&
     ['idle', 'review'].includes(worker.state)
   );
+}
+
+function canRecoverWait(
+  worker: Worker,
+  status: { phase: string; errorCode?: string | undefined; monitoring?: boolean | undefined },
+): boolean {
+  if (isActiveReplyWait(status)) {
+    return canReattachReply(worker);
+  }
+  if (status.errorCode || status.monitoring || !['running', 'waiting_approval'].includes(status.phase)) {
+    return false;
+  }
+  // A finished setup may already have released the queue. Its native batch
+  // receipt is required by matchesRecoverableWait before reconnecting.
+  return holdsSetupApproval(worker) || (worker.state === 'review' && canReattachReply(worker));
 }
 
 function requireChatStartWorker(fresh: Snapshot, workerId: string): Worker {
@@ -445,12 +461,7 @@ export function createTaskController(dependencies: TaskDependencies) {
     }
     for (const summary of snapshot.bridgeProgress ?? []) {
       const { workerId, revision } = summary;
-      if (
-        revision === undefined ||
-        !isActiveReplyWait(summary) ||
-        runners.has(workerId) ||
-        runBusy(workerId)
-      ) {
+      if (revision === undefined || runners.has(workerId) || runBusy(workerId)) {
         continue;
       }
       const previous = replyRecoveryChecks.get(workerId);
@@ -465,7 +476,7 @@ export function createTaskController(dependencies: TaskDependencies) {
       }
       if (
         !worker ||
-        !canReattachReply(worker) ||
+        !canRecoverWait(worker, summary) ||
         !link ||
         !boundary ||
         !matchesTaskBoundary(taskBoundary(worker), boundary) ||
@@ -506,7 +517,14 @@ export function createTaskController(dependencies: TaskDependencies) {
       const loaded = await rpc('worker.bridgeLoad', { workerId, expectedRun }, bridgeLoadSchema);
       admission.check();
       if (
-        !matchesWaitingReply(loaded.progress, revision, link.url, link.lastReceipt) ||
+        !matchesRecoverableWait(
+          loaded.progress,
+          revision,
+          link.url,
+          link.lastReceipt,
+          worker,
+          loaded.setupResultBatchId,
+        ) ||
         loaded.progress?.goalHash !== (await messageDigest(worker.goal))
       ) {
         return;
@@ -518,12 +536,19 @@ export function createTaskController(dependencies: TaskDependencies) {
       if (
         fresh.runtime.version !== APP_VERSION ||
         !current ||
-        !canReattachReply(current) ||
+        !checkpoint ||
+        !canRecoverWait(current, checkpoint) ||
+        !matchesRecoverableWait(
+          loaded.progress,
+          revision,
+          link.url,
+          link.lastReceipt,
+          current,
+          loaded.setupResultBatchId,
+        ) ||
         current.projectId !== worker.projectId ||
         current.goal !== worker.goal ||
-        !checkpoint ||
         checkpoint.revision !== revision ||
-        !isActiveReplyWait(checkpoint) ||
         savedLink?.id !== link.id ||
         savedLink.url !== link.url ||
         savedLink.receiptRun === null ||
@@ -586,6 +611,10 @@ export function createTaskController(dependencies: TaskDependencies) {
         await chrome.tabs.reload(tab.id);
         admission.check();
       }
+      let expectedBatchId: string | undefined;
+      if (loaded.progress && ['local_batch', 'report_due'].includes(loaded.progress.stage)) {
+        expectedBatchId = loaded.progress.lastImportedId;
+      }
       const runner = createRunner(current, {
         workerId,
         projectId: current.projectId,
@@ -597,12 +626,13 @@ export function createTaskController(dependencies: TaskDependencies) {
         maxMinutes: Math.min(60, checkpoint.maxMinutes),
         previousProgress: checkpoint,
         lastReceipt: link.lastReceipt,
-        waitingReplyRevision: revision,
+        reattachRevision: revision,
+        expectedBatchId,
       });
       runners.set(workerId, runner);
       completedPreviews.arm(current);
       publish();
-      log('bridge.reattach', 'Reconnecting to an outstanding reply in its saved conversation.');
+      log('bridge.reattach', 'Reconnecting the task to its saved conversation.');
       try {
         await runner.start();
       } catch (error) {
@@ -849,6 +879,10 @@ export function createTaskController(dependencies: TaskDependencies) {
     const mode = worker.mode;
     const batch = JSON.stringify(worker.queue[0]);
     const destination = chatStartURL(options.url, options.newChat === true);
+    let reattachPhase = 'waiting_reply';
+    if (options.expectedBatchId) {
+      reattachPhase = 'waiting_approval';
+    }
     let superseded = false;
     const checkWorker = (current: Worker | undefined): void => {
       if (
@@ -857,7 +891,7 @@ export function createTaskController(dependencies: TaskDependencies) {
         current.projectId !== projectId ||
         current.goal !== goal ||
         current.mode !== mode ||
-        (options.waitingReplyRevision !== undefined && !canReattachReply(current)) ||
+        (options.reattachRevision !== undefined && !canRecoverWait(current, { phase: reattachPhase })) ||
         JSON.stringify(current.queue[0]) !== batch
       ) {
         superseded = true;
@@ -1082,7 +1116,8 @@ export function createTaskController(dependencies: TaskDependencies) {
           await links.flush(true);
           checkRunner();
         },
-        async findCompletedBootstrapDraft(text) {
+        canBootstrap: () => chats.canBootstrap(workerId, tabId, destination),
+        async inspectBootstrapDraft(text) {
           staleDraftAuthorization = undefined;
           checkStartup();
           if (!chats.isCreatedTab(workerId, tabId) || !chatgptProvider.origins.includes(destination)) {
@@ -1092,9 +1127,23 @@ export function createTaskController(dependencies: TaskDependencies) {
           if (!frame) {
             return;
           }
+          // A live sibling's exact wire can briefly appear in an empty new tab.
+          // Its pending send permits waiting only. Clearing still requires the
+          // retained fingerprint and the source task checks below.
+          let pending = false;
           const candidates = [];
           for (const [oldWorkerId, link] of links.entries()) {
             if (oldWorkerId !== workerId) {
+              const sibling = runners.get(oldWorkerId);
+              if (
+                sibling &&
+                sibling.status.tabId === link.id &&
+                link.id !== tabId &&
+                new URL(link.url).origin === destination &&
+                (await sibling.hasOutgoingDraft(text, frame.exchangeId))
+              ) {
+                pending = true;
+              }
               for (const proof of retainedDrafts(link)) {
                 if (
                   proof.exchangeId === frame.exchangeId &&
@@ -1108,11 +1157,14 @@ export function createTaskController(dependencies: TaskDependencies) {
             checkStartup();
           }
           const proof = candidates[0];
-          if (candidates.length !== 1 || !proof) {
+          if (candidates.length > 1) {
             return;
           }
-          const owner = draftOwner(proof);
-          if (!owner) {
+          const owner = proof && draftOwner(proof);
+          if (!proof || !owner) {
+            if (pending) {
+              return 'pending';
+            }
             return;
           }
           // Pin nested control data too: a later resume must not rewrite the
@@ -2711,6 +2763,10 @@ export function createTaskController(dependencies: TaskDependencies) {
     disconnected(): void {
       hostConnection = Symbol('host connection');
       for (const runner of runners.values()) {
+        if (runner.detachSetupApproval()) {
+          runners.delete(runner.status.workerId);
+          continue;
+        }
         if (!runner.hostDisconnected()) {
           void runner.stop(
             'The local host disconnected during an operation. Its outcome needs checking. Open Setup to reconnect, then Resume the saved task; nothing was replayed.',
@@ -2800,7 +2856,7 @@ export function createTaskController(dependencies: TaskDependencies) {
       }
       for (const runner of runners.values()) {
         if (runner.status.tabId === tabId) {
-          if (info?.isWindowClosing && runner.detachWaitingReply()) {
+          if (info?.isWindowClosing && runner.detachSavedWait()) {
             runners.delete(runner.status.workerId);
             publish();
             continue;
@@ -2887,7 +2943,9 @@ export function createTaskController(dependencies: TaskDependencies) {
       void tabLiveness.releaseAll().catch(() => {});
 
       for (const runner of runners.values()) {
-        void runner.stop('Extension shutdown').catch(() => {});
+        if (!runner.detachSavedWait()) {
+          void runner.stop('Extension shutdown').catch(() => {});
+        }
       }
     },
   };

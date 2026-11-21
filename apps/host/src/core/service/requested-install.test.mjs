@@ -1,9 +1,19 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
+import { progressKey } from '../../../../../packages/bridge/src/progress.ts';
+import { Service } from '../service.ts';
 import { wantsProjectInstall } from './requested-install.ts';
-import { fixture, importBatch, makeEnvelope, makeWorker, runToBoundary } from './test-fixture.mjs';
+import {
+  fixture,
+  importBatch,
+  makeEnvelope,
+  makeProgress,
+  makeWorker,
+  runToBoundary,
+} from './test-fixture.mjs';
 
 const goal = 'Build a pottery studio app. I’ll run pnpm install in Miter’s project terminal. Test the app.';
 const manifest = {
@@ -221,4 +231,103 @@ test('restoring a consumed model batch reopens its unanswered setup and never re
   assert.notEqual(worker.pending.token, 'expired');
   assert.equal(worker.queue[0].id, batch.id);
   assert.equal(worker.cursor, 1);
+});
+
+test('helper restart preserves an unanswered setup decision and reports its result to the same batch', async (context) => {
+  for (const source of ['task goal', 'model action']) {
+    await context.test(source, async (t) => {
+      const { service, store, worker, dataDir } = await fixture(t, { workers: [makeWorker({ goal })] });
+      const actions = [manifest];
+      if (source === 'model action') {
+        actions.push(proposed);
+      }
+      const exchangeId = randomUUID();
+      const batch = await importBatch(service, worker, actions, { replyTo: exchangeId });
+      await runToBoundary(service, worker);
+      const decision = setupRequest(worker, 'manual');
+      const gate = structuredClone(worker.pending);
+      const checkpoint = makeProgress(worker, {
+        stage: 'local_batch',
+        phase: 'waiting_approval',
+        lastImportedId: batch.id,
+        lastReceipt: {
+          workerId: worker.id,
+          projectId: worker.projectId,
+          goalHash: makeProgress(worker).goalHash,
+          textHash: 'b'.repeat(64),
+          renderedHash: 'b'.repeat(64),
+          at: 100,
+          exchangeId,
+          expectsReplyTo: true,
+        },
+      });
+      store.set(progressKey(worker.id), checkpoint);
+      await service.quiesce();
+      const reopened = new Service(store, dataDir, service.factory, service.models);
+      try {
+        const restored = reopened.workers.get(worker.id);
+        assert.equal(restored.state, 'awaiting_approval');
+        assert.deepEqual(restored.pending, gate);
+        assert.equal(restored.cursor, worker.cursor);
+        assert.deepEqual(restored.queue, worker.queue);
+        const load = () => reopened.handle('worker.bridgeLoad', { workerId: worker.id });
+        assert.equal((await load()).setupResultBatchId, undefined);
+        assert.equal(store.events().filter((e) => e.kind === 'approval').length, 1);
+        let terminal;
+        reopened.startManualSetup = async (options) => {
+          terminal = options;
+          return 'restored-setup';
+        };
+        await reopened.handle('worker.setupDecision', decision);
+        assert.equal((await load()).setupResultBatchId, undefined);
+        terminal.onFinish('restored-setup', { code: 0, plainPnpmInstall: true, output: 'Done.' });
+        await reopened.wait(worker.id);
+        assert.equal(restored.state, 'review');
+        assert.equal((await load()).setupResultBatchId, batch.id);
+        store.set(progressKey(worker.id), { ...checkpoint, stage: 'report_due' });
+        assert.equal((await load()).setupResultBatchId, batch.id);
+        store.set(progressKey(worker.id), { ...checkpoint, lastImportedId: 'different-batch' });
+        assert.equal((await load()).setupResultBatchId, undefined);
+        store.set(progressKey(worker.id), {
+          ...checkpoint,
+          lastReceipt: { ...checkpoint.lastReceipt, exchangeId: randomUUID() },
+        });
+        assert.equal((await load()).setupResultBatchId, undefined);
+        store.set(progressKey(worker.id), checkpoint);
+        restored.runId = 'new-run';
+        assert.equal((await load()).setupResultBatchId, undefined);
+      } finally {
+        await reopened.quiesce();
+      }
+    });
+  }
+});
+
+test('helper restart quarantines a setup command that might already have run', async (context) => {
+  for (const started of ['session', 'opening terminal', 'command journal']) {
+    await context.test(started, async (t) => {
+      const { service, store, worker, dataDir } = await fixture(t);
+      const batch = await importBatch(service, worker, [proposed]);
+      await runToBoundary(service, worker);
+      const decision = setupRequest(worker, 'manual');
+      await service.quiesce();
+      if (started === 'session') {
+        worker.pending.manualSessionId = 'previous-terminal';
+        store.saveWorker(worker);
+      } else if (started === 'opening terminal') {
+        store.set('miter.manualSetup.' + batch.id + '_0', true);
+      } else {
+        store.set('command:setup:' + batch.id + '_0', { status: 'started' });
+      }
+      const reopened = new Service(store, dataDir, service.factory, service.models);
+      try {
+        const restored = reopened.workers.get(worker.id);
+        assert.equal(restored.state, 'paused');
+        assert.equal(restored.pending, undefined);
+        await assert.rejects(reopened.handle('worker.setupDecision', decision), /ended/);
+      } finally {
+        await reopened.quiesce();
+      }
+    });
+  }
 });

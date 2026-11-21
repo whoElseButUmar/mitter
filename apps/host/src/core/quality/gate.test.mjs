@@ -16,6 +16,7 @@ test('only app-scoped user verification requests audit an unchanged project', ()
     'Open the app, then verify the Needs payment filter.',
     'Can you run the Lighthouse audit?',
     'Exercise the form and fix any broken app behavior.',
+    'Start with a static code review, then test the form in Chrome.',
   ]) {
     assert.equal(requestsWebVerification(request, 'day-pass-desk'), true, request);
   }
@@ -26,6 +27,8 @@ test('only app-scoped user verification requests audit an unchanged project', ()
     'List the files in this project.',
     'Do not test the app. Open the preview.',
     'Write an explanation of how to test the browser.',
+    'Read the UI source and review the add form and filters. Do not write files or run commands.',
+    'Review the app in a source-only review. Return your findings in the summary.',
   ]) {
     assert.equal(requestsWebVerification(request, 'day-pass-desk'), false, request);
   }

@@ -497,7 +497,7 @@ test('a restarted background consumes the saved reply once without another Send 
   const resumed = createHarness({
     progress: saved,
     options: {
-      waitingReplyRevision: saved.revision,
+      reattachRevision: saved.revision,
       lastReceipt: { ...saved.lastReceipt, at: saved.lastReceipt.at + 100 },
     },
     view: {
@@ -527,4 +527,54 @@ test('a restarted background consumes the saved reply once without another Send 
   assert.equal(resumed.progress().lastReceipt.at, saved.lastReceipt.at);
   assert.equal(resumed.progress().lastImportedId, 'reply_1');
   await resumed.runner.stop();
+});
+
+test('a cold setup monitor leaves the gate alone and sends its finished report exactly once', async () => {
+  const original = createHarness();
+  await original.runner.start();
+  const saved = original.progress();
+  saved.phase = 'waiting_approval';
+  saved.stage = 'local_batch';
+  saved.lastImportedId = 'setup_batch';
+  saved.conversationUrl = original.options.url;
+  const action = {
+    type: 'setupCommand',
+    command: ['pnpm', 'install'],
+    purpose: 'Install',
+    effects: 'Writes dependencies',
+  };
+  const batch = original.showReply({ id: saved.lastImportedId, actions: [action] });
+  const restored = createHarness({
+    progress: saved,
+    options: { reattachRevision: saved.revision, expectedBatchId: batch.id, lastReceipt: saved.lastReceipt },
+    worker: {
+      state: 'awaiting_approval',
+      queue: [batch],
+      pending: { action, token: 'token', fingerprint: 'fingerprint', revision: 1, reason: 'Install' },
+    },
+    view: {
+      lastUserText: original.commits[0].text,
+      lastUserId: 'sent_user',
+      userIds: ['sent_user'],
+      userCount: 1,
+    },
+  });
+  restored.showReply(batch);
+  await restored.runner.start();
+  await restored.runner.tick();
+  assert.equal(restored.runner.status.phase, 'waiting_approval');
+  assert.equal(restored.commits.length, 0);
+  assert.equal(restored.imports.length, 0);
+  assert.ok(!restored.events.includes('worker.run') && !restored.events.includes('worker.resume'));
+  restored.worker.pending = undefined;
+  restored.worker.queue = [];
+  restored.worker.state = 'review';
+  await restored.runner.tick();
+  await restored.runner.tick();
+  assert.equal(restored.commits.length, 1);
+  assert.match(restored.commits[0].text, /BEGIN UNTRUSTED MITTER REPORT/);
+  assert.notEqual(restored.options.lastReceipt.exchangeId, saved.lastReceipt.exchangeId);
+  assert.equal(restored.progress().turns, saved.turns + 1);
+  assert.equal(restored.imports.length, 0);
+  await restored.runner.stop();
 });

@@ -303,7 +303,7 @@ Resume preserves the saved conversation, receipts and remaining budget. It does
 not extend limits or revive a task plan retired by Stop.
 If Chrome or the extension restarts while waiting for a confirmed reply, Miter
 reconnects to the saved conversation. For an expired watch, use miter resume TASK_ID --watch.
-Command approvals still need review in Miter.
+After Chrome restarts, answer pending setup requests in their original Miter tasks.
 
 Offline maintenance (close Miter's browser connection first):
   state | request METHOD JSON | import TASK_ID FILE | run TASK_ID

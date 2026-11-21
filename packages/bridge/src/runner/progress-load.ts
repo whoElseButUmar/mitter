@@ -1,10 +1,13 @@
 import { z } from 'zod';
 import { savedTaskProgressSchema, taskProgressSchema } from '../progress.js';
-import { nonNegativeIntegerSchema } from '../schemas/primitives.js';
+import { identifierSchema, nonNegativeIntegerSchema } from '../schemas/primitives.js';
 
 export const bridgeProgressLoadSchema = z
   .object({
     progress: taskProgressSchema.nullable().describe('Saved task progress, or null when no record exists.'),
+    setupResultBatchId: identifierSchema
+      .optional()
+      .describe('Accepted batch whose setup decision the host recorded for this run.'),
     importedCount: nonNegativeIntegerSchema.describe('Number of batches already accepted by the host.'),
   })
   .describe('Saved task progress and the number of batches already accepted by the local host.');

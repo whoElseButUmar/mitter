@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { bridgeProgressSummarySchema } from '../../protocol/src/index.js';
+import { bridgeProgressSummarySchema, type Worker } from '../../protocol/src/index.js';
 import { outboundReceiptSchema, parseReceipt, type OutboundReceipt } from './message-wire.js';
 import {
   conversationUrlSchema,
@@ -107,18 +107,69 @@ export function isActiveReplyWait(
   );
 }
 
-export function matchesWaitingReply(
+/** Match a held host approval to the accepted batch, including an owner-requested
+ * install injected by the host at the end of that batch. This grants no command authority. */
+export function holdsSetupApproval(worker: Worker, batchId?: string): boolean {
+  const head = worker.queue[0];
+  const pending = worker.pending;
+  if (
+    worker.mode !== 'handoff' ||
+    worker.state !== 'awaiting_approval' ||
+    worker.teamPaused ||
+    worker.control?.mode === 'stopped' ||
+    worker.humanAcceptanceReady ||
+    pending?.action.type !== 'setupCommand' ||
+    !head ||
+    head.workerId !== worker.id ||
+    head.projectId !== worker.projectId ||
+    (batchId !== undefined && head.id !== batchId)
+  ) {
+    return false;
+  }
+  if (pending.fromTaskRequest) {
+    return (
+      pending.action.command.length === 2 &&
+      pending.action.command[0] === 'pnpm' &&
+      pending.action.command[1] === 'install'
+    );
+  }
+  const action = head.actions[worker.cursor];
+  return (
+    action?.type === 'setupCommand' &&
+    JSON.stringify(action.command) === JSON.stringify(pending.action.command)
+  );
+}
+
+export function matchesRecoverableWait(
   saved: TaskProgress | null,
   revision: number,
   url: string,
-  receipt?: OutboundReceipt,
+  receipt: OutboundReceipt | undefined,
+  worker: Worker,
+  setupResultBatchId?: string,
 ): boolean {
+  if (!saved || saved.monitoring || saved.errorCode || saved.approvedReply) {
+    return false;
+  }
+  if (saved.stage === 'local_batch' || saved.stage === 'report_due') {
+    const batchId = saved.lastImportedId;
+    if (!batchId || !['running', 'waiting_approval'].includes(saved.phase)) {
+      return false;
+    }
+    const released =
+      worker.state === 'review' && !worker.pending && !worker.queue.length && setupResultBatchId === batchId;
+    const held =
+      saved.stage === 'local_batch' &&
+      holdsSetupApproval(worker, batchId) &&
+      worker.queue[0]?.replyTo === receipt?.exchangeId;
+    if (!released && !held) {
+      return false;
+    }
+  } else if (saved.stage !== 'waiting_reply' || !isActiveReplyWait(saved)) {
+    return false;
+  }
   return (
-    !!saved &&
-    isActiveReplyWait(saved) &&
     saved.revision === revision &&
-    saved.stage === 'waiting_reply' &&
-    !saved.approvedReply &&
     saved.conversationUrl === url &&
     !!receipt?.expectsReplyTo &&
     !!receipt.exchangeId &&

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Action, Project, Worker } from '../../../../../packages/protocol/src/index.js';
 import { parseProfile } from '../commands.js';
 import type { Store } from '../database.js';
+import { recordSetupResult } from '../handoff-delivery.js';
 import type { Locks } from '../locks.js';
 import type { ManualSetupOptions, ManualSetupResult } from '../terminal/manual-setup.js';
 import { ApprovalNeeded } from '../types.js';
@@ -95,8 +96,7 @@ function requestSetupApproval(
   task.event('approval', 'Project setup needs your approval.');
 }
 
-export function reviewedSetup(task: TaskRuntime, project: Project, token: string) {
-  const worker = task.worker;
+function setupAtCursor(worker: Worker) {
   const pending = worker.pending;
   const batch = worker.queue[0];
   let action = batch?.actions[worker.cursor];
@@ -107,23 +107,54 @@ export function reviewedSetup(task: TaskRuntime, project: Project, token: string
   if (
     worker.state !== 'awaiting_approval' ||
     !pending ||
-    pending.token !== token ||
     pending.action.type !== 'setupCommand' ||
     !batch ||
     action?.type !== 'setupCommand'
   ) {
-    throw new Error('This setup request has ended. Review the current task.');
+    return;
   }
 
   let actionId = batch.id + '_' + worker.cursor;
   if (pending.fromTaskRequest) {
     actionId = requestedInstallId(batch.id);
   }
+  return { action, actionId, pending, displayedAction: pending.action };
+}
+
+export function canRestoreSetupApproval(worker: Worker, project: Project, store: Store): boolean {
+  const setup = setupAtCursor(worker);
+  if (!setup || setup.pending.manualSessionId || worker.approvedFingerprint) {
+    return false;
+  }
+
+  const { action, actionId, pending } = setup;
+  // A crash can occur after the terminal starts opening but before its session ID is saved.
+  const manual = store.get(manualSetupKey(actionId));
+  if ((manual !== undefined && manual !== false) || store.get('command:setup:' + actionId) !== undefined) {
+    return false;
+  }
+
+  // The current revision is checked again when the user answers the dialog.
+  const reviewedProject = { ...project, revision: pending.revision };
+  return (
+    pending.fingerprint === setupFingerprint(worker, reviewedProject, action, actionId) &&
+    pending.fingerprint === setupFingerprint(worker, reviewedProject, setup.displayedAction, actionId)
+  );
+}
+
+export function reviewedSetup(task: TaskRuntime, project: Project, token: string) {
+  const worker = task.worker;
+  const setup = setupAtCursor(worker);
+  if (!setup || setup.pending.token !== token) {
+    throw new Error('This setup request has ended. Review the current task.');
+  }
+
+  const { action, actionId, pending } = setup;
   const fingerprint = setupFingerprint(worker, project, action, actionId);
   if (
     pending.revision !== project.revision ||
     pending.fingerprint !== fingerprint ||
-    pending.fingerprint !== setupFingerprint(worker, project, pending.action, actionId)
+    pending.fingerprint !== setupFingerprint(worker, project, setup.displayedAction, actionId)
   ) {
     if (!task.running) {
       // Refresh a stale request without approving the changed project.
@@ -152,6 +183,7 @@ export function finishSetupChoice(
       }
     }
     task.recordAction(action, result);
+    recordSetupResult(store, task.worker);
     task.discardPlan();
     task.worker.error = undefined;
     if (task.worker.mode === 'handoff') {

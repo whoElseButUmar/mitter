@@ -120,6 +120,24 @@ export class ChatConnections {
     return this.createdTabs.get(tabId) === workerId;
   }
 
+  canBootstrap(workerId: string, tabId: number, origin: string): boolean {
+    if (!this.isCreatedTab(workerId, tabId)) {
+      return true;
+    }
+    // New tabs on the provider root can mirror the same composer. Once an
+    // earlier runner verifies its own conversation URL it no longer competes.
+    const first = this.dependencies
+      .sessions()
+      .find(
+        (session) =>
+          session.active &&
+          session.bindingPending &&
+          session.url === origin &&
+          this.isCreatedTab(session.workerId, session.tabId),
+      );
+    return !first || first.workerId === workerId;
+  }
+
   forgetCreatedTab(tabId: number): void {
     this.createdTabs.delete(tabId);
   }

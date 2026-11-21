@@ -12,7 +12,7 @@ import type { Store } from '../database.js';
 import { redact } from '../redaction.js';
 import { digest } from '../workspace.js';
 import { advanceCounter } from './counters.js';
-import { exchangeKey } from '../handoff-delivery.js';
+import { exchangeKey, setupResultKey } from '../handoff-delivery.js';
 
 export function parseProgressUpdate(value: unknown): TaskProgress {
   const parsed = taskProgressSchema.safeParse(value);
@@ -102,10 +102,22 @@ export class TaskProgressStore {
       throw new Error('Saved progress belongs to a different task goal. Nothing was reset.');
     }
 
-    return {
+    const result: BridgeProgressLoad = {
       progress: progress ?? null,
       importedCount: this.store.envelopeCount(worker.id),
     };
+    if (
+      worker.state === 'review' &&
+      worker.control?.mode !== 'stopped' &&
+      worker.queue.length === 0 &&
+      (progress?.stage === 'local_batch' || progress?.stage === 'report_due') &&
+      progress.lastImportedId &&
+      progress.lastReceipt?.exchangeId &&
+      this.store.get(setupResultKey(worker, progress.lastReceipt.exchangeId)) === progress.lastImportedId
+    ) {
+      result.setupResultBatchId = progress.lastImportedId;
+    }
+    return result;
   }
 
   assertSaveEpoch(worker: Worker, epoch: unknown): void {

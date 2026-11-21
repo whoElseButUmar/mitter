@@ -104,9 +104,11 @@ export const bridgeOptionsSchema = z
     expectedRun: taskBoundarySchema
       .optional()
       .describe('The original reviewed run and epoch retained across runner startup and native requests.'),
-    waitingReplyRevision: nonNegativeIntegerSchema
+    reattachRevision: nonNegativeIntegerSchema
       .optional()
-      .describe('The exact active reply checkpoint being reattached after the background worker restarted.'),
+      .describe(
+        'The exact reply or setup checkpoint being reattached after the background worker restarted.',
+      ),
     expectedBatchId: identifierSchema
       .optional()
       .describe('The exact queued batch admitted by pending continuation, without lost-ack substitution.'),
@@ -144,7 +146,8 @@ export type BridgeDependencies = {
   saveReceipt?(receipt: OutboundReceipt): Promise<void>;
   confirmBootstrapDraft?(proof: BootstrapDraft): Promise<void>;
   rememberAnsweredDraft?(exchangeId: string): Promise<void>;
-  findCompletedBootstrapDraft?(text: string): Promise<BootstrapDraft | undefined>;
+  canBootstrap?(): boolean;
+  inspectBootstrapDraft?(text: string): Promise<BootstrapDraft | 'pending' | undefined>;
   loadProgress?(): Promise<unknown>;
   saveProgress?(progress: TaskProgress, epoch?: number): Promise<unknown>;
   now?(): number;

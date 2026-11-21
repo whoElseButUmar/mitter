@@ -48,7 +48,13 @@ import { Store } from './database.js';
 import { pickFolder, revealProject } from './desktop.js';
 import { EditConflict, isFileEdit } from './edit-plan.js';
 import { Followups } from './followups.js';
-import { deliveryKey, exchangeKey, matchingDelivery, type HandoffDelivery } from './handoff-delivery.js';
+import {
+  deliveryKey,
+  exchangeKey,
+  matchingDelivery,
+  recordSetupResult,
+  type HandoffDelivery,
+} from './handoff-delivery.js';
 import { inspectHealth } from './health.js';
 import { Locks } from './locks.js';
 import { actionRecord } from './model-observations.js';
@@ -99,6 +105,7 @@ import {
 } from './service/requested-install.js';
 import type { ManualSetupOptions } from './terminal/manual-setup.js';
 import {
+  canRestoreSetupApproval,
   finishSetupChoice,
   manualSetupKey,
   requireSetupApproval,
@@ -226,7 +233,14 @@ export class Service {
     this.projects = this.catalog.projects;
 
     for (const savedWorker of store.workers()) {
-      let worker = recoverInterruptedWorker(savedWorker);
+      let worker = savedWorker;
+      if (
+        worker.state !== 'awaiting_approval' ||
+        !this.projects.has(worker.projectId) ||
+        !canRestoreSetupApproval(worker, this.catalog.executionProject(worker), store)
+      ) {
+        worker = recoverInterruptedWorker(savedWorker);
+      }
 
       if (worker !== savedWorker) {
         store.event(worker.id, 'recovery', shutdownRecoveryMessage);
@@ -2426,6 +2440,9 @@ export class Service {
       const result = await this.command(task, project, profile, journalId, signal);
       if (install && result.code === 0 && !result.aborted && !result.timedOut) {
         await recordPnpmInstall(this.store, task.worker, project, scratch, inputs, signal);
+      }
+      if (!signal.aborted) {
+        recordSetupResult(this.store, task.worker);
       }
       return result;
     }

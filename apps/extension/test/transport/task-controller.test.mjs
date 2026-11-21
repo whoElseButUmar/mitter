@@ -4150,7 +4150,7 @@ test('stale draft cleanup requires one retained exact proof and a freshly comple
   };
   await state.tasks.request('bridge.start', start);
   const runner = lifecycle.runners[0];
-  const find = runner.dependencies.findCompletedBootstrapDraft;
+  const find = runner.dependencies.inspectBootstrapDraft;
   assert.deepEqual(await find(text), proof);
   assert.equal(await find(text + '\n'), undefined);
   previous.state = 'idle';
@@ -4235,7 +4235,7 @@ test('late completed-task state cannot clear after the prior task starts a new f
     return state.defaultNative(method, params);
   });
   const callsBefore = state.calls.length;
-  const finding = lifecycle.runners[0].dependencies.findCompletedBootstrapDraft(text);
+  const finding = lifecycle.runners[0].dependencies.inspectBootstrapDraft(text);
   await until(() => state.calls.length > callsBefore);
   previous.state = 'waiting_model';
   previous.activeFollowupId = 'followup';
@@ -4330,7 +4330,7 @@ async function stoppedDraftFixture(context, { confirmed = true, oldRunner = fals
     text,
     runner,
     clear,
-    find: runner.dependencies.findCompletedBootstrapDraft,
+    find: runner.dependencies.inspectBootstrapDraft,
   };
 }
 
@@ -4425,6 +4425,65 @@ test('a new chat recovers only an exact answered draft from a paused conversatio
   assert.equal(previous.state, 'paused');
 });
 
+for (const projectId of ['project', 'other-project']) {
+  test('fresh workers share bootstrap in order, then run concurrently in ' + projectId, async (context) => {
+    const { rawDraftDigest } = await import('../../../../packages/bridge/src/bootstrap-draft.ts');
+    const { wrapMessage } = await import('../../../../packages/bridge/src/message-wire.ts');
+    const state = setup(context);
+    const lifecycle = mockChatLifecycle(context);
+    const next = worker({ id: 'next-task', projectId, runId: 'next-run' });
+    state.current.workers.push(next);
+    state.tasks.update(state.current);
+    await Promise.all([
+      state.tasks.request('bridge.start', start),
+      state.tasks.request('bridge.start', {
+        ...start,
+        workerId: next.id,
+        expectedRun: { runId: next.runId, epoch: next.control.epoch },
+      }),
+    ]);
+    const [first, second] = lifecycle.runners;
+    assert.notEqual(first.options.tabId, second.options.tabId);
+    assert.equal(first.dependencies.canBootstrap(), true);
+    assert.equal(second.dependencies.canBootstrap(), false);
+
+    const owner = state.current.workers.find((item) => item.id === first.status.workerId);
+    const exchangeId = crypto.randomUUID();
+    const wire = wrapMessage('Work from the first tab.', exchangeId);
+    const proof = {
+      workerId: owner.id,
+      projectId: owner.projectId,
+      exchangeId,
+      goalHash: await messageDigest(owner.goal),
+      origin: 'https://chatgpt.com',
+      rawHash: await rawDraftDigest(wire),
+    };
+    first.options.lastReceipt = {
+      workerId: owner.id,
+      projectId: owner.projectId,
+      exchangeId,
+      goalHash: proof.goalHash,
+      composerHash: proof.rawHash,
+      textHash: proof.rawHash,
+      renderedHash: proof.rawHash,
+      at: 1,
+    };
+    await first.dependencies.saveReceipt(first.options.lastReceipt);
+    first.status.url = 'https://chatgpt.com/c/bound';
+    first.dependencies.publish(first.status);
+    assert.equal(second.dependencies.canBootstrap(), true);
+    const find = second.dependencies.inspectBootstrapDraft;
+    assert.equal(await find(wire), 'pending');
+    assert.equal(await find(wire + '\n'), undefined);
+    assert.equal(await find('My unsent note'), undefined);
+    assert.equal(state.pages.length, 0);
+
+    await first.dependencies.rememberAnsweredDraft(exchangeId);
+    assert.deepEqual(await find(wire), proof);
+    assert.equal(first.status.active, true);
+  });
+}
+
 test('a long-running conversation pins the first imported composer but never promotes an unanswered first send', async (context) => {
   const { rawDraftDigest } = await import('../../../../packages/bridge/src/bootstrap-draft.ts');
   const { wrapMessage } = await import('../../../../packages/bridge/src/message-wire.ts');
@@ -4491,13 +4550,13 @@ test('a long-running conversation pins the first imported composer but never pro
         expectedRun: { runId: next.runId, epoch: next.control.epoch },
       });
       const checking = lifecycle.runners.at(-1);
-      const found = await checking.dependencies.findCompletedBootstrapDraft(text);
+      const found = await checking.dependencies.inspectBootstrapDraft(text);
       if (firstImported) {
         assert.deepEqual(found, first);
       } else {
         assert.equal(found, undefined);
       }
-      assert.equal(await checking.dependencies.findCompletedBootstrapDraft(text + ' '), undefined);
+      assert.equal(await checking.dependencies.inspectBootstrapDraft(text + ' '), undefined);
     });
   }
 });
@@ -4901,3 +4960,107 @@ test('closing a newly numbered restored tab before the next lookup keeps it clos
   assert.deepEqual(state.creations, []);
   assert.deepEqual(state.pages, []);
 });
+
+async function coldSetup(context, { released, recordedResult, checkpoint, task } = {}) {
+  const action = {
+    type: 'setupCommand',
+    command: ['pnpm', 'install'],
+    purpose: 'Install',
+    effects: 'Writes dependencies',
+  };
+  const batch = pendingBatch({ replyTo: '653b3789-5236-4b0d-af9f-f0c30a41ef45' });
+  let current = { state: 'review' };
+  if (!released) {
+    current = {
+      state: 'awaiting_approval',
+      queue: [batch],
+      cursor: batch.actions.length,
+      pending: {
+        action,
+        token: 'token',
+        fingerprint: 'fingerprint',
+        revision: 1,
+        reason: 'Install',
+        fromTaskRequest: true,
+      },
+      ...task,
+    };
+  }
+  const fixture = await coldReply(context, {
+    checkpoint: { stage: 'local_batch', phase: 'waiting_approval', lastImportedId: batch.id, ...checkpoint },
+    task: current,
+  });
+  fixture.state.checkpoint({ importedCount: 2, progress: fixture.saved, setupResultBatchId: recordedResult });
+  return fixture;
+}
+
+test('cold startup reopens a setup conversation without approving or replaying the imported batch', async (context) => {
+  const { state, connection } = await coldSetup(context);
+  state.tabs.delete(connection.id);
+  let now = Date.now();
+  context.mock.method(Date, 'now', () => now);
+  chrome.tabs.query = async () => [...state.tabs.values()];
+  state.tasks.browserStartup();
+  state.tasks.update(state.current);
+  await setImmediate();
+  now += 11000;
+  state.tasks.tick();
+  await until(() => state.calls.filter((call) => call.method === 'worker.prompt').length === 2);
+  await setImmediate();
+  const [status] = await state.tasks.request('bridge.list', {});
+  assert.equal(status.active, true);
+  assert.equal(status.phase, 'waiting_approval');
+  assert.deepEqual(state.creations, [{ url: connection.url, active: false }]);
+  const count = state.calls.length;
+  state.tasks.tabRemoved(101, { isWindowClosing: true, windowId: 1 });
+  await setImmediate();
+  assert.ok(
+    state.calls.slice(count).every((call) => !['worker.pause', 'worker.bridgeSave'].includes(call.method)),
+  );
+  assert.ok(
+    state.calls.every((call) => ['worker.bridgeLoad', 'state', 'worker.prompt'].includes(call.method)),
+  );
+  assert.deepEqual(state.pages, []);
+});
+
+for (const [reason, options, expected] of [
+  ['recorded manual outcome', { released: true, recordedResult: 'batch' }, true],
+  [
+    'report pending after manual outcome',
+    { released: true, recordedResult: 'batch', checkpoint: { stage: 'report_due' } },
+    true,
+  ],
+  [
+    'prepared report cannot be replayed',
+    { released: true, recordedResult: 'batch', checkpoint: { stage: 'prepared' } },
+    false,
+  ],
+  ['empty queue without native result', { released: true }, false],
+  ['outcome from another batch', { released: true, recordedResult: 'different' }, false],
+  ['paused checkpoint', { checkpoint: { phase: 'stopped' } }, false],
+  ['different queued batch', { checkpoint: { lastImportedId: 'other' } }, false],
+]) {
+  test('cold setup recovery handles ' + reason, async (context) => {
+    const { state } = await coldSetup(context, options);
+    state.tasks.update(state.current);
+    for (let i = 0; i < 5; i++) {
+      state.tasks.tick();
+      await setImmediate();
+    }
+    const [status] = await state.tasks.request('bridge.list', {});
+    assert.equal(status.active, expected);
+    assert.ok(
+      state.calls.every(
+        (call) =>
+          ![
+            'worker.run',
+            'worker.resume',
+            'worker.approve',
+            'worker.setupDecision',
+            'worker.import',
+          ].includes(call.method),
+      ),
+    );
+    assert.ok(state.pages.every((page) => !['prepare', 'commit'].includes(page.message.action?.op)));
+  });
+}
