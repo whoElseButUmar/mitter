@@ -9,6 +9,7 @@ import {
 import { Diagnostics } from '../../../packages/bridge/src/diagnostics.js';
 import { NativeHost, type NativeRPC } from './transport/native-host.js';
 import { TaskNotifications } from './background/notifications.js';
+import { createNotificationAudio } from './background/notification-audio.js';
 import { createTaskController } from './background/task-controller.js';
 import { TerminalControl } from './background/terminal-control.js';
 import { ViewConnections } from './background/view-connections.js';
@@ -140,7 +141,7 @@ export function startBackground() {
     }
     // Workspace initialization can read current state before the startup snapshot arrives.
     // Its task-state reader validates that reply before syncing browser preferences.
-    if (method !== 'workspace.read' || helperMismatch) {
+    if (method !== 'notifications.history' && (method !== 'workspace.read' || helperMismatch)) {
       requireHelper();
     }
     return tasks.request(method, params);
@@ -166,7 +167,7 @@ export function startBackground() {
   const notifications = new TaskNotifications({
     blocked,
     broadcast: (message) => views.broadcast(message),
-    ding: () => views.ding(),
+    ding: createNotificationAudio(),
     openTask: (workerId) => tasks.openNotification(workerId),
     log,
   });

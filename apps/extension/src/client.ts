@@ -395,7 +395,12 @@ export class HostClient {
       }
     }
 
-    if (!this.hostCompatible && this.hostError && !diagnosticRequest(method)) {
+    if (
+      !this.hostCompatible &&
+      this.hostError &&
+      method !== 'notifications.history' &&
+      !diagnosticRequest(method)
+    ) {
       throw new Error(this.hostError);
     }
     let timeoutMs = 45000;

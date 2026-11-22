@@ -900,6 +900,28 @@ dialog[open] {
   padding: 16px 20px 20px;
 }
 
+.notification-history {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.notification-history-entry {
+  display: grid;
+  width: 100%;
+  gap: 4px;
+  padding: 8px 10px;
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+
+.notification-history-entry small {
+  color: var(--muted);
+  font-weight: normal;
+}
+
 dialog.wide {
   max-width: 780px;
 }

@@ -33,11 +33,42 @@ export const savedNotificationPreferencesSchema = notificationPreferencesSchema
   .catch({ enabled: false, sound: false })
   .describe('Saved preferences with invalid values turned off.');
 
+export const notificationHistoryLimit = 100;
+
+export const taskNoticeSchema = z
+  .object({
+    workerId: identifierSchema,
+    kind: z.enum(['warning', 'success', 'error']).describe('The notice severity.'),
+    message: z.string().describe('The task notification text.'),
+    setupApproval: z.literal(true).optional().describe('This notice opens the task’s pending setup command.'),
+  })
+  .describe('A task transition notice.');
+
+export const notificationHistorySchema = z
+  .array(
+    taskNoticeSchema
+      .extend({
+        id: identifierSchema.describe('The unique ID of this alert.'),
+        at: z
+          .int()
+          .min(0)
+          .max(8_640_000_000_000_000)
+          .describe('When the alert arrived, in Unix milliseconds.'),
+      })
+      .describe('One saved task alert.'),
+  )
+  .max(notificationHistoryLimit)
+  .describe('Recent task alerts, newest first.');
+
 export const notificationStorageSchema = z
   .object({
-    'miter.notifications.v1': savedNotificationPreferencesSchema,
+    'miter.notifications.v1': savedNotificationPreferencesSchema.default({ enabled: false, sound: true }),
+    'miter.notificationHistory.v1': z
+      .unknown()
+      .optional()
+      .describe('The saved alert list, validated independently from preferences.'),
   })
-  .describe('The Chrome storage response containing independently migrated notification preferences.');
+  .describe('Notification preferences and history stored in this Chrome profile.');
 
 export const notificationChangeSchema = notificationPreferencesSchema
   .partial()
@@ -48,23 +79,12 @@ export const auxiliaryMessageSchema = z
   .discriminatedUnion('event', [
     z.object({
       event: z.literal('taskNotification'),
-      data: z
-        .object({
-          workerId: identifierSchema,
-          kind: z.enum(['warning', 'success', 'error']).describe('The notice severity.'),
-          message: z.string().describe('The task notification text.'),
-          setupApproval: z
-            .literal(true)
-            .optional()
-            .describe('This notice opens the task’s pending setup command.'),
-        })
-        .describe('A task transition notice.'),
+      data: taskNoticeSchema,
     }),
     z.object({
       event: z.literal('notificationSettings'),
       data: notificationPreferencesSchema,
     }),
-    z.object({ event: z.literal('ding') }),
     z.object({ event: z.literal('debug'), data: z.array(debugEntrySchema) }),
     z.object({
       event: z.literal('bridges'),
@@ -168,5 +188,7 @@ export const resetMessageSchema = z
   .describe('Reset state, document challenges, and exact destructive-request acknowledgements.');
 
 export type NotificationPreferences = z.infer<typeof notificationPreferencesSchema>;
+export type TaskNotice = z.infer<typeof taskNoticeSchema>;
+export type NotificationHistory = z.infer<typeof notificationHistorySchema>;
 export type AuxiliaryMessage = z.infer<typeof auxiliaryMessageSchema>;
 export type RPCResponse = z.infer<typeof rpcResponseSchema>;

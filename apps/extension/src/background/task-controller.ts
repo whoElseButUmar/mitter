@@ -256,7 +256,7 @@ export function createTaskController(dependencies: TaskDependencies) {
         diagnostics.add('preview.feedback.error', errorMessage(error));
       });
       diagnostics.add('preview.open.error', message);
-      broadcast({ event: 'taskNotification', data: { workerId, kind: 'warning', message } });
+      notifications.publish({ workerId, kind: 'warning', message }, 'Preview needs attention', message);
       return write;
     },
   );
@@ -2466,6 +2466,8 @@ export function createTaskController(dependencies: TaskDependencies) {
 
       case 'notifications.get':
         return notifications.read();
+      case 'notifications.history':
+        return notifications.readHistory();
       case 'notifications.set':
         return notifications.set(params);
 

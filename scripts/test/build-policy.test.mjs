@@ -20,7 +20,15 @@ const repositoryRoot = path.resolve(import.meta.dirname, '../..');
 
 function approvedManifest() {
   return {
-    permissions: ['nativeMessaging', 'sidePanel', 'storage', 'clipboardWrite', 'scripting', 'fontSettings'],
+    permissions: [
+      'nativeMessaging',
+      'sidePanel',
+      'storage',
+      'clipboardWrite',
+      'scripting',
+      'fontSettings',
+      'offscreen',
+    ],
     optional_permissions: ['clipboardRead', 'notifications'],
     optional_host_permissions: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
     sandbox: { pages: ['preview-sandbox.html'] },
@@ -108,7 +116,7 @@ test('security policy preserves exact permissions and optional website access', 
   const original = structuredClone(manifest);
 
   assert.deepEqual(checkManifestSecurity(manifest), {
-    permissions: 6,
+    permissions: 7,
     optionalPermissions: 2,
     websiteAccess: 'optional',
     remoteExtensionCode: false,

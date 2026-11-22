@@ -106,6 +106,13 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
           Miter
         </span>
         <div class="spacer" />
+        <TooltipButton
+          class="icon-button"
+          icon="bell"
+          label="Notification history"
+          ariaHasPopup="dialog"
+          onClick={() => setModal('notification-history')}
+        />
         <Show when={navigation().recentlyClosed.length > 0}>
           <TooltipButton
             class="icon-button history-button"

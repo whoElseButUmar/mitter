@@ -15,6 +15,7 @@ const requiredPermissions = [
   'clipboardWrite',
   'scripting',
   'fontSettings',
+  'offscreen',
 ];
 const optionalPermissions = ['clipboardRead', 'notifications'];
 const optionalOrigins = ['https://chatgpt.com/*', 'https://chat.openai.com/*'];

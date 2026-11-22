@@ -19,7 +19,12 @@ import { rewriteResultSchema } from '../../../../packages/bridge/src/rewrite-run
 import { replyPreviewSchema } from '../../../../packages/bridge/src/reply-recovery.js';
 import { debugEntrySchema } from '../../../../packages/bridge/src/diagnostics.js';
 import { WorkspaceActionSchema } from '../../../../packages/ui/src/workspace.js';
-import { notificationPreferencesSchema, notificationChangeSchema, workspaceStateSchema } from './messages.js';
+import {
+  notificationPreferencesSchema,
+  notificationChangeSchema,
+  notificationHistorySchema,
+  workspaceStateSchema,
+} from './messages.js';
 import { identifierSchema } from './primitives.js';
 import {
   bridgeStartIdentitySchema,
@@ -216,6 +221,11 @@ export const localRpcRegistry = Object.freeze({
   'notifications.get': {
     params: emptyRpcParamsSchema,
     result: notificationPreferencesSchema,
+    mutation: false,
+  },
+  'notifications.history': {
+    params: emptyRpcParamsSchema,
+    result: notificationHistorySchema,
     mutation: false,
   },
   'notifications.set': {

@@ -94,7 +94,7 @@ export function NotificationsForm(props: NotificationsDraftOptions & { playSound
         <label class="checkline">
           <input
             type="checkbox"
-            disabled={!preferences().enabled || draft.busy()}
+            disabled={draft.busy()}
             checked={preferences().sound}
             onChange={(event) =>
               setPreferences((previous) => ({
@@ -105,7 +105,6 @@ export function NotificationsForm(props: NotificationsDraftOptions & { playSound
           />
           <span>Play a sound</span>
         </label>
-        <p class="muted small">Select an alert to open its task. Sound plays while Miter is open.</p>
         <Show when={draft.error()}>
           <p class="error" role="alert">
             {draft.error()}

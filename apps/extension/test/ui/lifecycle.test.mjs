@@ -1096,7 +1096,12 @@ function audioFixture(context) {
     }
     createOscillator() {
       this.oscillator = {
-        frequency: { value: 0 },
+        frequency: {
+          changes: [],
+          setValueAtTime(value) {
+            this.changes.push(value);
+          },
+        },
         connect() {},
         start() {},
         stop() {},
@@ -1125,7 +1130,7 @@ test('task sound closes its audio resource when the oscillator ends and does not
   const owner = createRoot((dispose) => ({ dispose, play: createTaskSound() }));
   await owner.play();
   assert.equal(instances.length, 1);
-  assert.equal(instances[0].oscillator.frequency.value, 880);
+  assert.deepEqual(instances[0].oscillator.frequency.changes, [660, 880]);
   instances[0].oscillator.onended();
   await flush();
   owner.dispose();

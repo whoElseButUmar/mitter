@@ -117,6 +117,7 @@ const local = [
   'workspace.read',
   'workspace.action',
   'notifications.get',
+  'notifications.history',
   'notifications.set',
   'debug.read',
   'debug.clear',

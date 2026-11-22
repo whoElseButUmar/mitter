@@ -4,15 +4,19 @@ import type { BridgeStatus } from '../../../../packages/bridge/src/index.js';
 import { isAppReady } from '../../../../packages/bridge/src/presentation.js';
 import {
   notificationStorageSchema,
+  notificationHistorySchema,
+  notificationHistoryLimit,
   notificationChangeSchema,
+  type NotificationHistory,
   type NotificationPreferences,
+  type TaskNotice,
 } from '../schemas/messages.js';
 import { errorMessage } from '../schemas/primitives.js';
 
 type NotificationDependencies = {
   blocked(): boolean;
   broadcast(message: unknown): void;
-  ding(): void;
+  ding(isCurrent: () => boolean): void | Promise<void>;
   openTask(workerId: string): Promise<void>;
   log(kind: string, message: string): void;
 };
@@ -25,6 +29,9 @@ export class TaskNotifications {
   };
   private tail: Promise<unknown>;
   private writes = new Set<Promise<unknown>>();
+  private history: NotificationHistory = [];
+  private storageReady = false;
+  private eventCursor: number | undefined;
   private taskStates = new Map<string, string>();
   private bridgeStates = new Map<string, string>();
   private notices = new Map<string, symbol>();
@@ -35,13 +42,23 @@ export class TaskNotifications {
 
   constructor(private dependencies: NotificationDependencies) {
     const revision = this.revision;
-    this.tail = Promise.resolve(chrome.storage.local.get('miter.notifications.v1'))
+    this.tail = Promise.resolve(
+      chrome.storage.local.get(['miter.notifications.v1', 'miter.notificationHistory.v1']),
+    )
       .then((stored) => {
         if (this.disposed || this.revision !== revision) {
           return;
         }
 
-        this.preferences = notificationStorageSchema.parse(stored)['miter.notifications.v1'];
+        const saved = notificationStorageSchema.parse(stored);
+        this.preferences = saved['miter.notifications.v1'];
+        const result = notificationHistorySchema.default([]).safeParse(saved['miter.notificationHistory.v1']);
+        if (!result.success) {
+          dependencies.log('notification.history.error', 'Saved notification history could not be read.');
+          return;
+        }
+        this.history = result.data;
+        this.storageReady = true;
       })
       .catch((error) => dependencies.log('notification.settings.error', errorMessage(error)));
 
@@ -96,13 +113,27 @@ export class TaskNotifications {
     }
   };
 
-  private create(workerId: string, title: string, message: string): void {
-    if (this.disposed) {
+  publish(data: TaskNotice, title: string, message: string): void {
+    if (this.disposed || this.dependencies.blocked()) {
       return;
     }
 
+    const { workerId } = data;
     const id = 'miter-task-' + workerId;
     const revision = this.revision;
+    const entry = { ...data, id: crypto.randomUUID(), at: Date.now() };
+    const record = this.tail.then(async () => {
+      if (!this.storageReady || this.disposed || this.revision !== revision || this.dependencies.blocked()) {
+        return;
+      }
+      this.history = [entry, ...this.history].slice(0, notificationHistoryLimit);
+      await chrome.storage.local.set({ 'miter.notificationHistory.v1': this.history });
+    });
+    this.tail = record.catch((error) =>
+      this.dependencies.log('notification.history.error', errorMessage(error)),
+    );
+    this.dependencies.broadcast({ event: 'taskNotification', data });
+
     const notice = Symbol('task notification');
     this.notices.set(workerId, notice);
     const isCurrent = () =>
@@ -112,18 +143,24 @@ export class TaskNotifications {
       !this.dependencies.blocked();
 
     const write = this.tail.then(async () => {
-      if (!isCurrent() || !this.preferences.enabled || !chrome.notifications) {
+      if (!isCurrent()) {
         return;
       }
-      await chrome.notifications.create(id, {
-        type: 'basic',
-        iconUrl: chrome.runtime.getURL('icon-128.png'),
-        title: 'Miter · ' + title,
-        message,
-        silent: true,
-      });
-      if (isCurrent() && this.preferences.enabled && this.preferences.sound) {
-        this.dependencies.ding();
+      if (this.preferences.enabled && chrome.notifications) {
+        try {
+          await chrome.notifications.create(id, {
+            type: 'basic',
+            iconUrl: chrome.runtime.getURL('icon-128.png'),
+            title: 'Miter · ' + title,
+            message,
+            silent: true,
+          });
+        } catch (error) {
+          this.dependencies.log('notification.desktop.error', errorMessage(error));
+        }
+      }
+      if (isCurrent() && this.preferences.sound) {
+        await this.dependencies.ding(() => isCurrent() && this.preferences.sound);
       }
     });
     this.writes.add(write);
@@ -136,6 +173,18 @@ export class TaskNotifications {
     if (this.disposed || this.dependencies.blocked()) {
       return;
     }
+
+    // The host coalesces snapshots. A short task can reach complete before
+    // its first running snapshot is sent. Use new goal events in that case.
+    const newCompletions = new Set<string>();
+    let latestEvent = this.eventCursor ?? 0;
+    for (const event of snapshot.events) {
+      if (this.eventCursor !== undefined && event.id > this.eventCursor && event.kind === 'goal') {
+        newCompletions.add(event.workerId);
+      }
+      latestEvent = Math.max(latestEvent, event.id);
+    }
+    this.eventCursor = latestEvent;
 
     const currentIds = new Set(snapshot.workers.map((worker) => worker.id));
     for (const id of this.taskStates.keys()) {
@@ -164,16 +213,17 @@ export class TaskNotifications {
         this.notices.delete(worker.id);
       }
 
+      const justFinished = state === 'complete' && newCompletions.has(worker.id);
+      const changed = previous !== undefined && previous !== state;
       if (
-        previous === undefined ||
-        previous === state ||
+        (!changed && !justFinished) ||
         !['complete', 'review', 'blocked', 'awaiting_approval'].includes(state)
       ) {
         continue;
       }
 
       let title = 'Task needs attention';
-      let kind = 'success';
+      let kind: TaskNotice['kind'] = 'success';
 
       if (state === 'complete') {
         title = 'Task complete';
@@ -198,17 +248,17 @@ export class TaskNotifications {
         continue;
       }
 
-      this.dependencies.broadcast({
-        event: 'taskNotification',
-        data: {
+      this.publish(
+        {
           workerId: worker.id,
           kind,
           message: title + ' · ' + displayTaskName(worker),
           ...(state === 'awaiting_approval' &&
             worker.pending?.action.type === 'setupCommand' && { setupApproval: true }),
         },
-      });
-      this.create(worker.id, title, displayTaskName(worker));
+        title,
+        displayTaskName(worker),
+      );
     }
   }
 
@@ -249,20 +299,28 @@ export class TaskNotifications {
       message = 'Check the linked chat. Miter is still watching for its reply.';
     }
 
-    this.dependencies.broadcast({
-      event: 'taskNotification',
-      data: {
+    this.publish(
+      {
         workerId: status.workerId,
         kind: 'warning',
         message: name + ' needs attention. ' + message,
       },
-    });
-    this.create(status.workerId, 'Chat needs attention', name + ' · ' + message);
+      'Chat needs attention',
+      name + ' · ' + message,
+    );
   }
 
   async read(): Promise<NotificationPreferences> {
     await this.tail;
     return { ...this.preferences };
+  }
+
+  async readHistory(): Promise<NotificationHistory> {
+    await this.tail;
+    if (!this.storageReady) {
+      throw new Error('Notification history is unavailable. Reopen Miter to try again.');
+    }
+    return [...this.history];
   }
 
   private checkWrite(revision: number): void {
@@ -322,6 +380,9 @@ export class TaskNotifications {
   clear(): void {
     this.revision++;
     this.preferences = { enabled: false, sound: false };
+    this.history = [];
+    this.storageReady = false;
+    this.eventCursor = undefined;
     this.taskStates.clear();
     this.bridgeStates.clear();
     this.notices.clear();

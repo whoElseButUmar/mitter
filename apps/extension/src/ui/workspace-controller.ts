@@ -93,6 +93,7 @@ export function createWorkspaceController() {
     enabled: false,
     sound: false,
   });
+  const [notificationRevision, setNotificationRevision] = createSignal(0);
   const [automationTarget, setAutomationTarget] = createSignal<{
     workerId: string;
     expectedRun: TaskBoundary;
@@ -273,6 +274,35 @@ export function createWorkspaceController() {
     });
   };
 
+  const openNotifiedTask = async (workerId: string) => {
+    if (!alive) {
+      return;
+    }
+    const dialog = modalGeneration;
+    const operation = ++dialogRead;
+    const navigationRevision = navigation().revision;
+    const isCurrent = () =>
+      alive &&
+      dialog === modalGeneration &&
+      operation === dialogRead &&
+      (navigation().revision === navigationRevision || selected() === workerId);
+    try {
+      const state = await callResult(rpc, workspaceStateSchema, 'workspace.action', {
+        action: { type: 'open', kind: 'task', id: workerId },
+      });
+      if (isCurrent()) {
+        applyNavigation(state);
+        if (navigation().revision === state.revision && selected() === workerId) {
+          setModal('');
+        }
+      }
+    } catch (error) {
+      if (isCurrent()) {
+        throw error;
+      }
+    }
+  };
+
   const client = new HostClient(
     setSnapshot,
     (ok, error) => {
@@ -289,9 +319,6 @@ export function createWorkspaceController() {
       if (message.event === 'notificationSettings' && modal() !== 'notifications') {
         setNotifications(message.data);
       }
-      if (message.event === 'ding') {
-        void playDing();
-      }
       if (message.event === 'workspace') {
         applyNavigation(message.data);
       }
@@ -299,6 +326,7 @@ export function createWorkspaceController() {
         setNotice(message.error);
       }
       if (message.event === 'taskNotification') {
+        setNotificationRevision((revision) => revision + 1);
         const notification = message.data;
 
         if (typeof notification?.workerId === 'string' && typeof notification.message === 'string') {
@@ -316,34 +344,7 @@ export function createWorkspaceController() {
             duration: 8000,
             action: {
               label: 'Open task',
-              run: async () => {
-                if (!alive) {
-                  return;
-                }
-                const dialog = modalGeneration;
-                const operation = ++dialogRead;
-                const navigationRevision = navigation().revision;
-                const isCurrent = () =>
-                  alive &&
-                  dialog === modalGeneration &&
-                  operation === dialogRead &&
-                  (navigation().revision === navigationRevision || selected() === notification.workerId);
-                try {
-                  const state = await callResult(rpc, workspaceStateSchema, 'workspace.action', {
-                    action: { type: 'open', kind: 'task', id: notification.workerId },
-                  });
-                  if (isCurrent()) {
-                    applyNavigation(state);
-                    if (navigation().revision === state.revision && selected() === notification.workerId) {
-                      setModal('');
-                    }
-                  }
-                } catch (error) {
-                  if (isCurrent()) {
-                    throw error;
-                  }
-                }
-              },
+              run: () => openNotifiedTask(notification.workerId),
             },
           });
         }
@@ -1112,6 +1113,8 @@ export function createWorkspaceController() {
     bridges,
     followupHistory,
     notifications,
+    notificationRevision,
+    openNotifiedTask,
     automationTarget,
     replyWorker,
     useReply,

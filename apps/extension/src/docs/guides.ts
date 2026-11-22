@@ -495,9 +495,9 @@ export const guideTopics: DocsTopic[] = [
               'Open Settings to change terminal colors, fonts and scrollback. The preview lets you see the effect before you return to work.',
           },
           {
-            name: 'Desktop alerts',
+            name: 'Task notifications',
             description:
-              'Open Settings to choose notifications. Chrome may ask for permission. Check task status in Miter whenever a notice is unavailable.',
+              'Open the bell to see recent task alerts and jump to the matching task. Settings lets you mute the chime or turn on desktop alerts. Chrome may ask for desktop notification permission.',
           },
           {
             name: 'Project context',

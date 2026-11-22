@@ -120,14 +120,6 @@ export class ViewConnections {
     }
   }
 
-  ding(): void {
-    const view = [...this.readyViews].at(-1);
-
-    if (view) {
-      this.post(view, { event: 'ding' });
-    }
-  }
-
   publishReset(state: DataResetCoordinator['state']): void {
     for (const view of this.resetViews) {
       this.post(view, { type: 'reset-state', state });

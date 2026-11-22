@@ -38,7 +38,15 @@ export default defineConfig({
     // Chromium marks fontSettings kFlagCannotBeOptional. Miter only calls
     // getFontList, gated by the user's local Use system fonts preference.
     // https://github.com/chromium/chromium/blob/main/chrome/common/extensions/permissions/chrome_api_permissions.cc
-    permissions: ['nativeMessaging', 'sidePanel', 'storage', 'clipboardWrite', 'scripting', 'fontSettings'],
+    permissions: [
+      'nativeMessaging',
+      'sidePanel',
+      'storage',
+      'clipboardWrite',
+      'scripting',
+      'fontSettings',
+      'offscreen',
+    ],
     optional_permissions: ['clipboardRead', 'notifications'],
     optional_host_permissions: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
     action: { default_title: 'Open Miter' },

@@ -6,6 +6,7 @@ import { ContextForm } from '../forms/ContextForm';
 import { NotificationsForm, NotificationsSettings } from '../forms/NotificationsForm';
 import { modelPickerResultSchema } from '../../../../packages/protocol/src/rpc';
 import { callResult } from '../ui/rpc';
+import { NotificationHistoryDialog } from './NotificationHistory';
 
 export function SettingsDialogs(props: { controller: WorkspaceController }) {
   const { snapshot, success, modal, setModal, notifications, project, rpc, playDing } = props.controller;
@@ -30,6 +31,9 @@ export function SettingsDialogs(props: { controller: WorkspaceController }) {
           success={success}
           playSound={playDing}
         />
+      </Show>
+      <Show when={modal() === 'notification-history'}>
+        <NotificationHistoryDialog controller={props.controller} />
       </Show>
       <Show when={modal() === 'workflows' && project()?.id} keyed>
         {(projectId) => <WorkflowForm projectId={projectId} rpc={rpc} close={close} />}
