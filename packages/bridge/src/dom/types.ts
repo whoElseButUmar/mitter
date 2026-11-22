@@ -18,9 +18,9 @@ import { outboundReceiptSchema } from '../message-wire.js';
 import { identifierSchema, nonNegativeIntegerSchema } from '../schemas/primitives.js';
 import type { ImageModeSelection } from './composer-image-mode.js';
 
-export const USER_READER_VERSION = 'user-turn/8';
+export const USER_READER_VERSION = 'user-turn/9';
 // Increment when packaged DOM behavior changes without changing the compatible reader protocol.
-export const PAGE_READER_REVISION = 13;
+export const PAGE_READER_REVISION = 14;
 // Build verification checks this exact marker in the packaged page script.
 export const ASSISTANT_READER_VERSION = 'logical-pre/5-user-turn/8-discovery/8-code-reply/6-send/4-control/2';
 

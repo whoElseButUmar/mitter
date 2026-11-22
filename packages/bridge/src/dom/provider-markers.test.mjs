@@ -52,6 +52,17 @@ const reportQuoteGoal = [
   }),
   'END UNTRUSTED MITTER REPORT',
 ].join('\n\n');
+const reportSelectorGoal = [
+  'Continue this task.',
+  'BEGIN UNTRUSTED MITTER REPORT\nMITTER REPORT',
+  JSON.stringify({
+    action: { type: 'skill', name: 'app-design' },
+    result: {
+      content: String.raw`.ui *, .ui *::before, .ui *::after { box-sizing: border-box } .literal\* {}`,
+    },
+  }),
+  'END UNTRUSTED MITTER REPORT',
+].join('\n\n');
 const envelope = {
   protocol: 'mitter/1',
   id: 'provider_reply',
@@ -290,6 +301,8 @@ test(
       'serialized-report-quote-escapes-edited',
       'serialized-report-quote-escapes-unmarked',
       'serialized-report-quote-escapes-wrong-nonce',
+      'serialized-report-css-selectors',
+      'serialized-report-css-selectors-edited',
       'serialized-links',
       'serialized-edited-prose',
       'serialized-edited-backslash',
@@ -315,6 +328,8 @@ test(
           payload = inlineGoal;
         } else if (scenario.startsWith('serialized-report-quote-escapes')) {
           payload = reportQuoteGoal;
+        } else if (scenario.startsWith('serialized-report-css-selectors')) {
+          payload = reportSelectorGoal;
         }
         const userText = wrapMessage(payload, exchangeId);
         const payloadHash = await messageDigest(payload);
@@ -451,6 +466,20 @@ test(
                         block.append(slash, quote);
                       }
                       block.append(part.slice(split + 2).replace(/\\+(?=")/g, (run) => run + run));
+                    } else if (
+                      scenario.startsWith('serialized-report-css-selectors') &&
+                      part.startsWith('{"action":')
+                    ) {
+                      const boundary = part.indexOf('.ui *');
+                      const opening = document.createElement('span');
+                      opening.textContent = part.slice(0, boundary);
+                      const css = part.slice(boundary).replaceAll('.ui *', '.ui \\*');
+                      block.append(opening);
+                      if (scenario.endsWith('-edited')) {
+                        block.append(css.replace('border-box', 'content-box'));
+                      } else {
+                        block.append(css);
+                      }
                     } else if (
                       scenario !== 'serialized-paragraphs' &&
                       part.includes('https://fixture.invalid/')
@@ -935,6 +964,7 @@ test(
               'composer-decoy',
               'serialized-paragraphs',
               'serialized-report-quote-escapes',
+              'serialized-report-css-selectors',
               'collapsed-activity',
               'collapsed-activity-disclosure',
               'collapsed-activity-search',

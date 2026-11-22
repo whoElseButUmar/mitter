@@ -257,10 +257,49 @@ function readEscapedReportParagraph(paragraph: HTMLParagraphElement, literal: st
   return candidate;
 }
 
+// ChatGPT may escape an asterisk for Markdown inside a JSON report line,
+// including CSS universal selectors. Odd backslash runs before an asterisk
+// are invalid JSON escapes. Keep even runs, which encode literal backslashes.
+function reportWithoutAsteriskEscapes(text: string): string | undefined {
+  const begin = '\nBEGIN UNTRUSTED MITTER REPORT\n';
+  const start = text.indexOf(begin);
+  const end = text.indexOf('\nEND UNTRUSTED MITTER REPORT\n', start + begin.length);
+  if (start === -1 || end === -1 || !text.includes('\\*')) {
+    return;
+  }
+  const reportStart = start + begin.length;
+  const original = text.slice(reportStart, end);
+  const lines = original.split('\n').map((line) => {
+    if (!line.startsWith('{"action":') && !line.startsWith('{"ok":')) {
+      return line;
+    }
+    const candidate = line.replace(/\\+(?=\*)/g, (slashes) => {
+      if (slashes.length % 2 === 1) {
+        return slashes.slice(0, -1);
+      }
+      return slashes;
+    });
+    if (line !== candidate) {
+      try {
+        JSON.parse(candidate);
+        return candidate;
+      } catch {
+        return line;
+      }
+    }
+    return line;
+  });
+  const report = lines.join('\n');
+  if (report !== original) {
+    return text.slice(0, reportStart) + report + text.slice(end);
+  }
+  return undefined;
+}
+
 /** This provider renderer stores paragraph breaks separately from its P nodes.
- * Read those explicit boundaries without adding another block separator. A
- * complete saved receipt must still match; source text is never unescaped or
- * rewritten. Composer serialization never uses this path. */
+ * Read those explicit boundaries without adding another block separator. Keep
+ * display variations alongside the literal text. Only a complete saved receipt
+ * can select one. Composer serialization never uses this path. */
 function serializedParagraphCandidates(snapshot: HTMLElement): string[] {
   const selector = '[data-markdown-text-tone="user-message"].rich-text-serialized-paragraphs';
   const renderers = htmlElements(snapshot, selector);
@@ -316,7 +355,14 @@ function serializedParagraphCandidates(snapshot: HTMLElement): string[] {
       candidates.push(candidate);
     }
   }
-  return candidates;
+  const unescapedReports: string[] = [];
+  for (const candidate of candidates) {
+    const unescaped = reportWithoutAsteriskEscapes(candidate);
+    if (unescaped !== undefined && unwrapMessage(unescaped)) {
+      unescapedReports.push(unescaped);
+    }
+  }
+  return [...candidates, ...unescapedReports];
 }
 
 function userContentClone(message: HTMLElement): HTMLElement {
