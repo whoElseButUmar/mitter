@@ -1,174 +1,200 @@
-import { parseRewriteRequest, structureLocally, type RewriteRequest } from '../../protocol/src/rewrite.js';
-import { createRewritePanel } from './forms/rewrite-panel.js';
+import {
+  parseRewriteRequest,
+  structureLocally,
+  type RewriteProvider,
+  type RewriteRequest,
+} from '../../protocol/src/rewrite.js';
 import { rewriteTextSchema } from '../../protocol/src/schemas/rewrite.js';
+import { createRewritePanel } from './forms/rewrite-panel.js';
 import { enhanceSelects } from './select.js';
 
 export type DraftRewriteOptions = {
-  rewrite?(request: RewriteRequest, signal: AbortSignal): Promise<string>;
-  busyChanged?(busy: boolean): void;
+  rewrite?: ((request: RewriteRequest, signal: AbortSignal) => Promise<string>) | undefined;
+  openChanged?(open: boolean): void;
 };
 
-/** Preview/apply only. No task create, start, send or executor capability is passed into this component. */
+/** Reviews a draft before applying it. The parent form owns submission. */
 export function mountDraftRewrite(
   root: HTMLElement,
   input: HTMLTextAreaElement,
   options: DraftRewriteOptions,
+  actions = root,
 ) {
-  const document = root.ownerDocument;
-  let alive = true;
+  const {
+    toggle,
+    panel,
+    settings,
+    privacy,
+    details,
+    mode,
+    local,
+    output,
+    preview,
+    status,
+    cancel,
+    generate,
+    apply,
+  } = createRewritePanel(root.ownerDocument);
   let disabled = false;
-  let busy = false;
-  let controller: AbortController | undefined;
-  let original = '';
+  let request: AbortController | undefined;
+  let source = '';
   let result = '';
-  const controls = createRewritePanel(document, 'Rewrite new task', 'Cancel rewrite');
-  const { toggle, panel, preview, cancel, generate, apply } = controls;
-  const status = document.createElement('p');
-  status.className = 'followup-status';
-  status.setAttribute('role', 'status');
-  status.hidden = true;
-  root.append(toggle, panel, status);
-  const selects = enhanceSelects(controls.fields);
 
-  function message(text: string): void {
-    status.textContent = text;
-    status.hidden = false;
+  actions.append(toggle);
+  root.append(panel);
+  const selects = enhanceSelects(settings);
+  let primaryProvider: RewriteProvider = 'chatgpt';
+  if (!options.rewrite) {
+    primaryProvider = 'local';
+    generate.textContent = local.textContent;
+    privacy.hidden = true;
+    local.hidden = true;
   }
 
-  function update(): void {
-    toggle.disabled = disabled;
-    generate.disabled = disabled || busy;
-    apply.disabled = disabled || busy;
-    generate.textContent = 'Preview rewrite';
-
-    if (busy) {
-      generate.textContent = 'Rewriting…';
+  function render(): void {
+    toggle.hidden = !panel.hidden;
+    toggle.disabled = disabled || !input.value.trim();
+    settings.hidden = Boolean(request || result);
+    output.hidden = !result;
+    apply.hidden = !result;
+    apply.disabled = disabled || input.value !== source;
+    cancel.textContent = 'Cancel';
+    if (result) {
+      cancel.textContent = 'Keep original';
     }
+    generate.hidden = Boolean(request || result);
+    generate.disabled = local.disabled = disabled || !input.value.trim();
   }
 
-  function hide(): void {
-    controller?.abort();
+  function close(): void {
+    const open = !panel.hidden;
+    const previous = request;
+    request = undefined;
+    previous?.abort();
     panel.hidden = true;
+    details.open = false;
     toggle.setAttribute('aria-expanded', 'false');
+    preview.value = '';
+    status.textContent = '';
+    source = result = '';
+    render();
+    if (open) {
+      options.openChanged?.(false);
+    }
   }
 
-  toggle.onclick = () => {
-    if (panel.hidden) {
-      panel.hidden = false;
-      toggle.setAttribute('aria-expanded', 'true');
-    } else {
-      hide();
-    }
-  };
-  cancel.onclick = hide;
-  generate.onclick = async () => {
-    if (busy || disabled) {
+  async function rewrite(provider: RewriteProvider): Promise<void> {
+    if (disabled || panel.hidden || request || !input.value.trim()) {
       return;
     }
 
-    if (!input.value.trim()) {
-      message('Enter a task draft before rewriting.');
-      input.focus();
-      return;
+    source = input.value;
+    const current = new AbortController();
+    request = current;
+    status.textContent = '';
+    if (provider === 'chatgpt') {
+      status.textContent = 'Waiting for ChatGPT…';
     }
-
-    original = input.value;
-    result = '';
-    preview.hidden = true;
-    apply.hidden = true;
-    status.hidden = true;
-    controller = new AbortController();
-    const signal = controller.signal;
-    busy = true;
-    options.busyChanged?.(true);
-    update();
+    render();
+    cancel.focus();
 
     try {
-      const request = parseRewriteRequest({
-        instruction: original,
-        mode: controls.mode.value,
-        provider: controls.provider.value,
-      });
-      let rewritten: string | undefined;
-
-      if (request.provider === 'local') {
-        rewritten = structureLocally(request);
+      const draftRequest = parseRewriteRequest({ instruction: source, mode: mode.value, provider });
+      let text: string | undefined;
+      if (provider === 'local') {
+        text = structureLocally(draftRequest);
       } else {
-        rewritten = await options.rewrite?.(request, signal);
+        text = await options.rewrite?.(draftRequest, current.signal);
       }
 
-      if (!alive || signal.aborted) {
+      if (request !== current) {
         return;
       }
 
-      const draft = rewriteTextSchema.safeParse(rewritten);
+      const draft = rewriteTextSchema.safeParse(text);
       if (!draft.success) {
-        throw new Error('The rewrite did not return a valid draft.');
+        throw new Error('ChatGPT did not return a valid rewrite. Try again.');
       }
-
       result = draft.data;
       preview.value = result;
-      preview.hidden = false;
-      apply.hidden = false;
-      message('Preview ready. Apply it to the draft, then start the task when ready.');
+      reviewStatus();
     } catch (reason) {
-      if (alive && !signal.aborted) {
-        let text = String(reason);
-
+      if (request === current) {
+        status.textContent = String(reason);
         if (reason instanceof Error) {
-          text = reason.message;
+          status.textContent = reason.message;
         }
-
-        message(text);
       }
     } finally {
-      busy = false;
-
-      if (alive) {
-        options.busyChanged?.(false);
-        update();
+      if (request === current) {
+        request = undefined;
+        render();
       }
     }
+  }
+
+  toggle.onclick = () => {
+    if (disabled || !panel.hidden || !input.value.trim()) {
+      return;
+    }
+    panel.hidden = false;
+    toggle.setAttribute('aria-expanded', 'true');
+    render();
+    options.openChanged?.(true);
+    generate.focus();
   };
+  cancel.onclick = () => {
+    close();
+    if (toggle.disabled) {
+      input.focus();
+    } else {
+      toggle.focus();
+    }
+  };
+  generate.onclick = () => rewrite(primaryProvider);
+  local.onclick = () => rewrite('local');
   apply.onclick = () => {
-    if (disabled || busy || !result) {
+    if (disabled || !result || input.value !== source) {
       return;
     }
-
-    if (input.value !== original) {
-      message(
-        'Your draft changed while rewriting. Rewrite the current draft ' +
-          'or copy useful text from the preview.',
-      );
-      return;
-    }
-
     input.value = result;
-    result = '';
+    close();
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    hide();
-    message('Rewrite applied. No task has been created or started.');
     input.focus();
   };
+  function reviewStatus(): void {
+    if (result) {
+      status.textContent = 'Rewrite ready to review.';
+      if (input.value !== source) {
+        status.textContent = 'Draft changed. Copy from the preview or close it and rewrite again.';
+      }
+    }
+  }
+  const changed = () => {
+    reviewStatus();
+    render();
+  };
+  input.addEventListener('input', changed);
+  render();
 
   return {
-    get busy() {
-      return busy;
+    get open() {
+      return !panel.hidden;
     },
+    close,
     setDisabled(value: boolean) {
       disabled = value;
-      update();
+      render();
     },
     dispose() {
-      alive = false;
-      controller?.abort();
-      controls.dispose();
-      toggle.onclick = null;
-      cancel.onclick = null;
-      generate.onclick = null;
-      apply.onclick = null;
+      const previous = request;
+      request = undefined;
+      previous?.abort();
+      input.removeEventListener('input', changed);
+      toggle.onclick = cancel.onclick = generate.onclick = local.onclick = apply.onclick = null;
       selects.dispose();
-      root.replaceChildren();
+      toggle.remove();
+      panel.remove();
     },
   };
 }

@@ -129,6 +129,7 @@ function setup(context, timerAPIs = ['setTimeout']) {
 test('rewrite IDs are parsed without coercion and malformed reads or cancels leave the live job unchanged', async (context) => {
   const state = setup(context);
   const result = await state.start();
+  assert.deepEqual(state.creations, [{ url: 'https://chatgpt.com/', active: false }]);
   let coerced = 0;
   const fakeId = {
     toString() {
@@ -224,8 +225,10 @@ test('completed rewrite text survives cancellation without sending stop into a r
   const state = setup(context, ['Date', 'setTimeout']);
   const result = await state.start();
   const text = 'Exact completed rewrite.';
+  let prompt = '';
   state.page(async (_tabId, action) => {
     if (action.op === 'prepare') {
+      prompt = action.text;
       return { ...view, outcome: 'already_sent' };
     }
 
@@ -234,6 +237,7 @@ test('completed rewrite text survives cancellation without sending stop into a r
         ...view,
         url: 'https://chatgpt.com/c/completed',
         complete: true,
+        lastUserText: prompt,
         assistantText: JSON.stringify({ protocol: 'miter-rewrite/1', requestId: result.id, text }),
       };
     }

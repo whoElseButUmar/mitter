@@ -93,15 +93,15 @@ export class DraftRewrites {
       }
     }
 
-    const tab = await chrome.tabs.create({ url: 'https://chatgpt.com/', active: true });
+    const tab = await chrome.tabs.create({ url: 'https://chatgpt.com/', active: false });
     this.checkStart(revision);
 
     if (tab.id === undefined) {
       throw new Error('Chrome could not open a rewrite chat.');
     }
 
-    const job = new RewriteRunner(crypto.randomUUID(), tab.id, input, (tabId, request) =>
-      this.page.request(tabId, request),
+    const job = new RewriteRunner(crypto.randomUUID(), tab.id, input, (tabId, request, beforeSend) =>
+      this.page.request(tabId, request, beforeSend),
     );
     this.starting.delete(reservation);
     this.jobs.set(job.id, job);

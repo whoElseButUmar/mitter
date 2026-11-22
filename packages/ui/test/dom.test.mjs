@@ -271,59 +271,116 @@ test('tab status updates preserve keyed DOM and roving focus with closing outsid
   assert.equal(root.children.length, 0);
 });
 
-test('draft rewriting protects edited source and aborts disposed previews', async () => {
+test('draft rewriting protects an edited source and restores focus when keeping the original', async () => {
   const { root, document } = domFixture();
   const input = document.createElement('textarea');
   input.value = 'original draft';
   const pending = Promise.withResolvers();
-  let signal;
-  const busy = [];
-  const rewrite = mountDraftRewrite(root, input, {
-    rewrite: (_request, nextSignal) => {
-      signal = nextSignal;
-      return pending.promise;
-    },
-    busyChanged: (value) => busy.push(value),
-  });
-  const generating = button(root, 'Preview rewrite').emit('click');
-  assert.equal(rewrite.busy, true);
+  const rewrite = mountDraftRewrite(root, input, { rewrite: () => pending.promise });
+  const toggle = button(root, 'Rewrite…');
+  await toggle.emit('click');
+  const generate = button(root, 'Rewrite with ChatGPT');
+  assert.equal(document.activeElement, generate);
+  const generating = generate.emit('click');
+  assert.equal(rewrite.open, true);
+  assert.match(root.querySelector('.rewrite-status').textContent, /Waiting for ChatGPT/);
   input.value = 'edited while waiting';
+  await input.emit('input');
   pending.resolve('rewritten draft');
   await generating;
   assert.equal(input.value, 'edited while waiting');
-  await button(root, 'Apply to draft').emit('click');
-  assert.match(root.querySelector('.followup-status').textContent, /draft changed/);
-  assert.deepEqual(busy, [true, false]);
+  assert.equal(button(root, 'Use rewrite').disabled, true);
+  assert.match(root.querySelector('.rewrite-status').textContent, /Draft changed/);
+  await button(root, 'Keep original').emit('click');
+  assert.equal(rewrite.open, false);
+  assert.equal(document.activeElement, toggle);
   rewrite.dispose();
-  assert.equal(signal.aborted, true);
-  assert.equal(root.children.length, 0);
-
-  const nextPending = Promise.withResolvers();
-  const next = mountDraftRewrite(root, input, {
-    rewrite: () => nextPending.promise,
-  });
-  const late = button(root, 'Preview rewrite').emit('click');
-  next.dispose();
-  nextPending.resolve('late result');
-  await late;
   assert.equal(root.children.length, 0);
 });
 
-test('a follow-up rewrite rejects NUL before it can replace the draft', async () => {
-  const { root } = domFixture();
+test('cancelling a rewrite unlocks the form immediately and ignores late results after retry or disposal', async () => {
+  const { root, document } = domFixture();
+  const input = document.createElement('textarea');
+  input.value = 'original draft';
+  const previous = Promise.withResolvers();
+  const next = Promise.withResolvers();
+  const opened = [];
+  const signals = [];
+  const rewrite = mountDraftRewrite(root, input, {
+    rewrite: (_request, signal) => {
+      signals.push(signal);
+      if (signals.length === 1) {
+        return previous.promise;
+      }
+      return next.promise;
+    },
+    openChanged: (open) => opened.push(open),
+  });
+  await button(root, 'Rewrite…').emit('click');
+  const generating = button(root, 'Rewrite with ChatGPT').emit('click');
+  await button(root, 'Cancel').emit('click');
+  assert.equal(signals[0].aborted, true);
+  assert.equal(rewrite.open, false);
+  await button(root, 'Rewrite…').emit('click');
+  const retry = button(root, 'Rewrite with ChatGPT').emit('click');
+  previous.resolve('late result');
+  await generating;
+  assert.match(root.querySelector('.rewrite-status').textContent, /Waiting for ChatGPT/);
+  assert.equal(button(root, 'Use rewrite').hidden, true);
+  assert.deepEqual(opened, [true, false, true]);
+  rewrite.dispose();
+  assert.equal(signals[1].aborted, true);
+  next.resolve('another late result');
+  await retry;
+  assert.equal(root.children.length, 0);
+});
+
+test('a follow-up rewrite rejects invalid text and applies a valid preview without sending it', async () => {
+  const { root, document } = domFixture();
+  let text = 'invalid\0draft';
   const composer = mountFollowupComposer(root, {
     workerId: 'a',
     running: false,
-    rewrite: async () => 'invalid\0draft',
+    rewrite: async () => text,
     send: async () => assert.fail('A rewrite cannot send a follow-up'),
   });
 
   composer.focus('keep this draft');
-  await button(root, 'Preview rewrite').emit('click');
-  assert.match(root.querySelector('.followup-status').textContent, /valid draft/);
-  assert.equal(button(root, 'Apply to draft').hidden, true);
-  assert.equal(root.querySelector('textarea').value, 'keep this draft');
+  const input = root.querySelector('textarea');
+  await button(root, 'Rewrite…').emit('click');
+  assert.equal(root.querySelector('.followup-footer').hidden, true);
+  await root.querySelector('form').emit('submit');
+  await button(root, 'Rewrite with ChatGPT').emit('click');
+  assert.match(root.querySelector('.rewrite-status').textContent, /valid rewrite/);
+  assert.equal(button(root, 'Use rewrite').hidden, true);
+  assert.equal(input.value, 'keep this draft');
+
+  text = 'revised draft';
+  await button(root, 'Rewrite with ChatGPT').emit('click');
+  assert.equal(root.querySelector('.rewrite-preview').value, text);
+  assert.equal(input.value, 'keep this draft');
+  await button(root, 'Use rewrite').emit('click');
+  assert.equal(input.value, text);
+  assert.equal(document.activeElement, input);
+  assert.equal(root.querySelector('.followup-footer').hidden, false);
+  assert.equal(button(root, 'Send').disabled, false);
   composer.dispose();
+});
+
+test('local formatting previews the original wording without contacting ChatGPT', async () => {
+  const { root, document } = domFixture();
+  const input = document.createElement('textarea');
+  input.value = 'Keep app.mjs exactly where it is.';
+  const rewrite = mountDraftRewrite(root, input, {
+    rewrite: async () => assert.fail('Local formatting cannot contact ChatGPT'),
+  });
+  await button(root, 'Rewrite…').emit('click');
+  root.querySelector('details').open = true;
+  await button(root, 'Format on this device').emit('click');
+  assert.match(root.querySelector('.rewrite-preview').value, /Keep app\.mjs exactly where it is\./);
+  await button(root, 'Use rewrite').emit('click');
+  assert.match(input.value, /^Requested change:/);
+  rewrite.dispose();
 });
 
 test('follow-up rewriting aborts on task changes and retrying send keeps its idempotency key', async () => {
@@ -348,18 +405,20 @@ test('follow-up rewriting aborts on task changes and retrying send keeps its ide
   };
   const composer = mountFollowupComposer(root, options);
   composer.focus('follow up');
-  const generating = button(root, 'Preview rewrite').emit('click');
+  await button(root, 'Rewrite…').emit('click');
+  const generating = button(root, 'Rewrite with ChatGPT').emit('click');
   composer.update({ ...options, workerId: 'b' });
   assert.equal(signal.aborted, true);
   pending.resolve('stale rewrite');
   await generating;
-  assert.equal(root.querySelector('.rewrite-preview').hidden, true);
+  assert.equal(root.querySelector('.rewrite-output').hidden, true);
   await root.querySelector('form').emit('submit');
   fail = false;
   await root.querySelector('form').emit('submit');
   assert.equal(requests[0].id, requests[1].id);
   assert.equal(requests[0].instruction, 'follow up');
   assert.equal(root.querySelector('textarea').value, '');
+  assert.equal(button(root, 'Send').disabled, true);
   composer.dispose();
   assert.equal(root.children.length, 0);
 });

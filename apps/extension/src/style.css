@@ -2980,29 +2980,49 @@ button.miter-toast-close:hover {
 /* Draft rewriting is tucked behind one secondary control. */
 
 .rewrite-panel {
-  margin: 8px 0 10px;
-  padding: 12px;
-  border: 1px solid #181816;
-  border-radius: 4px;
-  background: #33332e;
+  margin-top: var(--space-sm);
+  padding: var(--space-md);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--raised);
 }
 
-.rewrite-panel[hidden] {
-  display: none;
+.rewrite-panel .small,
+.rewrite-status {
+  margin: 0;
 }
 
-.rewrite-fields {
+.rewrite-options {
+  margin-top: var(--space-sm);
+}
+
+.rewrite-options summary {
+  color: var(--muted);
+  font-size: var(--font-small);
+  cursor: pointer;
+}
+
+.rewrite-options .field {
+  margin: var(--space-sm) 0;
+}
+
+.rewrite-output {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  gap: var(--space-sm);
+  font-size: var(--font-small);
 }
 
-.rewrite-panel .field {
-  margin: 0 0 8px;
+.rewrite-status {
+  color: var(--muted);
+  font-size: var(--font-small);
 }
 
-.rewrite-panel .small {
-  margin: 0 0 10px;
+.rewrite-status:not(:empty) {
+  margin-top: var(--space-sm);
+}
+
+.rewrite-panel .button-row {
+  margin-top: var(--space-sm);
 }
 
 .rewrite-preview {
@@ -3011,7 +3031,6 @@ button.miter-toast-close:hover {
     0.75rem/1.6 -apple-system,
     BlinkMacSystemFont,
     sans-serif;
-  margin-bottom: 10px;
   resize: vertical;
 }
 
@@ -3024,10 +3043,6 @@ button.miter-toast-close:hover {
 }
 
 @media (max-width: 410px) {
-  .rewrite-fields {
-    grid-template-columns: 1fr;
-  }
-
   .followup-footer {
     flex-wrap: wrap;
   }

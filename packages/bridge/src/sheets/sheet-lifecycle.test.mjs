@@ -132,7 +132,7 @@ async function sheetHarness(name) {
     replaceChildren: mock.fn(),
   };
   const selects = { refresh: mock.fn(), dispose: mock.fn() };
-  const rewrite = { busy: false, setDisabled: mock.fn(), dispose: mock.fn() };
+  const rewrite = { open: false, setDisabled: mock.fn(), dispose: mock.fn() };
   const mountDraftRewrite = mock.fn(() => rewrite);
   const clock = { now: () => 1000 };
   const dependencies = {
@@ -578,9 +578,9 @@ test('task rewrite options omit absent callbacks and preserve provided callbacks
       } else {
         assert.equal(options.rewrite, undefined);
       }
-      options.busyChanged(true);
+      options.openChanged(true);
       assert.equal(sheet.node('[data-create]').disabled, true);
-      options.busyChanged(false);
+      options.openChanged(false);
       assert.equal(sheet.node('[data-create]').disabled, false);
       dispose();
     });
@@ -863,7 +863,7 @@ test('a draft rewrite blocks task submission before any permission or creation',
   const deps = taskDependencies();
   const sheet = await sheetHarness('task');
   const dispose = sheet.mount(deps);
-  sheet.rewrite.busy = true;
+  sheet.rewrite.open = true;
   await sheet.node('[data-task-form]').emit('submit');
   assert.equal(deps.authorize.mock.callCount(), 0);
   assert.equal(deps.create.mock.callCount(), 0);

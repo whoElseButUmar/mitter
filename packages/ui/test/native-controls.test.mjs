@@ -446,6 +446,39 @@ test('follow-up actions track running and disabled state without resetting the d
   composer.dispose();
 });
 
+test('queue, steer and send require nonblank follow-up text and reset after submission', async () => {
+  const { root } = domFixture();
+  const instructions = [];
+  const submit = async ({ instruction }) => instructions.push(instruction);
+  const options = { workerId: 'a', running: true, send: submit, steer: submit };
+  const composer = mountFollowupComposer(root, options);
+  const input = root.querySelector('textarea');
+  const form = root.querySelector('form');
+  const queue = root.querySelector('.followup-footer').querySelector('.primary');
+  const steer = root.querySelector('.steer-button');
+  const rewrite = root.querySelector('.rewrite-toggle');
+  assert.ok(queue.disabled && steer.disabled && rewrite.disabled);
+
+  input.value = '  \n';
+  await input.emit('input');
+  assert.ok(queue.disabled && steer.disabled && rewrite.disabled);
+  await form.emit('submit');
+  await steer.emit('click');
+  assert.deepEqual(instructions, []);
+
+  input.value = ' Ship this ';
+  await input.emit('input');
+  assert.ok(!queue.disabled && !steer.disabled && !rewrite.disabled);
+  await form.emit('submit');
+  assert.deepEqual(instructions, ['Ship this']);
+  assert.equal(input.value, '');
+  assert.ok(queue.disabled && steer.disabled && rewrite.disabled);
+  composer.update({ ...options, running: false });
+  assert.equal(queue.textContent, 'Send');
+  assert.equal(queue.disabled, true);
+  composer.dispose();
+});
+
 for (const composer of ['draft', 'followup']) {
   test(
     composer + ' rewrite selects stay inside their enclosing dialog and dispose native resources',
@@ -456,25 +489,25 @@ for (const composer of ['draft', 'followup']) {
       dialog.append(root);
       const input = document.createElement('textarea');
       dialog.append(input);
+      input.value = 'Keep the draft.';
       let handle;
       if (composer === 'draft') {
         handle = mountDraftRewrite(root, input, {});
       } else {
         handle = mountFollowupComposer(root, { workerId: 'a', running: false, send: async () => {} });
+        handle.focus(input.value);
       }
       const toggle = root.querySelector('.rewrite-toggle');
       await toggle.emit('click');
+      root.querySelector('details').open = true;
       const selects = root.querySelectorAll('select');
       const triggers = root.querySelectorAll('.select-trigger');
       const popups = dialog.querySelectorAll('.select-popup');
-      assert.equal(selects.length, 2);
-      assert.equal(popups.length, 2);
+      assert.equal(selects.length, 1);
+      assert.equal(popups.length, 1);
       assert.ok(popups.every((panel) => panel.parentElement === dialog));
       await triggers[0].emit('click');
       assert.equal(popups[0].hidden, false);
-      await triggers[1].emit('click');
-      assert.equal(popups[0].hidden, true);
-      assert.equal(popups[1].hidden, false);
       handle.dispose();
       assert.equal(dialog.querySelectorAll('.select-popup').length, 0);
       assert.ok(selects.every((select) => !select.hidden && select.listenerCount === 0));

@@ -36,7 +36,7 @@ export class RewriteRunner {
     readonly id: string,
     readonly tabId: number,
     private rewriteRequest: RewriteRequest,
-    private page: (tabId: number, request: DomRequest) => Promise<unknown>,
+    private page: (tabId: number, request: DomRequest, beforeSend?: () => void) => Promise<unknown>,
     private now = Date.now,
     private wait = (delayMs: number) => new Promise<void>((resolve) => setTimeout(resolve, delayMs)),
   ) {
@@ -59,22 +59,30 @@ export class RewriteRunner {
     composerSession?: string,
   ) {
     this.checkActive();
-    const observation = await this.page(this.tabId, {
-      op,
-      token: this.token,
-      url: this.route,
-      text,
-      messageId,
-      composerSession,
-      expiresAt: this.result.at + 180000,
-      allowConversationBind: this.committed && !this.route.includes('/c/'),
-    });
+    const observation = await this.page(
+      this.tabId,
+      {
+        op,
+        token: this.token,
+        url: this.route,
+        text,
+        messageId,
+        composerSession,
+        expiresAt: this.result.at + 180000,
+        allowConversationBind: this.committed && !this.route.includes('/c/'),
+      },
+      () => this.checkActive(),
+    );
     this.checkActive();
     const view = readPageState(observation, op);
     if (view.stopped) {
       throw new Error('Rewrite paused from the chat page.');
     }
-    if (this.route.includes('/c/') && view.url !== this.route) {
+    if (
+      this.route.includes('/c/') &&
+      view.url !== this.route &&
+      !(op === 'inspect' && view.ready === false && view.url === 'https://chatgpt.com')
+    ) {
       throw new Error('The rewrite tab changed conversation.');
     }
     return view;
@@ -89,12 +97,31 @@ export class RewriteRunner {
     await this.cancelStop;
   }
 
+  private async observe(op: 'probe' | 'inspect') {
+    try {
+      const view = await this.requestPage(op);
+      if (view.ready !== false) {
+        return view;
+      }
+    } catch (error) {
+      if (
+        !(error instanceof PageBridgeError) ||
+        !error.transient ||
+        ['INVALID_PAGE_STATE', 'INVALID_BRIDGE_REPLY'].includes(error.code)
+      ) {
+        throw error;
+      }
+      this.checkActive();
+    }
+    return undefined;
+  }
+
   private async execute(): Promise<void> {
     try {
-      let view = await this.requestPage('probe');
-      while (view.ready === false) {
+      let view = await this.observe('probe');
+      while (!view) {
         await this.wait(500);
-        view = await this.requestPage('probe');
+        view = await this.observe('probe');
       }
 
       if (view.busy || view.draft || view.count > 0) {
@@ -163,7 +190,12 @@ export class RewriteRunner {
       let stableAt = 0;
       while (true) {
         await this.wait(1200);
-        view = await this.requestPage('inspect');
+        const observed = await this.observe('inspect');
+        if (!observed) {
+          candidate = '';
+          continue;
+        }
+        view = observed;
         if (view.draft) {
           // React may clear the submitted composer after the click acknowledgement.
           // Wait read-only for our exact text; a different draft is still a barrier.
@@ -180,6 +212,10 @@ export class RewriteRunner {
           !sameMessage(view.lastUserText, 'text\n' + prompt)
         ) {
           throw new Error('The rewrite chat contains a different user message.');
+        }
+        if (!view.lastUserText) {
+          candidate = '';
+          continue;
         }
         if (!this.route.includes('/c/')) {
           try {

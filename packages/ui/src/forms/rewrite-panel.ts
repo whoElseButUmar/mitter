@@ -1,88 +1,80 @@
 import { textElement } from '../dom/elements.js';
 import { REWRITE_MODES } from '../../../protocol/src/rewrite.js';
 
-/** Shared native rewrite controls; each composer owns its own draft and async lifetime. */
-export function createRewritePanel(document: Document, panelLabel: string, cancelLabel: string) {
-  const fields = document.createElement('div');
-  fields.className = 'rewrite-fields';
-
-  function field(title: string, entries: [string, string][]): HTMLSelectElement {
-    const label = document.createElement('label');
-    label.className = 'field';
-    const name = document.createElement('span');
-    name.textContent = title;
-    const select = document.createElement('select');
-    select.setAttribute('aria-label', title);
-
-    for (const [value, text] of entries) {
-      const option = document.createElement('option');
-      option.value = value;
-      option.textContent = text;
-      select.append(option);
-    }
-
-    label.append(name, select);
-    fields.append(label);
-    return select;
-  }
-
-  const mode = field(
-    'Rewrite style',
-    Object.entries(REWRITE_MODES).map(([key, value]) => [key, value.label]),
-  );
-  const provider = field('Rewrite engine', [
-    ['chatgpt', 'ChatGPT · rewrite the wording'],
-    ['local', 'Local · structure instantly'],
-  ]);
+export function createRewritePanel(document: Document) {
   const toggle = textElement(document, 'button', 'Rewrite…', 'rewrite-toggle');
   toggle.type = 'button';
   toggle.setAttribute('aria-expanded', 'false');
+
   const panel = document.createElement('section');
   panel.className = 'rewrite-panel';
+  panel.id = 'rewrite-' + crypto.randomUUID();
   panel.hidden = true;
-  panel.setAttribute('aria-label', panelLabel);
-  const privacy = textElement(document, 'p', '', 'muted small');
+  panel.setAttribute('aria-label', 'Rewrite draft');
+  toggle.setAttribute('aria-controls', panel.id);
+
+  const settings = document.createElement('div');
+  settings.className = 'rewrite-settings';
+  const privacy = textElement(document, 'p', 'Sends your draft to a separate ChatGPT chat.', 'muted small');
+  const details = document.createElement('details');
+  details.className = 'rewrite-options';
+  const summary = textElement(document, 'summary', 'Rewrite options');
+  const label = document.createElement('label');
+  label.className = 'field';
+  label.append(textElement(document, 'span', 'Style'));
+  const mode = document.createElement('select');
+
+  for (const [value, { label: name }] of Object.entries(REWRITE_MODES)) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = name;
+    mode.append(option);
+  }
+
+  label.append(mode);
+  const local = textElement(document, 'button', 'Format on this device');
+  local.type = 'button';
+  details.append(summary, label, local);
+  settings.append(privacy, details);
+
+  const output = document.createElement('label');
+  output.className = 'rewrite-output';
+  output.textContent = 'Rewrite preview';
+  output.hidden = true;
   const preview = document.createElement('textarea');
   preview.className = 'rewrite-preview';
-  preview.rows = 5;
+  preview.rows = 4;
   preview.readOnly = true;
-  preview.hidden = true;
-  preview.setAttribute('aria-label', 'Rewrite preview');
+  output.append(preview);
 
+  const status = document.createElement('p');
+  status.className = 'rewrite-status';
+  status.setAttribute('role', 'status');
   const buttons = document.createElement('div');
   buttons.className = 'button-row end';
-  const cancel = textElement(document, 'button', cancelLabel);
-  const generate = textElement(document, 'button', 'Preview rewrite');
-  const apply = textElement(document, 'button', 'Apply to draft', 'primary');
+  const cancel = textElement(document, 'button', 'Cancel');
+  const generate = textElement(document, 'button', 'Rewrite with ChatGPT', 'primary');
+  const apply = textElement(document, 'button', 'Use rewrite', 'primary');
   cancel.type = 'button';
   generate.type = 'button';
   apply.type = 'button';
   apply.hidden = true;
   buttons.append(cancel, generate, apply);
-  panel.append(fields, privacy, preview, buttons);
+  panel.append(settings, output, status, buttons);
 
-  function showProviderHelp(): void {
-    if (provider.value === 'local') {
-      privacy.textContent = 'Adds a local template and keeps your original wording.';
-    } else {
-      privacy.textContent = 'Shares this draft in a separate ChatGPT chat for you to review.';
-    }
-  }
-
-  showProviderHelp();
-  provider.addEventListener('change', showProviderHelp);
   return {
-    panel,
     toggle,
-    fields,
+    panel,
+    settings,
+    privacy,
+    details,
     mode,
-    provider,
+    local,
+    output,
     preview,
+    status,
     cancel,
     generate,
     apply,
-    dispose() {
-      provider.removeEventListener('change', showProviderHelp);
-    },
   };
 }

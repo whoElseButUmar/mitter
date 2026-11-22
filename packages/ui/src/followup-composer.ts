@@ -1,8 +1,6 @@
-import { parseRewriteRequest, structureLocally, type RewriteRequest } from '../../protocol/src/rewrite.js';
+import type { RewriteRequest } from '../../protocol/src/rewrite.js';
 import type { FollowupRequest } from '../../protocol/src/requests.js';
-import { createRewritePanel } from './forms/rewrite-panel.js';
-import { rewriteTextSchema } from '../../protocol/src/schemas/rewrite.js';
-import { enhanceSelects } from './select.js';
+import { mountDraftRewrite } from './draft-rewrite.js';
 
 export type FollowupComposerOptions = {
   workerId: string;
@@ -22,10 +20,6 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
   let key = '';
   let id = '';
   let taskGeneration = 0;
-  let rewriting = false;
-  let abort: AbortController | undefined;
-  let original = '';
-  let previewText = '';
   const form = document.createElement('form');
   form.className = 'followup-composer';
   const label = document.createElement('label');
@@ -53,51 +47,48 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
   steer.className = 'steer-button';
   steer.textContent = 'Steer now';
   steer.title = 'Stop the pending plan and use this instruction now. Completed work stays.';
-  const controls = createRewritePanel(document, 'Rewrite follow-up', 'Cancel');
-  const { toggle: rewriteToggle, panel, preview, cancel, generate, apply } = controls;
-  footer.append(hint, rewriteToggle, steer, send);
-  form.append(label, panel, footer, status);
+  const rewriteRoot = document.createElement('div');
+  footer.append(hint);
+  form.append(label, rewriteRoot, footer, status);
   root.append(form);
-  const selects = enhanceSelects(controls.fields);
+  const rewrite = mountDraftRewrite(
+    rewriteRoot,
+    input,
+    {
+      get rewrite() {
+        return options.rewrite;
+      },
+      openChanged: () => render(),
+    },
+    footer,
+  );
+  footer.append(steer, send);
 
-  function update(next: FollowupComposerOptions): void {
-    if (next.workerId !== options.workerId) {
-      taskGeneration += 1;
-      key = '';
-      abort?.abort();
-      previewText = '';
-      preview.hidden = true;
-      apply.hidden = true;
-    }
-
-    options = next;
-    input.disabled = !!next.disabled || busy;
-    send.disabled = !!next.disabled || busy || rewriting;
-    steer.hidden = !next.running || !next.steer;
-    steer.disabled = !!next.disabled || busy || rewriting;
-    rewriteToggle.disabled = !!next.disabled || busy;
-    generate.disabled = !!next.disabled || busy || rewriting;
-    generate.textContent = 'Preview rewrite';
-
-    if (rewriting) {
-      generate.textContent = 'Rewriting…';
-    }
+  function render(): void {
+    const blocked = !!options.disabled || busy;
+    const submissionDisabled = blocked || rewrite.open || !input.value.trim();
+    input.disabled = blocked;
+    footer.hidden = rewrite.open;
+    send.disabled = submissionDisabled;
+    steer.hidden = !options.running || !options.steer;
+    steer.disabled = submissionDisabled;
+    rewrite.setDisabled(blocked);
 
     send.textContent = 'Send';
 
     if (busy) {
       send.textContent = 'Sending…';
-    } else if (next.running) {
+    } else if (options.running) {
       send.textContent = 'Queue follow-up';
     }
 
-    hint.hidden = !next.running;
+    hint.hidden = !options.running;
     hint.textContent = '';
 
-    if (next.running) {
+    if (options.running) {
       hint.textContent = 'Runs after the current work.';
 
-      if (next.steer) {
+      if (options.steer) {
         hint.textContent = 'Queue waits. Steer changes the current plan.';
       }
     }
@@ -113,106 +104,20 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
     status.hidden = false;
   }
 
-  function hideRewrite(): void {
-    abort?.abort();
-    panel.hidden = true;
-    rewriteToggle.setAttribute('aria-expanded', 'false');
+  function update(next: FollowupComposerOptions): void {
+    if (next.workerId !== options.workerId) {
+      taskGeneration += 1;
+      key = '';
+      rewrite.close();
+    }
+    options = next;
+    render();
   }
-
-  rewriteToggle.onclick = () => {
-    if (panel.hidden) {
-      panel.hidden = false;
-      rewriteToggle.setAttribute('aria-expanded', 'true');
-    } else {
-      hideRewrite();
-    }
-  };
-  cancel.onclick = hideRewrite;
-  generate.onclick = async () => {
-    if (rewriting || busy || !input.value.trim() || options.disabled) {
-      return;
-    }
-
-    original = input.value;
-    previewText = '';
-    preview.hidden = true;
-    apply.hidden = true;
-    status.hidden = true;
-    rewriting = true;
-    abort = new AbortController();
-    const controller = abort;
-    const workerId = options.workerId;
-    update(options);
-
-    try {
-      const request = parseRewriteRequest({
-        instruction: original,
-        mode: controls.mode.value,
-        provider: controls.provider.value,
-      });
-      let result: string | undefined;
-
-      if (request.provider === 'local') {
-        result = structureLocally(request);
-      } else {
-        result = await options.rewrite?.(request, controller.signal);
-      }
-
-      if (!alive || controller.signal.aborted || options.workerId !== workerId) {
-        return;
-      }
-
-      const draft = rewriteTextSchema.safeParse(result);
-      if (!draft.success) {
-        throw new Error('The rewrite did not return a valid draft.');
-      }
-
-      previewText = draft.data;
-      preview.value = previewText;
-      preview.hidden = false;
-      apply.hidden = false;
-      status.textContent = 'Rewrite ready. Apply it to your draft, then Send when ready.';
-      status.hidden = false;
-    } catch (reason) {
-      if (alive && !controller.signal.aborted) {
-        showError(reason);
-      }
-    } finally {
-      rewriting = false;
-
-      if (alive) {
-        update(options);
-      }
-    }
-  };
-  apply.onclick = () => {
-    if (input.value !== original) {
-      showError(
-        new Error(
-          'Your draft changed while rewriting. ' +
-            'Copy any useful text from the preview or rewrite the current draft.',
-        ),
-      );
-      return;
-    }
-
-    if (!previewText) {
-      return;
-    }
-
-    input.value = previewText;
-    key = '';
-    previewText = '';
-    hideRewrite();
-    status.textContent = 'Rewrite applied to the draft. Nothing has been sent.';
-    status.hidden = false;
-    input.focus();
-  };
 
   const submit = async (event: Event, kind: 'queue' | 'steer' = 'queue') => {
     event.preventDefault();
 
-    if (busy || rewriting || options.disabled || !input.value.trim()) {
+    if (busy || rewrite.open || options.disabled || !input.value.trim()) {
       return;
     }
 
@@ -227,7 +132,7 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
 
     busy = true;
     status.hidden = true;
-    update(options);
+    render();
 
     try {
       let action = options.send;
@@ -245,7 +150,7 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
       if (alive && generation === taskGeneration) {
         input.value = '';
         key = '';
-        hideRewrite();
+        rewrite.close();
         status.textContent = 'Follow-up saved in this task.';
 
         if (kind === 'steer') {
@@ -262,7 +167,7 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
       busy = false;
 
       if (alive) {
-        update(options);
+        render();
       }
     }
   };
@@ -276,34 +181,30 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
   };
   const changed = () => {
     status.hidden = true;
+    render();
   };
   form.addEventListener('submit', submit);
   input.addEventListener('keydown', keydown);
   input.addEventListener('input', changed);
-  update(options);
+  render();
 
   return {
     update,
     focus(text?: string) {
       if (text) {
         input.value = text;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
       }
 
       input.focus();
     },
     dispose() {
       alive = false;
-      abort?.abort();
-      controls.dispose();
-      selects.dispose();
+      rewrite.dispose();
       form.removeEventListener('submit', submit);
       steer.removeEventListener('click', steerClick);
       input.removeEventListener('keydown', keydown);
       input.removeEventListener('input', changed);
-      rewriteToggle.onclick = null;
-      cancel.onclick = null;
-      generate.onclick = null;
-      apply.onclick = null;
       root.replaceChildren();
     },
   };

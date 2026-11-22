@@ -124,6 +124,8 @@ export async function checkWorkspaceJourney(chrome, session, projectRoot, modelP
     'title and details reach the workspace without starting the task',
   );
 
+  await checkFollowupRewrite(chrome, session);
+
   await click(chrome, session, '.health-button');
   await click(chrome, session, '.setup-panel .home-actions button:not(.primary)');
   await enterProject(chrome, session, path.join(parentRoot, folderName), {
@@ -185,4 +187,43 @@ export async function checkWorkspaceJourney(chrome, session, projectRoot, modelP
   await click(chrome, session, '[data-clear-model]');
   assert.equal(await evaluate(chrome, session, 'document.querySelector("[data-clear-model]").hidden'), true);
   await press(chrome, session, 'Escape', 27);
+}
+
+async function checkFollowupRewrite(chrome, session) {
+  const followup = '.followup-composer';
+  const send = `document.querySelector('${followup} button[type=submit]')`;
+  await waitFor(chrome, session, `${send}?.disabled === true`, 'empty follow-up cannot be sent');
+  await evaluate(
+    chrome,
+    session,
+    `(() => {
+      const draft = document.querySelector('${followup} textarea');
+      draft.value = 'Keep the weekly view.';
+      draft.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`,
+  );
+  await waitFor(chrome, session, `${send}.disabled === false`, 'entering a follow-up enables Send');
+  await click(chrome, session, `${followup} .rewrite-toggle`);
+  assert.equal(await evaluate(chrome, session, `${send}.checkVisibility()`), false);
+  await click(chrome, session, `${followup} .rewrite-options summary`);
+  await click(chrome, session, `${followup} .rewrite-options button:not(.select-trigger)`);
+  await waitFor(
+    chrome,
+    session,
+    `document.querySelector('${followup} .rewrite-preview').checkVisibility()`,
+    'the local rewrite is visible for review',
+  );
+  assert.equal(
+    await evaluate(chrome, session, `document.querySelector('${followup} textarea').value`),
+    'Keep the weekly view.',
+  );
+  await click(chrome, session, `${followup} .rewrite-panel button.primary:not([hidden])`);
+  await waitFor(
+    chrome,
+    session,
+    `${send}.checkVisibility() &&
+      document.activeElement === document.querySelector('${followup} textarea') &&
+      document.activeElement.value.startsWith('Requested change:')`,
+    'using the rewrite restores Send and focuses the updated draft',
+  );
 }

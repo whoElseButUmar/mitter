@@ -93,6 +93,40 @@ test('rewrite execution is shared, binds the conversation and waits for a stable
   assert.equal(calls.at(-1).url, chatLink.url);
 });
 
+test('rewrite reconnects across navigation before composing and while reading the reply', async () => {
+  let probes = 0;
+  let reads = 0;
+  const moved = () => new PageBridgeError('BRIDGE_NAVIGATED', 'Chat document changed', true);
+  const { runner, calls } = rewriteHarness({
+    probe: () => {
+      if (++probes === 1) {
+        throw moved();
+      }
+      return chatView({ url: 'https://chatgpt.com', ready: probes > 2, count: 0 });
+    },
+    inspect: (view) => {
+      reads++;
+      if (reads === 1 || reads === 3) {
+        throw moved();
+      }
+      if (reads === 2) {
+        return { ...view, lastUserText: '' };
+      }
+      if (reads === 5) {
+        return chatView({ url: 'https://chatgpt.com', ready: false, count: 0 });
+      }
+      return view;
+    },
+  });
+  await runner.run();
+  assert.equal(probes, 3);
+  assert.equal(reads, 8);
+  assert.equal(calls.filter((call) => call.op === 'prepare').length, 1);
+  assert.equal(calls.filter((call) => call.op === 'commit').length, 1);
+  assert.equal(runner.result.state, 'done');
+  assert.equal(runner.result.text, 'Improved draft');
+});
+
 test('ambiguous rewrite commits without a ledger or from a changed document are inspected, not resent', async (t) => {
   for (const [composerSession, error] of [
     [undefined, new PageBridgeError('BRIDGE_TIMEOUT', 'Lost acknowledgement', true)],
@@ -158,6 +192,39 @@ test('cancelling a pending rewrite page call prevents preparation and still drai
   assert.equal(runner.result.state, 'cancelled');
   assert.equal(runner.result.error, 'Rewrite cancelled.');
   assert.deepEqual(calls, ['probe', 'stop', 'stop']);
+});
+
+test('cancelling while the page connects blocks a queued commit before it can dispatch', async () => {
+  const connecting = Promise.withResolvers();
+  const connected = Promise.withResolvers();
+  let commits = 0;
+  const runner = new RewriteRunner(
+    'rewrite_1',
+    7,
+    { instruction: 'Original draft', mode: 'clarity', provider: 'chatgpt' },
+    async (_tabId, request, beforeSend) => {
+      if (request.op === 'probe') {
+        return chatView({ url: 'https://chatgpt.com', count: 0 });
+      }
+      if (request.op === 'prepare') {
+        return chatView({ outcome: 'prepared', composerSession: 'document-ledger' });
+      }
+      if (request.op === 'commit') {
+        connecting.resolve();
+        await connected.promise;
+        beforeSend();
+        commits++;
+      }
+      return chatView();
+    },
+  );
+  const running = runner.run();
+  await connecting.promise;
+  runner.cancel();
+  connected.resolve();
+  await running;
+  assert.equal(commits, 0);
+  assert.equal(runner.result.state, 'cancelled');
 });
 
 test('rewrite cancellation is idempotent and settled drains its Stop even before execution starts', async () => {

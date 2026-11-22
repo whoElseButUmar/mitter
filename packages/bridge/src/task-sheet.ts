@@ -241,7 +241,7 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
   selects = enhanceSelects(root);
 
   const rewriteOptions: DraftRewriteOptions = {
-    busyChanged: (rewriting) => {
+    openChanged: (rewriting) => {
       submitButton.disabled = busy || rewriting;
     },
   };
@@ -264,7 +264,7 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
 
   async function submitTask(event: SubmitEvent) {
     event.preventDefault();
-    if (busy || completed || draftRewrite.busy || !form.reportValidity()) {
+    if (busy || completed || draftRewrite.open || !form.reportValidity()) {
       return;
     }
 
@@ -395,7 +395,7 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
       if (alive) {
         busy = false;
         draftRewrite.setDisabled(completed);
-        submitButton.disabled = completed || draftRewrite.busy;
+        submitButton.disabled = completed || draftRewrite.open;
         refreshForm();
       }
     }
