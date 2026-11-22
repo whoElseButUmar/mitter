@@ -9,7 +9,9 @@ Miter is a Chrome workspace for building and editing local projects. Give it a t
 3. Open Miter and choose **Create project** or **Open existing project**.
 4. Select **New task**, describe what you want, and start. For example, “Build a reading list where I can save books, mark them as read, and find them again after a reload.”
 
-To install from source, use Node.js 26 or newer and run `node scripts/setup.mjs`. Setup downloads the pinned dependencies and terminal font. After an update, open **Setup & connection** to check the running extension and local helper. Each shows a release number and a build ID. If the IDs differ, choose **Reload extension**. If the mismatch persists, run the installer and load its managed extension folder in the Chrome profile you use for Miter. If Chrome already loads Miter from a source checkout, follow the [installation and migration guide](scripts/installation/README.md) before moving it. Local installer bundles are unsigned.
+To install from source, use Node.js 26 or newer and run `node scripts/setup.mjs` from the repository root. Setup downloads the pinned dependencies and terminal font, builds both components, and installs them in the managed folder above. Local installer bundles are unsigned.
+
+After an update, open **Setup & connection → Build versions**. The extension and local helper should show the same release and build ID. If the helper shows an older release, run the installer or source setup to update it, then choose **Reload extension**. If Chrome already loads Miter from a source checkout, follow the source build instructions below or see the [installation and migration guide](scripts/installation/README.md) before switching folders.
 
 For a database-backed starting point, choose **Create project → Vite + TypeScript + SQLite**. The starter includes a working notes form, a Node API and a SQLite database. Choose **Run app** on the project to install its dependencies and open the app. Outside Miter, use the commands in the generated README.
 
@@ -55,6 +57,8 @@ pnpm check
 pnpm dev
 ```
 
-`pnpm check` runs formatting, source standards, type checks, and tests. `pnpm build` builds and verifies the native host, page bridge, preview sandbox, and unpacked extension. `pnpm run doctor` checks Miter’s native host registration and installed build. `pnpm bundle:local` produces the macOS installer folder and ZIP for the current architecture. For an offline font build, point `MITER_FONT_FILE` and `MITER_FONT_LICENSE` at the licensed terminal font and its SIL OFL license.
+`pnpm build` builds and verifies both the native helper and the unpacked Chrome extension. Its output is `apps/extension/.output/chrome-mv3`. To run directly from the checkout, run `pnpm register` after the build to point Chrome at the matching source helper, then load that output folder using **Load unpacked** or reload the existing source extension. `pnpm build:extension` rebuilds just the extension.
+
+`pnpm check` runs formatting, source standards, type checks, and tests. `pnpm run doctor` checks Miter’s native host registration and installed build. `pnpm bundle:local` produces the macOS installer folder and ZIP for the current architecture. For an offline font build, point `MITER_FONT_FILE` and `MITER_FONT_LICENSE` at the licensed terminal font and its SIL OFL license.
 
 See the [coding standards](CODING_STANDARDS.md) and [release checks](scripts/release-checks/README.md) for contributor instructions. Miter is a release candidate. [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY.md).
