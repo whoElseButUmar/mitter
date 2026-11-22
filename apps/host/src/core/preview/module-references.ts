@@ -1,8 +1,27 @@
 import { parseSync, Visitor, type ESTree } from 'rolldown/utils';
 
+function staticString(node: ESTree.Expression): string | undefined {
+  if (node.type === 'Literal' && typeof node.value === 'string') {
+    return node.value;
+  }
+  if (node.type === 'TemplateLiteral' && node.expressions.length === 0) {
+    return node.quasis[0]?.value.cooked ?? undefined;
+  }
+  return undefined;
+}
+
+function localImage(value: string): boolean {
+  const pathname = value.split(/[?#]/, 1)[0] ?? '';
+  return (
+    !/^(?:[a-z][a-z\d+.-]*:|\/)/i.test(pathname) &&
+    !/[\s\\<>"'`]/.test(pathname) &&
+    /\.(?:avif|gif|ico|jpe?g|png|svg|webp)$/i.test(pathname)
+  );
+}
+
 /** Parse without executing source. The same installed parser is shipped by the
  * local installer; strings, comments, regexes and templates retain JS semantics. */
-export function javascriptReferences(source: string, allowBackend = false): string[] {
+export function javascriptReferences(source: string, allowBackend = false) {
   const parsed = parseSync('preview.mjs', source);
   if (parsed.errors.length > 0) {
     const detail = parsed.errors
@@ -11,38 +30,40 @@ export function javascriptReferences(source: string, allowBackend = false): stri
       .join('; ');
     throw new Error('Cannot preview an app script with invalid JavaScript: ' + detail.slice(0, 800));
   }
-  const references: string[] = [];
-  const literal = (node: ESTree.Expression) => {
-    if (node.type === 'Literal' && typeof node.value === 'string') {
-      references.push(node.value);
-      return;
+  const modules: string[] = [];
+  const moduleImages = new Set<string>();
+  const documentImages = new Set<string>();
+  const moduleImageArguments = new WeakSet<ESTree.Expression>();
+  const imageBases = new WeakSet<ESTree.MetaProperty>();
+  const collectImage = (node: ESTree.Expression) => {
+    const value = staticString(node);
+    if (value !== undefined && !moduleImageArguments.has(node) && localImage(value)) {
+      documentImages.add(value);
     }
-    if (node.type === 'TemplateLiteral' && node.expressions.length === 0) {
-      const value = node.quasis[0]?.value.cooked;
-      if (typeof value === 'string') {
-        references.push(value);
-        return;
-      }
-    }
-    throw new Error('Computed module imports need a frontend build before static preview.');
   };
   new Visitor({
+    Literal: collectImage,
+    TemplateLiteral: collectImage,
     ImportDeclaration(node) {
-      references.push(node.source.value);
+      modules.push(node.source.value);
     },
     ExportNamedDeclaration(node) {
       if (node.source) {
-        references.push(node.source.value);
+        modules.push(node.source.value);
       }
     },
     ExportAllDeclaration(node) {
-      references.push(node.source.value);
+      modules.push(node.source.value);
     },
     ImportExpression(node) {
-      literal(node.source);
+      const value = staticString(node.source);
+      if (value === undefined) {
+        throw new Error('Computed module imports need a frontend build before static preview.');
+      }
+      modules.push(value);
     },
     MetaProperty(node) {
-      if (node.meta.name === 'import') {
+      if (node.meta.name === 'import' && !imageBases.has(node)) {
         throw new Error('import.meta resource resolution needs a frontend build before static preview.');
       }
     },
@@ -60,6 +81,27 @@ export function javascriptReferences(source: string, allowBackend = false): stri
       if (node.callee.type === 'Identifier' && ['WebSocket', 'EventSource'].includes(node.callee.name)) {
         throw new Error('Network connections need an app server; this preview serves static assets only.');
       }
+      const [image, base] = node.arguments;
+      if (
+        node.callee.type === 'Identifier' &&
+        node.callee.name === 'URL' &&
+        node.arguments.length === 2 &&
+        image &&
+        image.type !== 'SpreadElement' &&
+        base?.type === 'MemberExpression' &&
+        !base.computed &&
+        base.property.type === 'Identifier' &&
+        base.property.name === 'url' &&
+        base.object.type === 'MetaProperty' &&
+        base.object.meta.name === 'import'
+      ) {
+        const value = staticString(image);
+        if (value !== undefined && localImage(value)) {
+          moduleImages.add(value);
+          moduleImageArguments.add(image);
+          imageBases.add(base.object);
+        }
+      }
     },
     MemberExpression(node) {
       if (!node.computed && node.property.type === 'Identifier' && node.property.name === 'serviceWorker') {
@@ -67,5 +109,5 @@ export function javascriptReferences(source: string, allowBackend = false): stri
       }
     },
   }).visit(parsed.program);
-  return references;
+  return { modules, moduleImages, documentImages };
 }

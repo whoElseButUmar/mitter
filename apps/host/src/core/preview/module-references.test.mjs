@@ -13,12 +13,12 @@ test('JavaScript parsing distinguishes real imports from quotes, comments, regex
     "export { value } from './reexport.mjs';",
     "export * from './all.mjs';",
   ].join('\n');
-  assert.deepEqual(javascriptReferences(source), ['./real.mjs', './reexport.mjs', './all.mjs']);
+  assert.deepEqual(javascriptReferences(source).modules, ['./real.mjs', './reexport.mjs', './all.mjs']);
 });
 
 test('literal imports inside template expressions are collected and computed imports fail explicitly', () => {
   assert.deepEqual(
-    javascriptReferences("const value = `${await import('./actual.mjs')}`; import(`./literal.mjs`);"),
+    javascriptReferences("const value = `${await import('./actual.mjs')}`; import(`./literal.mjs`);").modules,
     ['./actual.mjs', './literal.mjs'],
   );
   assert.throws(
@@ -34,6 +34,17 @@ test(
   () => {
     assert.throws(() => javascriptReferences('import ' + ' '.repeat(200000)), /invalid JavaScript/);
     assert.throws(() => javascriptReferences('/*'.repeat(100000)), /invalid JavaScript/);
-    assert.deepEqual(javascriptReferences('// import ./ignored\n'.repeat(10000)), []);
+    assert.deepEqual(javascriptReferences('// import ./ignored\n'.repeat(10000)).modules, []);
   },
 );
+
+test('computed, remote and non-image import.meta references still require a build', () => {
+  for (const source of [
+    'new URL(selectedPath, import.meta.url)',
+    'new URL("https://example.com/photo.png", import.meta.url)',
+    'new URL("./secret.json", import.meta.url)',
+    'console.log(import.meta.url)',
+  ]) {
+    assert.throws(() => javascriptReferences(source), /import.meta resource resolution/);
+  }
+});

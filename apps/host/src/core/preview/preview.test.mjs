@@ -115,6 +115,56 @@ test('snapshot rejects private paths, backend imports, computed imports and unsu
   await assert.rejects(snapshotApp(root, new AbortController().signal), /base URLs/);
 });
 
+test('preview serves JavaScript image paths from the document or their explicit module URL', async (context) => {
+  const root = await fixture(context, {
+    'guide/index.html': '<img alt="Gallery"><script type="module" src="../scripts/gallery.mjs"></script>',
+    'scripts/gallery.mjs':
+      "import { views } from './views.mjs'; document.querySelector('img').src = views[0].src;",
+    'scripts/views.mjs': [
+      'export const views = [{ src: "./images/photo.webp?v=1" }, { src: `images/art.png` }];',
+      'export const stamp = new URL("./stamp.svg", import.meta.url).href;',
+      'export const missingExample = "example.png";',
+      '// images/unused.png',
+    ].join('\n'),
+    'guide/images/photo.webp': 'web image',
+    'guide/images/art.png': 'generated image',
+    'guide/images/unused.png': 'unreferenced image',
+    'guide/stamp.svg': 'same name in the document folder',
+    'scripts/stamp.svg': '<svg xmlns="http://www.w3.org/2000/svg"/>',
+  });
+  const snapshot = await snapshotApp(root, new AbortController().signal, 'guide/index.html');
+  const server = await serveSnapshot(snapshot, 'miter-' + 'b'.repeat(32) + '.localhost', 'a'.repeat(32));
+  context.after(() => server.close());
+  const entryResponse = await readPreview(server.url);
+  assert.equal(entryResponse.status, 302);
+  const documentUrl = new URL(entryResponse.headers.location, server.url);
+  for (const [reference, mime, body] of [
+    ['images/photo.webp?v=1', 'image/webp', 'web image'],
+    ['images/art.png', 'image/png', 'generated image'],
+    ['../scripts/stamp.svg', 'image/svg+xml', '<svg xmlns="http://www.w3.org/2000/svg"/>'],
+  ]) {
+    const url = new URL(reference, documentUrl);
+    const response = await readPreview(url, { path: url.pathname + url.search });
+    assert.equal(response.status, 200, reference);
+    assert.equal(response.headers['content-type'], mime);
+    assert.equal(response.body, body);
+  }
+  assert.equal((await readPreview(new URL('images/unused.png', documentUrl))).status, 404);
+  assert.equal((await readPreview(new URL('example.png', documentUrl))).status, 404);
+  assert.equal((await readPreview(new URL('stamp.svg', documentUrl))).status, 404);
+});
+
+test('JavaScript image references use the same private path and link restrictions', async (context) => {
+  const root = await fixture(context, {
+    'app.mjs': 'document.querySelector("img").src = "./private.png";',
+    'private.png': 'private image',
+  });
+  await assert.rejects(snapshotApp(root, new AbortController().signal), /excludes private/);
+  await fs.symlink('private.png', path.join(root, 'public.png'));
+  await fs.writeFile(path.join(root, 'app.mjs'), 'document.querySelector("img").src = "./public.png";');
+  await assert.rejects(snapshotApp(root, new AbortController().signal), /Symbolic links/);
+});
+
 test('missing entry and linked assets explain how to recover without exposing a raw filesystem error', async (context) => {
   const root = await fixture(context);
   await fs.unlink(path.join(root, 'domain.mjs'));

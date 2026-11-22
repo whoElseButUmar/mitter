@@ -168,17 +168,28 @@ function stripComments(source: string, opening: string, closing: string): string
   return parts.join('');
 }
 
-function dependencies(relative: string, source: string, allowBackend: boolean): string[] {
-  const found = new Set<string>();
+function dependencies(relative: string, source: string, entry: string, allowBackend: boolean) {
+  const linked = new Set<string>();
+  const imageCandidates = new Set<string>();
   const add = (value: string, module = false) => {
     const resolved = resourcePath(relative, value, module);
     if (resolved) {
-      found.add(resolved);
+      linked.add(resolved);
     }
   };
   const script = (value: string) => {
-    for (const reference of javascriptReferences(value, allowBackend)) {
+    const { modules, moduleImages, documentImages } = javascriptReferences(value, allowBackend);
+    for (const reference of modules) {
       add(reference, true);
+    }
+    for (const reference of moduleImages) {
+      add(reference);
+    }
+    for (const reference of documentImages) {
+      const resolved = resourcePath(entry, reference);
+      if (resolved) {
+        imageCandidates.add(resolved);
+      }
     }
   };
   const css = (value: string) => {
@@ -225,7 +236,7 @@ function dependencies(relative: string, source: string, allowBackend: boolean): 
       css(match[1] ?? match[2] ?? '');
     }
   }
-  return [...found];
+  return { linked, imageCandidates };
 }
 
 export async function readPreviewBytes(
@@ -294,13 +305,15 @@ export async function snapshotApp(
   const assets = new Map<string, PreviewAsset>();
   const pending = [publicAssetPath(entry)];
   const queued = new Set(pending);
+  const pendingImages = new Set<string>();
   let bytes = 0;
-  while (pending.length > 0) {
+  while (pending.length > 0 || pendingImages.size > 0) {
     signal.throwIfAborted();
-    const relative = pending.shift();
+    const relative = pending.shift() ?? pendingImages.values().next().value;
     if (!relative) {
       break;
     }
+    const optionalImage = pendingImages.delete(relative);
     if (privateNames.has(relative.normalize('NFC').toLowerCase())) {
       throw new Error('Backend source cannot also be linked as a browser asset: ' + relative);
     }
@@ -309,6 +322,9 @@ export async function snapshotApp(
       asset = await readAsset(root, relative);
     } catch (error) {
       if (hasErrorCode(error, 'ENOENT')) {
+        if (optionalImage) {
+          continue;
+        }
         let detail =
           'The app links to a missing file: ' +
           relative +
@@ -329,14 +345,23 @@ export async function snapshotApp(
     assets.set(relative, asset);
     if (/\.(?:html?|css|m?js)$/i.test(relative)) {
       const source = new TextDecoder('utf-8', { fatal: true }).decode(asset.bytes);
-      for (const dependency of dependencies(relative, source, Boolean(backend))) {
+      const { linked, imageCandidates } = dependencies(relative, source, entry, Boolean(backend));
+      for (const dependency of linked) {
         if (!queued.has(dependency)) {
+          pendingImages.delete(dependency);
           queued.add(dependency);
-          if (queued.size > MAX_PREVIEW_FILES) {
-            throw new Error('Static preview is limited to 256 linked assets.');
-          }
           pending.push(dependency);
         }
+      }
+      // A string may name an example rather than a resource. Check these after
+      // the required graph so a real HTML, CSS or module link still fails if missing.
+      for (const candidate of imageCandidates) {
+        if (!queued.has(candidate)) {
+          pendingImages.add(candidate);
+        }
+      }
+      if (queued.size + pendingImages.size > MAX_PREVIEW_FILES) {
+        throw new Error('Static preview is limited to 256 linked assets.');
       }
     }
   }
