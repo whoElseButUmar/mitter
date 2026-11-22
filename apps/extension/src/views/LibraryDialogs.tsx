@@ -4,12 +4,13 @@ import type { WorkspaceController } from '../ui/workspace-controller';
 import type { FileListing, TaskOutput } from '../ui/task-output';
 import { ContextArea } from '../ContextArea';
 import { createEffect, createSignal, on, For, Show } from 'solid-js';
-import { displayTaskName } from '../../../../packages/protocol/src/task-brief';
+import { canEditTaskDetails, displayTaskName } from '../../../../packages/protocol/src/task-brief';
 import { taskPresentation } from '../../../../packages/bridge/src/presentation';
 import { Icon } from '../icons';
 import { Modal } from '../components';
 import { WorkspaceLibrary } from '../WorkspaceLibrary';
 import { RenameForm } from '../forms/RenameForm';
+import { EditTaskForm } from '../forms/EditTaskForm';
 
 export function LibraryDialogs(props: { controller: WorkspaceController }) {
   const {
@@ -82,16 +83,35 @@ export function LibraryDialogs(props: { controller: WorkspaceController }) {
         </Modal>
       </Show>
       <Show keyed when={modal() === 'rename' && renameTarget()}>
-        {(target) => (
-          <RenameForm
-            target={target}
-            rpc={rpc}
-            busy={busy}
-
-            close={close}
-            success={success}
-          />
-        )}
+        {(target) => {
+          if (target.kind === 'project') {
+            return <RenameForm target={target} rpc={rpc} busy={busy} close={close} success={success} />;
+          }
+          const task = snapshot().workers.find((candidate) => candidate.id === target.id);
+          if (!task) {
+            return;
+          }
+          const canEditDetails = () => {
+            const state = snapshot();
+            const current = state.workers.find((candidate) => candidate.id === task.id);
+            return (
+              !!current &&
+              current.runId === task.runId &&
+              canEditTaskDetails(current) &&
+              !state.bridgeProgress?.some((progress) => progress.workerId === task.id) &&
+              !bridges().some((bridge) => bridge.workerId === task.id && bridge.active)
+            );
+          };
+          return (
+            <EditTaskForm
+              task={task}
+              canEditDetails={canEditDetails}
+              rpc={rpc}
+              close={close}
+              success={success}
+            />
+          );
+        }}
       </Show>
       <Show when={modal() === 'files' && output.fileLibrary()}>
         {(listing) => (

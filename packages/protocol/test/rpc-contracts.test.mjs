@@ -261,6 +261,10 @@ const fixtures = {
   'worker.bridgeSave': [{ ...task, progress: 'owner-progress' }, 'owner-progress'],
   'worker.bridgeExtend': [{ ...task, confirm: true }, 'owner-progress'],
   'worker.rename': [{ ...task, name: 'Renamed' }, worker],
+  'worker.edit': [
+    { ...task, name: 'Edited', goal: 'Revised details', expectedRun: { runId: worker.runId, epoch: 0 } },
+    worker,
+  ],
   'worker.prompt': [task, '\ufeffliteral prompt\r\n'],
   'worker.history': [{ ...task, before: 3 }, history],
   'worker.previewSelection': [task, null],

@@ -64,7 +64,7 @@ import { ReadSnapshots } from './read-snapshots.js';
 import { parseModelOutput } from '../../../inference/src/protocol.js';
 import { reviewFile } from './review.js';
 import { checkJavaScript } from './syntax-check.js';
-import { isProjectLaunchRequest } from '../../../../packages/protocol/src/task-brief.js';
+import { canEditTaskDetails, isProjectLaunchRequest } from '../../../../packages/protocol/src/task-brief.js';
 import { devProjectFingerprint } from './dev-server/index.js';
 import { requestsWebVerification, verifyProjectQuality } from './quality/gate.js';
 import { inspectReadiness } from './quality/readiness.js';
@@ -804,6 +804,24 @@ export class Service {
         worker.name = name;
         task.save();
 
+        return worker;
+      }
+      case 'worker.edit': {
+        const input = parseRpcParams(serviceRpcRegistry, method, params);
+        if (
+          !canEditTaskDetails(worker) ||
+          this.interruptions.has(worker.id) ||
+          this.store.get(progressKey(worker.id)) !== undefined ||
+          this.store.envelopeCount(worker.id) !== 0
+        ) {
+          throw new Error('Task details can only be changed before the first run.');
+        }
+
+        // Invalidate any pending start or editor that reviewed the previous details.
+        const updated = { ...worker, name: input.name.trim(), goal: input.goal, runId: randomUUID() };
+        this.store.saveWorker(updated);
+        Object.assign(worker, updated);
+        this.changed();
         return worker;
       }
       case 'worker.prompt': {

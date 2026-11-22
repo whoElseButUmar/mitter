@@ -348,6 +348,14 @@ export const workerRenameParamsSchema = workerParamsSchema
   })
   .describe('A user-requested task rename.');
 
+export const workerEditParamsSchema = workerRenameParamsSchema
+  .extend({
+    goal: workerCreationSchema.shape.goal,
+    expectedRun: taskBoundarySchema.describe('The task revision shown when the user opened the editor.'),
+  })
+  .strict()
+  .describe('An explicit title and detail change to a task that has never run.');
+
 export const workerPromptParamsSchema = workerParamsSchema
   .extend({
     kind: promptKindSchema,

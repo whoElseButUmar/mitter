@@ -70,6 +70,7 @@ const forwarded = [
   'worker.followupCancel',
   'worker.create',
   'worker.rename',
+  'worker.edit',
   'worker.run',
   'worker.resume',
   'worker.pause',

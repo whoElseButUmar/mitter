@@ -18,14 +18,15 @@ async function enterProject(chrome, session, root, fields) {
     chrome,
     session,
     `(() => {
-    document.querySelector('.project-options').open = true;
+    const form = document.querySelector('dialog[open] form');
+    form.querySelector('.project-options').open = true;
     for (const [name, value] of Object.entries(${JSON.stringify(fields)})) {
-      const input = document.querySelector('input[name="' + name + '"]');
+      const input = form.querySelector('input[name="' + name + '"]');
       if (!(input instanceof HTMLInputElement)) throw new Error('Missing project field: ' + name);
       input.value = value;
       input.dispatchEvent(new Event('input', { bubbles: true }));
     }
-    document.querySelector('form').requestSubmit();
+    form.requestSubmit();
   })()`,
   );
   await waitFor(chrome, session, 'document.querySelector("dialog[open]") === null', 'project saved');
@@ -65,7 +66,63 @@ export async function checkWorkspaceJourney(chrome, session, projectRoot, modelP
     'document.querySelector("dialog[open] h2")?.textContent === "New task"',
     'first task opens',
   );
-  await press(chrome, session, 'Escape', 27);
+  await evaluate(
+    chrome,
+    session,
+    `(() => {
+    const goal = document.querySelector('[data-goal]');
+    goal.value = 'Create an offline journal.';
+    goal.dispatchEvent(new Event('input', { bubbles: true }));
+    const start = document.querySelector('[data-start-now]');
+    if (start.checked) start.click();
+  })()`,
+  );
+  await click(chrome, session, '[data-create]');
+  await waitFor(
+    chrome,
+    session,
+    '!!document.querySelector(".task-tab-row .list-tabs")',
+    'draft task is saved',
+  );
+  await click(chrome, session, '.task-tab-row .list-tabs');
+  await click(chrome, session, '.library-row .library-more .menu-trigger');
+  await evaluate(
+    chrome,
+    session,
+    `(() => {
+    const edit = [...document.querySelectorAll('[role=menuitem]')].find(item => item.textContent.trim() === 'Edit task…');
+    if (!edit) throw new Error('Missing Edit task action.');
+    edit.click();
+  })()`,
+  );
+  await waitFor(
+    chrome,
+    session,
+    'document.querySelector("dialog[open] h2")?.textContent === "Edit task"',
+    'draft task editor opens from the row menu',
+  );
+  await evaluate(
+    chrome,
+    session,
+    `(() => {
+    const title = document.querySelector('dialog[open] input');
+    title.value = 'Evening journal';
+    title.dispatchEvent(new Event('input', { bubbles: true }));
+    const details = document.querySelector('dialog[open] textarea');
+    if (details.readOnly || details.value !== 'Create an offline journal.') throw new Error('Draft details should be editable.');
+    details.value = 'Create an offline journal with a weekly view.';
+    details.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`,
+  );
+  await click(chrome, session, 'dialog[open] button[type=submit]');
+  await waitFor(
+    chrome,
+    session,
+    `!document.querySelector('dialog[open]') &&
+      document.querySelector('.task-tab-row [aria-selected=true]')?.textContent.includes('Evening journal') &&
+      document.querySelector('.task-details')?.textContent.includes('Create an offline journal with a weekly view.')`,
+    'title and details reach the workspace without starting the task',
+  );
 
   await click(chrome, session, '.health-button');
   await click(chrome, session, '.setup-panel .home-actions button:not(.primary)');
@@ -88,6 +145,33 @@ export async function checkWorkspaceJourney(chrome, session, projectRoot, modelP
   assert.equal(await evaluate(chrome, session, 'document.querySelectorAll(".saved-entry").length'), 2);
   await click(chrome, session, '.saved-entry');
   await waitFor(chrome, session, `${selectedProject} === "Journey project"`, 'new saved project reopens');
+
+  await click(chrome, session, '.project-tab-row .list-tabs');
+  await waitFor(
+    chrome,
+    session,
+    '!!document.querySelector(".library-open[aria-current=true]")',
+    'project list opens',
+  );
+  assert.equal(
+    await evaluate(
+      chrome,
+      session,
+      `(() => {
+      const action = document.querySelector('.library-open[aria-current=true]');
+      const row = action.closest('.library-row');
+      const more = row.querySelector('.library-more');
+      const transparent = 'rgba(0, 0, 0, 0)';
+      return !!more && row.getBoundingClientRect().right === more.getBoundingClientRect().right &&
+        getComputedStyle(row).backgroundColor !== transparent &&
+        getComputedStyle(action).backgroundColor === transparent &&
+        getComputedStyle(more).backgroundColor === transparent;
+    })()`,
+    ),
+    true,
+    'The current row highlight reaches its overflow menu.',
+  );
+  await press(chrome, session, 'Escape', 27);
 
   await click(chrome, session, '[aria-label="Settings"]');
   await click(chrome, session, '[data-model-advanced] > summary');

@@ -84,6 +84,7 @@ import {
   workerBridgeExtendParamsSchema,
   workerBrowseParamsSchema,
   workerCreateParamsSchema,
+  workerEditParamsSchema,
   workerFileParamsSchema,
   workerFollowupCancelParamsSchema,
   workerFollowupParamsSchema,
@@ -176,6 +177,7 @@ export const coreRpcRegistry = Object.freeze({
   'worker.team': contract(workerParamsSchema, teamSchema),
   'worker.teamMessage': contract(workerTeamMessageParamsSchema, teamResultSchema, true),
   'worker.rename': contract(workerRenameParamsSchema, workerSchema, true),
+  'worker.edit': contract(workerEditParamsSchema, workerSchema, true),
   'worker.prompt': contract(workerPromptParamsSchema, promptResultSchema),
   'worker.history': contract(workerHistoryParamsSchema, historyResultSchema),
   'worker.previewSelection': contract(

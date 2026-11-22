@@ -1,4 +1,5 @@
 /** Local deterministic shaping; it never changes the user's goal or permissions. */
+import type { Worker } from './schemas/domain.js';
 import type { TaskBrief } from './schemas/task-brief.js';
 export { taskBriefSchema, type TaskBrief } from './schemas/task-brief.js';
 
@@ -152,6 +153,18 @@ export function buildTaskBrief(request: string): TaskBrief {
 
 export function suggestedTaskName(request: string): string {
   return buildTaskBrief(request).title;
+}
+
+export function canEditTaskDetails(
+  task: Pick<Worker, 'state' | 'startedAt' | 'iteration' | 'queue' | 'control'>,
+): boolean {
+  return (
+    task.state === 'idle' &&
+    task.startedAt === 0 &&
+    task.iteration === 0 &&
+    task.queue.length === 0 &&
+    !task.control
+  );
 }
 
 /** Repair display-only legacy auto-titles; never rename an explicit user title. */

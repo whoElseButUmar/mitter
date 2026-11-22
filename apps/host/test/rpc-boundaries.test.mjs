@@ -26,7 +26,13 @@ import { bridgeProgressLoadSchema } from '../../../packages/bridge/src/runner/pr
 import { serviceRpcRegistry } from '../src/core/service/rpc.js';
 import { readControlOperation } from '../src/core/service/schemas.js';
 import { deliveryKey } from '../src/core/handoff-delivery.js';
-import { fixture, makeProgress, importBatch, envelopeHash } from '../src/core/service/test-fixture.mjs';
+import {
+  fixture,
+  makeProgress,
+  makeWorker,
+  importBatch,
+  envelopeHash,
+} from '../src/core/service/test-fixture.mjs';
 import { createStateBackup, restoreStateBackup, stateRestoreResultSchema } from '../src/core/backups.js';
 import { nativeTerminalCheckSchema } from '../src/core/pty-runtime.js';
 import { EXPECTED_VERSION } from '../src/core/terminal/helper-check.js';
@@ -112,6 +118,69 @@ test('every task operation checks a malformed reviewed run before its own reques
       },
       /reviewed task boundary is invalid/,
     );
+  }
+});
+
+test('an unstarted task saves title and literal details together and fences stale starts', async (t) => {
+  const owned = await fixture(t);
+  const request = {
+    workerId: owned.worker.id,
+    expectedRun: { runId: owned.worker.runId, epoch: 0 },
+    name: ' Revised title ',
+    goal: 'First line.\n  Keep this indentation.  ',
+  };
+  await unchangedRejection(owned, 'worker.edit', { ...request, goal: ' ' }, /goal/i);
+  const saved = await owned.service.handle('worker.edit', request);
+  assert.equal(saved.name, 'Revised title');
+  assert.equal(saved.goal, request.goal);
+  assert.equal(saved.state, 'idle');
+  assert.notEqual(saved.runId, request.expectedRun.runId);
+  assert.deepEqual(owned.store.workers(), [saved]);
+  await unchangedRejection(owned, 'worker.edit', request, /earlier task run/);
+  await unchangedRejection(
+    owned,
+    'worker.run',
+    { workerId: saved.id, expectedRun: request.expectedRun },
+    /earlier task run/,
+  );
+});
+
+test('local work and the first chat checkpoint lock details while allowing title edits', async (t) => {
+  for (const mode of ['local', 'handoff']) {
+    await t.test(mode, async (context) => {
+      let seed = makeWorker();
+      if (mode === 'local') {
+        seed = makeWorker({ mode, startedAt: 42, state: 'paused' });
+      }
+      const owned = await fixture(context, { workers: [seed] });
+      const workerId = owned.worker.id;
+      if (mode === 'handoff') {
+        await owned.service.handle('worker.bridgeSave', {
+          workerId,
+          progress: makeProgress(owned.worker, {
+            stage: 'ready',
+            phase: 'connecting',
+            turns: 0,
+            activeMs: 0,
+          }),
+        });
+      }
+      await unchangedRejection(
+        owned,
+        'worker.edit',
+        {
+          workerId,
+          name: 'New title',
+          goal: 'Changed request',
+          expectedRun: { runId: owned.worker.runId, epoch: 0 },
+        },
+        /before the first run/,
+      );
+      const renamed = await owned.service.handle('worker.rename', { workerId, name: 'New title' });
+      assert.equal(renamed.name, 'New title');
+      assert.equal(renamed.goal, seed.goal);
+      assert.equal(renamed.runId, seed.runId);
+    });
   }
 });
 

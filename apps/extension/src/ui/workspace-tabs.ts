@@ -234,9 +234,13 @@ export function createWorkspaceTabs(dependencies: TabActionsDependencies) {
       );
     }
 
+    let editLabel = 'Rename project…';
+    if (kind === 'task') {
+      editLabel = 'Edit task…';
+    }
     items.push({
       id: 'rename',
-      label: 'Rename ' + kind + '…',
+      label: editLabel,
       disabled: !online,
       run: () => rename(kind, id),
     });

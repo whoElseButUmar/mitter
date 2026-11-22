@@ -51,6 +51,7 @@ export const forwardedRpcRegistry = Object.freeze({
   'worker.followupCancel': coreRpcRegistry['worker.followupCancel'],
   'worker.create': coreRpcRegistry['worker.create'],
   'worker.rename': coreRpcRegistry['worker.rename'],
+  'worker.edit': coreRpcRegistry['worker.edit'],
   'worker.run': coreRpcRegistry['worker.run'],
   'worker.resume': coreRpcRegistry['worker.resume'],
   'worker.pause': coreRpcRegistry['worker.pause'],

@@ -4,6 +4,7 @@ import {
   workerSchema,
   type Profile,
   type Project,
+  type Worker,
 } from '../../../../packages/protocol/src/index';
 import {
   projectContextSchema,
@@ -16,6 +17,8 @@ import type { RenameTarget } from './view-data';
 import { folderPickSchema, type FolderPick } from './rpc-results';
 import { callResult, type ViewRPC } from './rpc';
 import { errorMessage } from '../schemas/primitives';
+import { displayTaskName } from '../../../../packages/protocol/src/task-brief.js';
+import { reviewedTaskBoundary } from './task-boundary';
 
 function createSubmissionLifetime(closeDialog: () => void) {
   const [busy, setBusy] = createSignal(false);
@@ -397,4 +400,41 @@ export function createRenameDraft(options: RenameDraftOptions) {
     );
 
   return { target, name, setName, busy, error, close, save };
+}
+
+export type TaskEditDraftOptions = FormFeedback & {
+  task: Worker;
+  canEditDetails: Accessor<boolean>;
+  rpc: ViewRPC;
+};
+
+export function createTaskEditDraft(options: TaskEditDraftOptions) {
+  const { busy, error, close, run } = createSubmissionLifetime(options.close);
+  const task = options.task;
+  const [title, setTitle] = createSignal(displayTaskName(task));
+  const [goal, setGoal] = createSignal(task.goal);
+
+  const save = (): Promise<void> =>
+    run(
+      async () => {
+        const fields = { workerId: task.id, name: title().trim() };
+        if (goal() === task.goal) {
+          return callResult(options.rpc, workerSchema, 'worker.rename', fields);
+        }
+        if (!options.canEditDetails()) {
+          throw new Error('Task details can only be changed before the first run.');
+        }
+        return callResult(options.rpc, workerSchema, 'worker.edit', {
+          ...fields,
+          goal: goal(),
+          expectedRun: reviewedTaskBoundary(task),
+        });
+      },
+      () => {
+        close();
+        options.success('Task updated.');
+      },
+    );
+
+  return { title, setTitle, goal, setGoal, busy, error, close, save };
 }
