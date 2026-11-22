@@ -1,6 +1,6 @@
 {
   "name": "@mitter/extension",
-  "version": "1.0.0-rc.66",
+  "version": "1.0.0-rc.67",
   "private": true,
   "type": "module",
   "scripts": {

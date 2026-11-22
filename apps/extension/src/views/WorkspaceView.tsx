@@ -3,7 +3,7 @@ import { ProjectToolbar } from './ProjectToolbar';
 import { errorMessage } from '../schemas/primitives';
 import type { JSX } from 'solid-js';
 import { type WorkspaceController } from '../ui/workspace-controller';
-import { lazy, Show } from 'solid-js';
+import { Show } from 'solid-js';
 import { TooltipButton } from '../components/TooltipButton';
 import { Icon, Mark } from '../icons';
 import { DebugConsole } from '../DebugConsole';
@@ -14,27 +14,8 @@ import { SetupPanel } from './SetupPanel';
 import { connectionHelp } from '../ui/connection-help';
 import { ConnectionAction } from './ConnectionGuide';
 import { ProjectHome } from './ProjectHome';
-
-function TerminalLoadFailure(props: { visible: boolean }) {
-  return (
-    <section class="terminal-load-failure" aria-label="Terminal" hidden={!props.visible}>
-      <p role="status">The terminal couldn’t load.</p>
-      <button type="button" onClick={() => void reloadWorkspace().catch(() => window.location.reload())}>
-        Reload Miter
-      </button>
-    </section>
-  );
-}
-
-const TerminalDock = lazy(async () => {
-  try {
-    const module = await import('../TerminalDock');
-    return { default: module.TerminalDock };
-  } catch {
-    // A source build can replace chunks while the previous side panel is open.
-    return { default: TerminalLoadFailure };
-  }
-});
+// Load the code with the workspace so a rebuild cannot remove it before the first Terminal click.
+import { TerminalDock } from '../TerminalDock';
 
 export function WorkspaceView(props: { controller: WorkspaceController; children?: JSX.Element }) {
   const {

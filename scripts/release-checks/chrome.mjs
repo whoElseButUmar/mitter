@@ -6,7 +6,6 @@ import {
   mkdir,
   mkdtemp,
   open,
-  readdir,
   realpath,
   rename,
   rm,
@@ -45,25 +44,23 @@ import { evaluate, waitFor, page, press, click, checkDialogs, checkResources } f
 
 const root = path.resolve(import.meta.dirname, '../..');
 
-async function checkMissingTerminalChunk(chrome, session, extension) {
+async function checkTerminalAfterRebuild(chrome, session, extension) {
   const chunks = path.join(extension, 'chunks');
-  const filename = (await readdir(chunks)).find((entry) => /^TerminalDock-.*\.js$/.test(entry));
-  assert.ok(filename, 'Expected the deferred terminal module.');
-  const modulePath = path.join(chunks, filename);
-  const relocated = modulePath + '.relocated';
+  const previousChunks = path.join(extension, 'previous-chunks');
+  assert.equal(await evaluate(chrome, session, '!document.querySelector(".terminal-dock")'), true);
 
-  await rename(modulePath, relocated);
+  // A source rebuild can replace all old chunks while this document stays open.
+  await rename(chunks, previousChunks);
   try {
     await click(chrome, session, '.statusbar button[title^="App runs and shells"]');
     await waitFor(
       chrome,
       session,
-      `document.querySelector('.terminal-load-failure button')?.textContent.trim() === 'Reload Miter'`,
-      'missing terminal chunk offers a reload inside the workspace',
+      `document.querySelector('[aria-label="Local terminal"]')?.checkVisibility() === true`,
+      'the first terminal open works after the loaded build’s chunks move',
     );
-    assert.equal(await evaluate(chrome, session, '!!document.querySelector(".app-shell")'), true);
   } finally {
-    await rename(relocated, modulePath);
+    await rename(previousChunks, chunks);
   }
 }
 
@@ -200,7 +197,7 @@ async function main() {
     console.log('PASS: production client/background/native host save and read back a temporary project.');
     await appendFile(logPath, '\nNative round trip: ' + JSON.stringify(nativeResult) + '\n');
     await checkWorkspaceJourney(chrome, app.session, native.project, modelPath);
-    await checkMissingTerminalChunk(chrome, app.session, path.join(directory, 'extension'));
+    await checkTerminalAfterRebuild(chrome, app.session, path.join(directory, 'extension'));
     parseContract(
       targetCloseSchema,
       await chrome.request('Target.closeTarget', { targetId: app.targetId }),
@@ -209,7 +206,7 @@ async function main() {
     console.log(
       'PASS: real workspace create/open/reopen project, first task and saved navigation without duplicates.',
     );
-    console.log('PASS: a missing terminal chunk offers Reload Miter without breaking the workspace.');
+    console.log('PASS: the first terminal open works even after the loaded build’s chunks move.');
 
     const readerEvidence = await checkDomReader(chrome, fixture.session, id, {
       onEvidence: (evidence) =>
