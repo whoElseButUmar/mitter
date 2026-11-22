@@ -1,10 +1,78 @@
 import assert from 'node:assert/strict';
+import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { z } from 'zod';
+import { parseContract } from '../helpers/runtime.mjs';
 import { ownedTemporaryDirectory } from './chrome-native.mjs';
 import { journeyFolderName } from './chrome-picker-host.mjs';
 import { click, evaluate, press, waitFor } from './chrome-ui.mjs';
 
 const selectedProject = 'document.querySelector(".project-tab[aria-selected=true]")?.textContent.trim()';
+
+const screenshot =
+  'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAF0lEQVR4nGMQMj544dEqhk/qFhMmLwAAK84Gd2fVDssAAAAASUVORK5CYII=';
+const nodeIdSchema = z.int().positive().describe('Chrome DevTools identity of an existing DOM element.');
+const documentNodeSchema = z
+  .object({ root: z.object({ nodeId: nodeIdSchema }) })
+  .describe('The main document node.');
+const elementNodeSchema = z
+  .object({ nodeId: nodeIdSchema })
+  .describe('The DOM node selected for file input.');
+
+async function selectImage(chrome, session, input, file) {
+  const { root } = parseContract(
+    documentNodeSchema,
+    await chrome.request('DOM.getDocument', { depth: 0 }, session),
+    'The browser did not expose the task document.',
+  );
+  const { nodeId } = parseContract(
+    elementNodeSchema,
+    await chrome.request('DOM.querySelector', { nodeId: root.nodeId, selector: input }, session),
+    'The browser did not expose the image picker.',
+  );
+  await chrome.request('DOM.setFileInputFiles', { nodeId, files: [file] }, session);
+}
+
+async function pasteImage(chrome, session, input) {
+  await evaluate(
+    chrome,
+    session,
+    `(() => {
+    const data = new DataTransfer();
+    const bytes = Uint8Array.from(atob(${JSON.stringify(screenshot)}), (byte) => byte.charCodeAt(0));
+    data.items.add(new File([bytes], 'Pasted screenshot.png', { type: 'image/png' }));
+    document.querySelector(${JSON.stringify(input)}).dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }),
+    );
+  })()`,
+  );
+}
+
+async function waitForAttachment(chrome, session, container, name) {
+  await waitFor(
+    chrome,
+    session,
+    `(() => {
+    const container = document.querySelector(${JSON.stringify(container)});
+    const img = container?.querySelector('.attachment-previews img');
+    return container?.querySelector('.attachment-name')?.textContent === ${JSON.stringify(name)} &&
+      container.querySelectorAll('.attachment-previews li').length === 1 &&
+      img?.complete === true && img.naturalWidth > 0;
+  })()`,
+    'saved thumbnail is visible for ' + name,
+  );
+}
+
+async function reloadWorkspace(chrome, session) {
+  await evaluate(chrome, session, 'globalThis.attachmentFixtureReload = true');
+  await chrome.request('Page.reload', {}, session);
+  await waitFor(
+    chrome,
+    session,
+    'globalThis.attachmentFixtureReload === undefined && document.readyState === "complete"',
+    'a fresh workspace document after reloading',
+  );
+}
 
 async function enterProject(chrome, session, root, fields) {
   await click(chrome, session, '.folder-picker');
@@ -37,6 +105,8 @@ async function enterProject(chrome, session, root, fields) {
  */
 export async function checkWorkspaceJourney(chrome, session, projectRoot, modelPath) {
   const parentRoot = await ownedTemporaryDirectory(path.dirname(projectRoot));
+  const screenshotPath = path.join(parentRoot, 'Selected screenshot.png');
+  await writeFile(screenshotPath, Buffer.from(screenshot, 'base64'), { flag: 'wx' });
   const folderName = journeyFolderName;
   await waitFor(
     chrome,
@@ -73,6 +143,33 @@ export async function checkWorkspaceJourney(chrome, session, projectRoot, modelP
     const goal = document.querySelector('[data-goal]');
     goal.value = 'Create an offline journal.';
     goal.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`,
+  );
+  await waitFor(
+    chrome,
+    session,
+    'document.querySelector("dialog .attach-images")?.disabled === false',
+    'new task image picker',
+  );
+  await selectImage(chrome, session, '[data-task-attachments] input', screenshotPath);
+  await waitForAttachment(chrome, session, 'dialog[open]', 'Selected screenshot.png');
+  await reloadWorkspace(chrome, session);
+  await waitFor(
+    chrome,
+    session,
+    `${selectedProject} === "Journey project" && !!document.querySelector(".project-home .primary")`,
+    'project restored after reload',
+  );
+  await click(chrome, session, '.project-home .primary');
+  await waitForAttachment(chrome, session, 'dialog[open]', 'Selected screenshot.png');
+  assert.equal(
+    await evaluate(chrome, session, 'document.querySelector("[data-goal]").value'),
+    'Create an offline journal.',
+  );
+  await evaluate(
+    chrome,
+    session,
+    `(() => {
     const start = document.querySelector('[data-start-now]');
     if (start.checked) start.click();
   })()`,
@@ -203,6 +300,15 @@ async function checkFollowupRewrite(chrome, session) {
     })()`,
   );
   await waitFor(chrome, session, `${send}.disabled === false`, 'entering a follow-up enables Send');
+  await pasteImage(chrome, session, followup + ' textarea');
+  await waitForAttachment(chrome, session, followup, 'Pasted screenshot.png');
+  await pasteImage(chrome, session, followup + ' textarea');
+  await waitFor(
+    chrome,
+    session,
+    'document.querySelector(".followup-composer .attachment-status")?.textContent === "This image is already attached."',
+    'a second paste does not attach the same image again',
+  );
   await click(chrome, session, `${followup} .rewrite-toggle`);
   assert.equal(await evaluate(chrome, session, `${send}.checkVisibility()`), false);
   await click(chrome, session, `${followup} .rewrite-options summary`);
@@ -225,5 +331,25 @@ async function checkFollowupRewrite(chrome, session) {
       document.activeElement === document.querySelector('${followup} textarea') &&
       document.activeElement.value.startsWith('Requested change:')`,
     'using the rewrite restores Send and focuses the updated draft',
+  );
+  await waitForAttachment(chrome, session, followup, 'Pasted screenshot.png');
+  await waitFor(
+    chrome,
+    session,
+    'document.querySelector(".followup-composer .image-attachments")?.getAttribute("aria-busy") === "false"',
+    'rewritten image draft is saved',
+  );
+  await reloadWorkspace(chrome, session);
+  await waitForAttachment(chrome, session, followup, 'Pasted screenshot.png');
+  assert.match(
+    await evaluate(chrome, session, `document.querySelector('${followup} textarea').value`),
+    /^Requested change:/,
+  );
+  await click(chrome, session, followup + ' [aria-label="Remove Pasted screenshot.png"]');
+  await waitFor(
+    chrome,
+    session,
+    'document.querySelectorAll(".followup-composer .attachment-previews li").length === 0',
+    'image removed from the draft',
   );
 }

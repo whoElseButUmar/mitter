@@ -796,6 +796,13 @@ export async function checkDomReader(
         ),
       ),
     );
+    assert.deepEqual(
+      await action(
+        reader + '.imageSend()',
+        'verify one prompt with two real image files and no repeated send',
+      ),
+      { uploads: 2, sends: 1 },
+    );
     return domReaderEvidenceListSchema.parse(evidence);
   } finally {
     try {

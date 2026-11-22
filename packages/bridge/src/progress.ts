@@ -54,6 +54,9 @@ const taskProgressFieldsSchema = z.object({
     .optional()
     .describe('The pinned conversation, once its route is known.'),
   lastReceipt: outboundReceiptSchema.optional().describe('The exact outgoing message waiting for its reply.'),
+  imageFollowupId: identifierSchema
+    .optional()
+    .describe('The follow-up whose image attachments reached a recorded Send intent.'),
   approvedReply: approvedReplySchema.optional().describe('An exact reply explicitly selected by the user.'),
   lastImportedId: identifierSchema.optional().describe('The latest reply accepted by the local host.'),
   lastActionsHash: sha256Schema.optional().describe('A fingerprint used to detect repeated action batches.'),

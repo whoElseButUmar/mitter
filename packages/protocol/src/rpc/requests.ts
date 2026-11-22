@@ -3,6 +3,7 @@ import { checkSchema, teamMessageActionSchema } from '../schemas/actions.js';
 import { profileSchema, projectSchema, taskBoundarySchema } from '../schemas/domain.js';
 import { settingsSchema } from '../schemas/model-settings.js';
 import { followupRequestSchema } from '../schemas/requests.js';
+import { imageAttachmentsSchema } from '../schemas/image-attachments.js';
 import { identifierSchema, integerSchema, textSchema } from '../schemas/primitives.js';
 import { DEFAULT_SETTINGS } from '../model-settings.js';
 import { MAX_HANDOFF_BYTES, exceedsHandoffBytes } from '../reply-json.js';
@@ -46,6 +47,7 @@ export const workerCreationSchema = z
     goal: textSchema('goal', 4000).describe(
       'The literal nonblank user task goal, preserved without trimming.',
     ),
+    imageAttachments: imageAttachmentsSchema.optional().describe('Images selected for the initial task.'),
     name: textSchema('worker name', 60).describe('The task name or a name suggested from its goal.'),
     maxIterations: integerSchema('iterations', 1, 100).describe(
       'The creation-time local proposal iteration limit.',
@@ -245,6 +247,7 @@ export const workerCreateParamsSchema = projectParamsSchema
       .describe('Up to twenty configured checks; legacy absence or null means no objective checks.'),
     mode: workerCreationSchema.shape.mode,
     goal: workerCreationSchema.shape.goal,
+    imageAttachments: workerCreationSchema.shape.imageAttachments,
     name: z
       .union([
         workerCreationSchema.shape.name,
@@ -317,7 +320,7 @@ export const workerOpenFileParamsSchema = workerParamsSchema
 export const workerFollowupParamsSchema = workerParamsSchema
   .extend({
     request: followupRequestSchema.describe(
-      'The user-owned instruction, exact selection and stable request ID.',
+      'The user-owned instruction, exact selection, local image references and stable request ID.',
     ),
   })
   .describe(

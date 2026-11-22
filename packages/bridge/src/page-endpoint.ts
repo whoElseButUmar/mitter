@@ -187,6 +187,7 @@ export function installPageEndpoint(runtime: PageRuntime): void {
       try {
         const changesComposer =
           action.op === 'prepare' ||
+          action.op === 'attach_image' ||
           action.op === 'commit' ||
           action.op === 'send' ||
           action.op === 'clear_draft';
@@ -242,6 +243,11 @@ export function installPageEndpoint(runtime: PageRuntime): void {
       void reply
         .finally(() => {
           inFlightRequests.delete(reply);
+          if (action.op === 'attach_image' && action.image?.base64) {
+            // The document-local upload ledger handles retries after this response.
+            // Keep large image bodies only while they are in flight.
+            pendingRequests.delete(header.id);
+          }
         })
         .catch(() => {});
 

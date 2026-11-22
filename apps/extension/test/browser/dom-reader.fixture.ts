@@ -2,6 +2,7 @@ import { checkDisclosureRecovery } from './disclosure.fixture';
 import { inspectEditedSource } from './sent-source.fixture';
 import { inspectLongTranscript } from './long-transcript.fixture';
 import { checkStaleDraftRecovery } from './stale-draft.fixture';
+import { checkImageSend } from './image-send.fixture';
 import { matchesReceipt, wrapMessage, messageDigest } from '../../../../packages/bridge/src/message-wire';
 import { readReplyJSON } from '../../../../packages/protocol/src/reply-json';
 import { PageBridgeError, PageTransport } from '../../../../packages/bridge/src/page-transport';
@@ -321,6 +322,10 @@ class DomReaderFixture {
     } finally {
       this.testingStaleDraft = false;
     }
+  }
+
+  async imageSend() {
+    return checkImageSend(this.connectedTab(), this.transport);
   }
 
   async destroy(): Promise<void> {

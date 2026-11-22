@@ -350,6 +350,12 @@ export async function checkPointEdit(chrome, session) {
   assert.deepEqual([draft.created, draft.started, draft.authorizations], [0, 0, 0]);
   await evaluate(chrome, session, "document.querySelector('[data-goal]').focus()");
   await chrome.request('Input.insertText', { text: 'Increase the button contrast.' }, session);
+  await waitFor(
+    chrome,
+    session,
+    'document.querySelector("[data-create]")?.disabled === false',
+    'edit task draft loaded',
+  );
   await click(chrome, session, '[data-create]');
   await waitFor(chrome, session, fixture + '.inspect().started === 1', 'reviewed edit task started once');
   const sent = await evaluate(chrome, session, fixture + '.inspect()');
@@ -381,6 +387,8 @@ export async function checkPointEdit(chrome, session) {
 
 async function checkTaskStart(chrome, session) {
   await evaluate(chrome, session, 'window.mitterReleaseFixture.taskStart.mount()');
+  const draftReady = 'document.querySelector("[data-create]")?.disabled === false';
+  await waitFor(chrome, session, draftReady, 'new task draft loaded');
   assert.equal(
     await evaluate(
       chrome,
@@ -467,6 +475,7 @@ async function checkTaskStart(chrome, session) {
       expectedStops = 1;
     }
     await evaluate(chrome, session, 'window.mitterReleaseFixture.taskStart.mount()');
+    await waitFor(chrome, session, draftReady, 'new task draft loaded');
     await evaluate(
       chrome,
       session,

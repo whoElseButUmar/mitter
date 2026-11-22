@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   open,
+  readFile,
   realpath,
   rename,
   rm,
@@ -166,6 +167,8 @@ async function main() {
     );
     await checkAppRun(executable, directory, path.join(directory, 'extension'), log.fd, signal);
     console.log('PASS: Run opens the completed app’s terminal session, reuses it and stops it.');
+    const workspacePage = path.join(directory, 'extension', 'workspace.html');
+    const productionWorkspace = await readFile(workspacePage, 'utf8');
     const packagedStyles = await writePackagedFixture(
       chrome,
       app.session,
@@ -196,6 +199,8 @@ async function main() {
     assert.ok((await lstat(path.join(native.state, 'mitter.sqlite'))).isFile());
     console.log('PASS: production client/background/native host save and read back a temporary project.');
     await appendFile(logPath, '\nNative round trip: ' + JSON.stringify(nativeResult) + '\n');
+    // The loaded fixture keeps its document while the real workspace reloads.
+    await writeFile(workspacePage, productionWorkspace, 'utf8');
     await checkWorkspaceJourney(chrome, app.session, native.project, modelPath);
     await checkTerminalAfterRebuild(chrome, app.session, path.join(directory, 'extension'));
     parseContract(
@@ -206,6 +211,7 @@ async function main() {
     console.log(
       'PASS: real workspace create/open/reopen project, first task and saved navigation without duplicates.',
     );
+    console.log('PASS: picking and pasting images, preserving draft attachments through reload and rewrite.');
     console.log('PASS: the first terminal open works even after the loaded build’s chunks move.');
 
     const readerEvidence = await checkDomReader(chrome, fixture.session, id, {

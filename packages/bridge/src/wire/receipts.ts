@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { chatImageAttachmentsSchema } from '../../../protocol/src/schemas/image-attachments.js';
 import { bootstrapDraftSchema } from '../bootstrap-draft.js';
 import {
   exchangeIdSchema,
@@ -31,6 +32,9 @@ export const outboundReceiptSchema = z
     expectsReplyTo: z.literal(true).optional().describe('The reply must name the saved exchange ID.'),
     payloadHash: sha256Schema.optional().describe('A fingerprint of the message body without its wrapper.'),
     messageId: identifierSchema.optional().describe('The send intent ID used to prevent duplicate sends.'),
+    imageAttachments: chatImageAttachmentsSchema
+      .optional()
+      .describe('Local image references bound to this send.'),
     turn: nonNegativeIntegerSchema
       .min(1)
       .max(100000)
@@ -116,6 +120,9 @@ export function parseReceipt(raw: unknown): OutboundReceipt | undefined {
 
   if (saved.messageId !== undefined) {
     receipt.messageId = saved.messageId;
+  }
+  if (saved.imageAttachments !== undefined) {
+    receipt.imageAttachments = saved.imageAttachments;
   }
 
   if (saved.turn !== undefined) {

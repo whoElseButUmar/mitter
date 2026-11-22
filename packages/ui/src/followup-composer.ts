@@ -1,13 +1,17 @@
 import type { RewriteRequest } from '../../protocol/src/rewrite.js';
 import type { FollowupRequest } from '../../protocol/src/requests.js';
 import { mountDraftRewrite } from './draft-rewrite.js';
+import { mountImageAttachments } from './image-attachments.js';
+
+type ComposerRequest = Pick<FollowupRequest, 'id' | 'instruction' | 'autoStart' | 'imageAttachments'>;
 
 export type FollowupComposerOptions = {
   workerId: string;
   running: boolean;
   disabled?: boolean;
-  send(request: Pick<FollowupRequest, 'id' | 'instruction' | 'autoStart'>): Promise<unknown>;
-  steer?(request: Pick<FollowupRequest, 'id' | 'instruction' | 'autoStart'>): Promise<unknown>;
+  canAttachImages?: boolean;
+  send(request: ComposerRequest, beforeSave?: () => Promise<void>): Promise<unknown>;
+  steer?(request: ComposerRequest): Promise<unknown>;
   rewrite?(request: RewriteRequest, signal: AbortSignal): Promise<string>;
 };
 
@@ -48,9 +52,12 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
   steer.textContent = 'Steer now';
   steer.title = 'Stop the pending plan and use this instruction now. Completed work stays.';
   const rewriteRoot = document.createElement('div');
+  const attachmentRoot = document.createElement('div');
+  attachmentRoot.className = 'image-attachments';
   footer.append(hint);
-  form.append(label, rewriteRoot, footer, status);
+  form.append(label, attachmentRoot, rewriteRoot, footer, status);
   root.append(form);
+  const attachments = mountImageAttachments(attachmentRoot, input, render, footer);
   const rewrite = mountDraftRewrite(
     rewriteRoot,
     input,
@@ -66,13 +73,20 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
 
   function render(): void {
     const blocked = !!options.disabled || busy;
-    const submissionDisabled = blocked || rewrite.open || !input.value.trim();
+    const imagesAllowed = options.canAttachImages !== false;
+    const submissionDisabled =
+      blocked ||
+      rewrite.open ||
+      !input.value.trim() ||
+      attachments.busy ||
+      (!imagesAllowed && attachments.hasImages);
     input.disabled = blocked;
     footer.hidden = rewrite.open;
     send.disabled = submissionDisabled;
     steer.hidden = !options.running || !options.steer;
     steer.disabled = submissionDisabled;
     rewrite.setDisabled(blocked);
+    attachments.setAvailability(imagesAllowed, blocked);
 
     send.textContent = 'Send';
 
@@ -111,41 +125,72 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
       rewrite.close();
     }
     options = next;
+    attachments.setScope('followup:' + next.workerId);
     render();
   }
 
   const submit = async (event: Event, kind: 'queue' | 'steer' = 'queue') => {
     event.preventDefault();
 
-    if (busy || rewrite.open || options.disabled || !input.value.trim()) {
+    if (
+      busy ||
+      rewrite.open ||
+      options.disabled ||
+      !input.value.trim() ||
+      attachments.busy ||
+      (options.canAttachImages === false && attachments.hasImages)
+    ) {
       return;
     }
 
     const generation = taskGeneration;
     const instruction = input.value.trim();
-    const requestKey = kind + ':' + instruction;
+    const submission = attachments.submission();
+    const requestKey = JSON.stringify([kind, instruction, submission?.images.map(({ id }) => id)]);
 
     if (key !== requestKey) {
       key = requestKey;
       id = crypto.randomUUID();
+      if (submission?.previousAttempt?.key === requestKey) {
+        id = submission.previousAttempt.id;
+      }
     }
+    const request: ComposerRequest = {
+      id,
+      instruction,
+      autoStart: true,
+      ...(submission && { imageAttachments: submission.images }),
+    };
 
     busy = true;
     status.hidden = true;
     render();
 
     try {
-      let action = options.send;
-
+      const reserveImages = async () => {
+        await submission?.reserve({ id: request.id, key: requestKey });
+        if (!alive || generation !== taskGeneration) {
+          throw new Error('This follow-up composer is closed. Reopen it before sending.');
+        }
+      };
       if (kind === 'steer') {
         if (!options.steer) {
           throw new Error('Steering is unavailable.');
         }
-
-        action = options.steer;
+        if (submission) {
+          await reserveImages();
+        }
+        await options.steer(request);
+      } else if (submission) {
+        // send() acquires ChatGPT access in the original click before awaiting
+        // reservation. The native follow-up is only saved once the bytes are pinned.
+        await options.send(request, reserveImages);
+      } else {
+        await options.send(request);
       }
-
-      await action({ id, instruction, autoStart: true });
+      if (submission) {
+        await submission.confirm();
+      }
 
       if (alive && generation === taskGeneration) {
         input.value = '';
@@ -186,7 +231,7 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
   form.addEventListener('submit', submit);
   input.addEventListener('keydown', keydown);
   input.addEventListener('input', changed);
-  render();
+  update(options);
 
   return {
     update,
@@ -200,6 +245,7 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
     },
     dispose() {
       alive = false;
+      attachments.dispose();
       rewrite.dispose();
       form.removeEventListener('submit', submit);
       steer.removeEventListener('click', steerClick);

@@ -14,7 +14,8 @@ export function FollowupPanel(props: {
   items: FollowupSummary[];
   running: boolean;
   disabled: boolean;
-  send: (request: ChangeRequest) => Promise<unknown>;
+  canAttachImages: boolean;
+  send: (request: ChangeRequest, beforeSave?: () => Promise<void>) => Promise<unknown>;
   steer: (request: ChangeRequest) => Promise<unknown>;
   cancel: (id: string) => Promise<unknown>;
   copy: (text: string) => Promise<void>;
@@ -29,12 +30,9 @@ export function FollowupPanel(props: {
       workerId: props.workerId,
       running: props.running,
       disabled: props.disabled,
+      canAttachImages: props.canAttachImages,
       rewrite: props.rewrite,
-      send: (result) =>
-        props.send({
-          ...result,
-          autoStart: true,
-        }),
+      send: props.send,
       steer: (result) =>
         props.steer({
           ...result,
@@ -46,12 +44,9 @@ export function FollowupPanel(props: {
         workerId: props.workerId,
         running: props.running,
         disabled: props.disabled,
+        canAttachImages: props.canAttachImages,
         rewrite: props.rewrite,
-        send: (result) =>
-          props.send({
-            ...result,
-            autoStart: true,
-          }),
+        send: props.send,
         steer: (result) =>
           props.steer({
             ...result,

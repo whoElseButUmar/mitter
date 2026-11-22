@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { identifierSchema, integerSchema, textSchema } from './primitives.js';
+import { imageAttachmentsSchema } from './image-attachments.js';
 
 export const selectionRangeSchema = z
   .strictObject({
@@ -33,6 +34,7 @@ export const followupSchema = z
     workerId: z.string().describe('Owning worker identifier.'),
     instruction: z.string().describe('User-owned follow-up instruction.'),
     selection: codeSelectionSchema.optional().describe('Optional exact source selection.'),
+    imageAttachments: imageAttachmentsSchema.optional().describe('Images selected for this follow-up.'),
     status: followupStateSchema,
     createdAt: z
       .int()
@@ -77,6 +79,7 @@ export const followupRequestSchema = z
       .transform((value) => value.trim())
       .describe('Validated user instruction; this boundary explicitly trims it.'),
     selection: codeSelectionSchema.optional().describe('Optional exact source selection.'),
+    imageAttachments: imageAttachmentsSchema.optional().describe('Images selected for this follow-up.'),
     autoStart: z
       .boolean({ error: 'Invalid autoStart. Use true or false.' })
       .default(true)

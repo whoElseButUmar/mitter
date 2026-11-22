@@ -52,6 +52,14 @@ export function parseFollowup(value: unknown): FollowupRequest {
     result.selection = parseSelection(request.selection);
   }
 
+  const imageAttachments = parseSchema(
+    followupRequestSchema.shape.imageAttachments,
+    request.imageAttachments,
+  );
+  if (imageAttachments?.length) {
+    result.imageAttachments = imageAttachments;
+  }
+
   return result;
 }
 

@@ -6,13 +6,18 @@ import {
   transcriptDiscoveryStateSchema,
 } from '../../../protocol/src/schemas/reader-diagnostic.js';
 import { proposalEnvelopeSchema } from '../../../protocol/src/proposal.js';
+import {
+  imageAttachmentSchema,
+  chatImageAttachmentsSchema,
+  MAX_IMAGE_BYTES,
+} from '../../../protocol/src/schemas/image-attachments.js';
 import { exceedsHandoffBytes } from '../../../protocol/src/reply-json.js';
 import { outboundReceiptSchema } from '../message-wire.js';
 import { identifierSchema, nonNegativeIntegerSchema } from '../schemas/primitives.js';
 
 export const USER_READER_VERSION = 'user-turn/8';
 // Increment when packaged DOM behavior changes without changing the compatible reader protocol.
-export const PAGE_READER_REVISION = 9;
+export const PAGE_READER_REVISION = 10;
 // Build verification checks this exact marker in the packaged page script.
 export const ASSISTANT_READER_VERSION = 'logical-pre/5-user-turn/8-discovery/8-code-reply/6-send/4-control/2';
 
@@ -25,6 +30,7 @@ export const domRequestSchema = z
         'reply',
         'inspect',
         'prepare',
+        'attach_image',
         'commit',
         'send',
         'clear_draft',
@@ -41,6 +47,21 @@ export const domRequestSchema = z
     text: z.string().optional().describe('Outgoing composer text, unchanged by the bridge.'),
     messageId: z.string().optional().describe('Send intent ID used to prevent duplicate clicks.'),
     composerSession: identifierSchema.optional().describe('Document that prepared this send intent.'),
+    imageAttachments: chatImageAttachmentsSchema
+      .optional()
+      .describe('Exact images authorized for this send intent.'),
+    image: z
+      .strictObject({
+        attachment: imageAttachmentSchema,
+        base64: z
+          .string()
+          .min(4)
+          .max(4 * Math.ceil(MAX_IMAGE_BYTES / 3))
+          .optional()
+          .describe('Single bounded image payload, omitted when checking upload status.'),
+      })
+      .optional()
+      .describe('Image whose upload is being started or checked in the prepared composer.'),
     adoptBootstrapDraft: z
       .literal(true)
       .optional()
@@ -405,7 +426,7 @@ export const chatViewSchema = z
       .optional()
       .describe('Document visibility when the view was read.'),
     outcome: z
-      .enum(['pending', 'prepared', 'clicked', 'already_clicked', 'already_sent', 'cleared'])
+      .enum(['pending', 'prepared', 'attached', 'clicked', 'already_clicked', 'already_sent', 'cleared'])
       .optional()
       .describe('Composer transaction outcome, absent for read-only operations.'),
   })
@@ -432,14 +453,22 @@ export const preparedMessageSchema = z
     userCount: nonNegativeIntegerSchema.describe('User-turn count before insertion.'),
     lastUserText: z.string().describe('Latest user text before insertion.'),
     lastUserId: z.string().optional().describe('Latest user identity before insertion.'),
+    imageAttachments: chatImageAttachmentsSchema
+      .optional()
+      .describe('Image references bound to this exact draft.'),
   })
   .describe('Document-local prepared send intent.');
-export type PreparedMessage = z.infer<typeof preparedMessageSchema>;
+export type PreparedMessage = z.infer<typeof preparedMessageSchema> & {
+  imageUploads?: Map<string, { startedAt: number; confirmed: boolean }>;
+};
 
 export const committedMessageSchema = z
   .object({
     text: z.string().describe('Exact outgoing text associated with this send intent.'),
     time: z.number().describe('Time recorded before the Send click in milliseconds since the Unix epoch.'),
+    imageAttachments: chatImageAttachmentsSchema
+      .optional()
+      .describe('Image references verified before this send.'),
   })
   .describe('Document-local committed-send ledger entry.');
 export type CommittedMessage = z.infer<typeof committedMessageSchema>;

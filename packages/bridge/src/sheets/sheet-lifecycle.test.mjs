@@ -132,13 +132,22 @@ async function sheetHarness(name) {
     replaceChildren: mock.fn(),
   };
   const selects = { refresh: mock.fn(), dispose: mock.fn() };
-  const rewrite = { open: false, setDisabled: mock.fn(), dispose: mock.fn() };
+  const rewrite = { open: false, close: mock.fn(), setDisabled: mock.fn(), dispose: mock.fn() };
   const mountDraftRewrite = mock.fn(() => rewrite);
+  const attachments = {
+    busy: false,
+    hasImages: false,
+    setScope: mock.fn(),
+    setAvailability: mock.fn(),
+    submission: mock.fn(),
+    dispose: mock.fn(),
+  };
   const clock = { now: () => 1000 };
   const dependencies = {
     '../../ui/src/select.js': { enhanceSelects: () => selects },
     '../../ui/src/icons.js': { addDisclosureMarkers: mock.fn() },
     '../../ui/src/draft-rewrite.js': { mountDraftRewrite },
+    '../../ui/src/image-attachments.js': { mountImageAttachments: () => attachments },
     './native-request.js': { NativeRequestTimeout },
   };
 
@@ -182,7 +191,7 @@ async function sheetHarness(name) {
 
   const controller = module.exports;
   const mount = controller[`mount${name[0].toUpperCase()}${name.slice(1)}Sheet`];
-  return { root, node, selects, rewrite, mountDraftRewrite, mount: (deps) => mount(root, deps) };
+  return { root, node, selects, rewrite, attachments, mountDraftRewrite, mount: (deps) => mount(root, deps) };
 }
 
 function startDependencies(overrides = {}) {
@@ -578,8 +587,10 @@ test('task rewrite options omit absent callbacks and preserve provided callbacks
       } else {
         assert.equal(options.rewrite, undefined);
       }
+      sheet.rewrite.open = true;
       options.openChanged(true);
       assert.equal(sheet.node('[data-create]').disabled, true);
+      sheet.rewrite.open = false;
       options.openChanged(false);
       assert.equal(sheet.node('[data-create]').disabled, false);
       dispose();
@@ -867,6 +878,41 @@ test('a draft rewrite blocks task submission before any permission or creation',
   await sheet.node('[data-task-form]').emit('submit');
   assert.equal(deps.authorize.mock.callCount(), 0);
   assert.equal(deps.create.mock.callCount(), 0);
+  dispose();
+});
+
+test('new task image references are reserved before creating and cleared only after confirmation', async () => {
+  const sheet = await sheetHarness('task');
+  const images = [
+    {
+      id: 'd077a2c1-0eb1-4231-9eb4-68deb3c9ec72',
+      name: 'Reference.png',
+      type: 'image/png',
+      size: 84,
+    },
+  ];
+  const calls = [];
+  const deps = taskDependencies({
+    authorize: mock.fn(async () => {
+      calls.push('authorize');
+      return true;
+    }),
+    create: mock.fn(async (params) => {
+      calls.push('create');
+      assert.deepEqual(params.imageAttachments, images);
+      return createdTask({ imageAttachments: images });
+    }),
+  });
+  sheet.attachments.hasImages = true;
+  sheet.attachments.submission.mock.mockImplementation(() => ({
+    images,
+    reserve: async () => calls.push('reserve'),
+    confirm: async () => calls.push('confirm'),
+  }));
+  const dispose = sheet.mount(deps);
+  await sheet.node('[data-task-form]').emit('submit');
+  assert.deepEqual(calls, ['authorize', 'reserve', 'create', 'confirm']);
+  assert.deepEqual(sheet.attachments.setScope.mock.calls[0].arguments, ['new-task:project-a']);
   dispose();
 });
 

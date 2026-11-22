@@ -1,4 +1,4 @@
-import { domRequestSchema, type ChatView, type DomRequest } from './dom/types.js';
+import { domRequestSchema, PAGE_READER_REVISION, type ChatView, type DomRequest } from './dom/types.js';
 import { PAGE_CHANNEL, pageHelloSchema, pageReplyHeaderSchema } from './transport/messages.js';
 import { PageBridgeError } from './transport/page-error.js';
 import { readPageState } from './transport/page-state.js';
@@ -19,7 +19,7 @@ function isReadOperation(operation: DomRequest['op']): boolean {
 /** Injection installs a packaged file. Only an authenticated request response
  * can supply an operation result, and an ambiguous mutation is never replayed. */
 export class PageTransport {
-  private attachedTabs = new Set<number>();
+  private attachedTabs = new Map<number, number | undefined>();
   private documentGenerations = new Map<number, symbol>();
   private pendingConnections = new Map<number, Promise<void>>();
 
@@ -104,17 +104,19 @@ export class PageTransport {
     return undefined;
   }
 
-  async ensure(tabId: number): Promise<void> {
-    if (this.attachedTabs.has(tabId)) {
+  async ensure(tabId: number, minimumRevision = 0): Promise<void> {
+    if (this.attachedTabs.has(tabId) && (this.attachedTabs.get(tabId) ?? 0) >= minimumRevision) {
       return;
     }
 
     const pendingConnection = this.pendingConnections.get(tabId);
 
     if (pendingConnection) {
-      return pendingConnection;
+      await pendingConnection;
+      return this.ensure(tabId, minimumRevision);
     }
 
+    this.attachedTabs.delete(tabId);
     // A fresh identity cannot become current again after forget releases its entry.
     const generation = Symbol();
     this.documentGenerations.set(tabId, generation);
@@ -133,7 +135,7 @@ export class PageTransport {
       const identity = await this.exchange(tabId, 'hello');
 
       const hello = pageHelloSchema.safeParse(identity);
-      if (!hello.success) {
+      if (!hello.success || (hello.data.readerRevision ?? 0) < minimumRevision) {
         this.log(
           'bridge.upgrade',
           'Refreshing an older or incompatible page reader. No message is being resent.',
@@ -174,7 +176,7 @@ export class PageTransport {
       }
 
       checkDocument();
-      this.attachedTabs.add(tabId);
+      this.attachedTabs.set(tabId, hello.readerRevision);
       this.log(
         'bridge.ready',
         `Page handshake confirmed in tab ${tabId}; ${hello.version}; reader=${hello.reader}; revision=${hello.readerRevision ?? 'unreported'}.`,
@@ -234,7 +236,11 @@ export class PageTransport {
           }
         }
 
-        await this.ensure(tabId);
+        let minimumRevision = 0;
+        if (action.op === 'attach_image' || action.imageAttachments?.length) {
+          minimumRevision = PAGE_READER_REVISION;
+        }
+        await this.ensure(tabId, minimumRevision);
         const generation = this.documentGenerations.get(tabId);
         if (generation === undefined) {
           throw new PageBridgeError(

@@ -1,5 +1,6 @@
 import { matchesBootstrapDraft } from '../bootstrap-draft.js';
 import { composerText, findComposer } from './composer-operations.js';
+import { composerHasImages } from './composer-images.js';
 import { generationActive } from './page-elements.js';
 import { discoverMessages } from './transcript-discovery.js';
 import type { ChatView, DomRequest } from './types.js';
@@ -61,6 +62,7 @@ export async function clearStaleDraft(
         new URL(request.url).origin !== proof.origin ||
         findComposer() !== composer ||
         composerText(composer) !== text ||
+        composerHasImages(composer) ||
         generationActive() ||
         !emptyNativeTranscript()
       ) {

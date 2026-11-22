@@ -1,6 +1,7 @@
 import { addDisclosureMarkers } from '../../ui/src/icons.js';
 import { requiredElement } from './sheets/required-element.js';
 import { mountDraftRewrite, type DraftRewriteOptions } from '../../ui/src/draft-rewrite.js';
+import { mountImageAttachments } from '../../ui/src/image-attachments.js';
 import type { RewriteRequest } from '../../protocol/src/rewrite.js';
 import { enhanceSelects } from '../../ui/src/select.js';
 import type { Check, Project, Worker } from '../../protocol/src/index.js';
@@ -138,7 +139,7 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
     }
 
     submitButton.textContent = 'Start task';
-    if (!captureId && isProjectLaunchRequest(goalInput.value)) {
+    if (!captureId && !attachments.hasImages && isProjectLaunchRequest(goalInput.value)) {
       disclosure.textContent =
         'Installs the project dependencies, starts its development server and opens the preview.';
     } else if (modeSelect.value === 'local') {
@@ -205,10 +206,19 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
   }
 
   function refreshForm() {
-    renderSubmissionDetails();
+    if (!busy) {
+      renderSubmissionDetails();
+    }
     updateCompletionFields();
     renderBriefPreview();
     selects?.refresh();
+    attachments.setAvailability(modeSelect.value === 'handoff', busy || completed);
+    submitButton.disabled =
+      completed ||
+      busy ||
+      draftRewrite.open ||
+      attachments.busy ||
+      (modeSelect.value !== 'handoff' && attachments.hasImages);
   }
 
   function revealInvalidField(event: Event): void {
@@ -236,14 +246,15 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
     }
   }
 
-  updateCommandProfiles();
-  refreshForm();
-  selects = enhanceSelects(root);
-
+  const composerActions = requiredElement(root, '[data-task-composer-actions]', HTMLElement);
+  const attachments = mountImageAttachments(
+    requiredElement(root, '[data-task-attachments]', HTMLElement),
+    goalInput,
+    refreshForm,
+    composerActions,
+  );
   const rewriteOptions: DraftRewriteOptions = {
-    openChanged: (rewriting) => {
-      submitButton.disabled = busy || rewriting;
-    },
+    openChanged: refreshForm,
   };
   const rewrite = deps.rewrite;
   if (rewrite !== undefined) {
@@ -253,7 +264,19 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
     requiredElement(root, '[data-task-rewrite]', HTMLElement),
     goalInput,
     rewriteOptions,
+    composerActions,
   );
+  const setImageScope = () => {
+    let key = 'new-task:' + selectedProjectId();
+    if (captureId) {
+      key += ':capture:' + captureId;
+    }
+    attachments.setScope(key);
+  };
+  updateCommandProfiles();
+  refreshForm();
+  selects = enhanceSelects(root);
+  setImageScope();
 
   async function stopCreatedTask(taskId: string, mode: 'handoff' | 'local'): Promise<void> {
     const stopped = await deps.stop(taskId, mode);
@@ -264,7 +287,14 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
 
   async function submitTask(event: SubmitEvent) {
     event.preventDefault();
-    if (busy || completed || draftRewrite.open || !form.reportValidity()) {
+    if (
+      busy ||
+      completed ||
+      draftRewrite.open ||
+      attachments.busy ||
+      (modeSelect.value !== 'handoff' && attachments.hasImages) ||
+      !form.reportValidity()
+    ) {
       return;
     }
 
@@ -277,7 +307,8 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
     }
 
     let selectedMode = modeSelect.value;
-    if (!captureId && isProjectLaunchRequest(cleanGoal)) {
+    const submission = attachments.submission();
+    if (!captureId && !submission && isProjectLaunchRequest(cleanGoal)) {
       selectedMode = 'local';
     }
     if (selectedMode !== 'handoff' && selectedMode !== 'local') {
@@ -303,10 +334,12 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
       mode: selectedMode,
       maxIterations: 15,
       maxMinutes: 30,
+      ...(submission && { imageAttachments: submission.images }),
     };
 
     busy = true;
     draftRewrite.setDisabled(true);
+    attachments.setAvailability(selectedMode === 'handoff', true);
     submitButton.disabled = true;
     if (shouldStart) {
       submitButton.textContent = 'Starting…';
@@ -323,6 +356,12 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
       }
       if (!alive) {
         return;
+      }
+      if (submission) {
+        await submission.reserve();
+        if (!alive) {
+          return;
+        }
       }
 
       let task: Worker;
@@ -349,6 +388,13 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
         throw new Error(
           'The task-creation result belongs to another project or coding source. Check saved tasks before creating another.',
         );
+      }
+      if (submission) {
+        if (JSON.stringify(submission.images) !== JSON.stringify(task.imageAttachments)) {
+          completed = true;
+          throw new Error('The saved task could not confirm its images. Check the task before starting it.');
+        }
+        await submission.confirm();
       }
       deps.created(task.id);
       if (!alive) {
@@ -395,13 +441,14 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
       if (alive) {
         busy = false;
         draftRewrite.setDisabled(completed);
-        submitButton.disabled = completed || draftRewrite.open;
         refreshForm();
       }
     }
   }
 
   projectSelect.addEventListener('change', () => {
+    draftRewrite.close();
+    setImageScope();
     updateCommandProfiles();
     refreshForm();
   });
@@ -428,6 +475,7 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
     }
 
     draftRewrite.dispose();
+    attachments.dispose();
     selects?.dispose();
     form.removeEventListener('invalid', revealInvalidField, true);
     root.replaceChildren();

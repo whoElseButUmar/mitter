@@ -93,7 +93,7 @@ export function parseWorkerCreation(value: unknown): WorkerCreation {
     name = parseSchema(workerCreationSchema.shape.name, params.name).trim();
   }
 
-  return {
+  const creation: WorkerCreation = {
     checks,
     mode: mode.data,
     goal,
@@ -101,6 +101,14 @@ export function parseWorkerCreation(value: unknown): WorkerCreation {
     maxIterations: parseSchema(workerCreationSchema.shape.maxIterations, params.maxIterations ?? 8),
     maxMinutes: parseSchema(workerCreationSchema.shape.maxMinutes, params.maxMinutes ?? 15),
   };
+  const images = parseSchema(workerCreationSchema.shape.imageAttachments, params.imageAttachments);
+  if (images?.length) {
+    if (creation.mode !== 'handoff') {
+      throw new Error('Choose ChatGPT to use image attachments.');
+    }
+    creation.imageAttachments = images;
+  }
+  return creation;
 }
 
 export function parseHandoffText(value: unknown): string {

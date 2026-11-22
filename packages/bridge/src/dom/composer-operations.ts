@@ -3,6 +3,7 @@ import { normalizeMessageText } from '../schemas/primitives.js';
 import { composerSelector, pageElements } from './page-elements.js';
 import type { ComposerState } from './session-state.js';
 import { editableText } from './user-reader.js';
+import { attachComposerImage, checkComposerImages, sameImageAttachments } from './composer-images.js';
 import { isEmptyChat, type ChatView, type DomRequest, type PreparedMessage } from './types.js';
 
 export type { ComposerState } from './session-state.js';
@@ -77,6 +78,15 @@ function preparedUserChanged(view: ChatView, prepared: PreparedMessage): boolean
   );
 }
 
+function checkManualImageSend(prepared: PreparedMessage): void {
+  if (prepared.imageAttachments?.length) {
+    failOperation(
+      'IMAGE_SEND_UNCONFIRMED',
+      'The message was sent directly in ChatGPT. Miter could not verify its images and did not send it again.',
+    );
+  }
+}
+
 function checkBootstrapDraft(request: DomRequest, view: ChatView, text: string): void {
   if (request.adoptBootstrapDraft && (!isEmptyChat(view) || view.draftText !== text)) {
     failOperation('DRAFT_CHANGED', 'The prepared task draft or chat changed. No new Send was attempted.');
@@ -96,10 +106,24 @@ export async function sendComposerMessage(
     failOperation('INVALID_MESSAGE', 'The outgoing message is empty or too large.');
   }
   const outgoingText = text;
+  const imageAttachments = request.imageAttachments;
+  const hasImages = !!imageAttachments?.length;
+  if (hasImages && (!request.messageId || request.op === 'send')) {
+    failOperation('INVALID_IMAGE', 'Images require a prepared send request.');
+  }
   const previousRecord = session.committed.get(messageId);
   if (previousRecord) {
-    if (previousRecord.text !== outgoingText) {
+    if (
+      previousRecord.text !== outgoingText ||
+      !sameImageAttachments(previousRecord.imageAttachments, imageAttachments)
+    ) {
       failOperation('MESSAGE_CONFLICT', 'A send ID was reused with different content.');
+    }
+    if (request.op === 'attach_image') {
+      failOperation(
+        'MESSAGE_ALREADY_SENT',
+        'This message was already sent. No new image upload was started.',
+      );
     }
     return { ...(await collectView()), outcome: 'already_clicked' };
   }
@@ -115,14 +139,20 @@ export async function sendComposerMessage(
     if (session.prepared?.id === messageId) {
       preparedMessage = session.prepared;
     }
-    if (preparedMessage && preparedMessage.text !== outgoingText) {
+    if (
+      preparedMessage &&
+      (preparedMessage.text !== outgoingText ||
+        !sameImageAttachments(preparedMessage.imageAttachments, imageAttachments))
+    ) {
       failOperation('MESSAGE_CONFLICT', 'A prepared message ID was reused with different content.');
     }
     if (preparedMessage) {
       if (isPreparedMessageSent(previousView, preparedMessage)) {
+        checkManualImageSend(preparedMessage);
         session.committed.set(messageId, {
           text: outgoingText,
           time: Date.now(),
+          imageAttachments,
         });
         return { ...previousView, outcome: 'already_sent' };
       }
@@ -141,6 +171,16 @@ export async function sendComposerMessage(
     if (!composerField) {
       failOperation('COMPOSER_MISSING', 'ChatGPT’s composer is not ready. Check that you are signed in.');
     }
+    if (hasImages && !composerField.closest('form')) {
+      failOperation(
+        'COMPOSER_MISSING',
+        'ChatGPT’s image composer is not ready. Check that you are signed in.',
+      );
+    }
+    const uploadInProgress = [...(preparedMessage?.imageUploads?.values() ?? [])].some(
+      (entry) => !entry.confirmed,
+    );
+    checkComposerImages(composerField, messageId, imageAttachments, uploadInProgress);
     const draftText = normalizeMessageText(composerText(composerField));
     if (draftText && draftText !== normalizeMessageText(outgoingText)) {
       failOperation('DRAFT_CONFLICT', 'Your draft is safe. Send or move it before resuming Mitter.');
@@ -208,9 +248,10 @@ export async function sendComposerMessage(
         userCount: previousView.userCount,
         lastUserText: previousView.lastUserText,
         lastUserId: previousView.lastUserId,
+        imageAttachments,
       };
     }
-    if (!findSendControl(freshComposer)) {
+    if (!hasImages && !findSendControl(freshComposer)) {
       return {
         ...observedView,
         outcome: 'pending',
@@ -223,13 +264,19 @@ export async function sendComposerMessage(
   }
   checkSession();
   const preparedMessage = session.prepared;
-  if (!preparedMessage || preparedMessage.id !== messageId || preparedMessage.text !== outgoingText) {
+  if (
+    !preparedMessage ||
+    preparedMessage.id !== messageId ||
+    preparedMessage.text !== outgoingText ||
+    !sameImageAttachments(preparedMessage.imageAttachments, imageAttachments)
+  ) {
     failOperation('NOT_PREPARED', 'The task was not prepared in this page. No send was attempted.');
   }
   const previousView = await collectView();
   checkSession();
   // If the user sent our prepared text themselves, observe it instead of clicking again.
   if (isPreparedMessageSent(previousView, preparedMessage)) {
+    checkManualImageSend(preparedMessage);
     return { ...previousView, outcome: 'already_sent' };
   }
   if (preparedUserChanged(previousView, preparedMessage)) {
@@ -249,12 +296,32 @@ export async function sendComposerMessage(
   if (!composer || normalizeMessageText(composerText(composer)) !== normalizeMessageText(outgoingText)) {
     failOperation('DRAFT_CHANGED', 'The draft changed before sending. Mitter did not click Send.');
   }
+  if (request.op === 'attach_image') {
+    if (!hasImages || !composer.closest('form')) {
+      failOperation('INVALID_IMAGE', 'Miter could not find an image composer for this task.');
+    }
+    const outcome = attachComposerImage(request, preparedMessage, composer, checkSession);
+    if (outcome === 'attached') {
+      return { ...previousView, outcome };
+    }
+    return { ...previousView, outcome: 'pending', readiness: outcome };
+  }
+  const images = checkComposerImages(composer, messageId, imageAttachments);
+  if (!images.complete) {
+    if (images.images.length !== imageAttachments?.length) {
+      failOperation(
+        'IMAGE_DRAFT_CONFLICT',
+        'The expected images changed before sending. Miter left the draft untouched.',
+      );
+    }
+    return { ...previousView, outcome: 'pending', readiness: 'uploading_images' };
+  }
   const sendButton = findSendControl(composer);
   if (!sendButton) {
     return { ...previousView, outcome: 'pending', readiness: 'send_not_ready' };
   }
   checkSession();
-  session.committed.set(messageId, { text: outgoingText, time: Date.now() });
+  session.committed.set(messageId, { text: outgoingText, time: Date.now(), imageAttachments });
   while (session.committed.size > 20) {
     const oldestId = session.committed.keys().next().value;
     if (oldestId === undefined) {

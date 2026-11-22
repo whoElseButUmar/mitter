@@ -1694,6 +1694,7 @@ export class Service {
         followup.activatedAt = Date.now();
         this.followups.save(followup);
         worker.activeFollowupId = followup.id;
+        worker.activeFollowupImages = followup.imageAttachments;
         control.mode = 'fresh';
 
         if (followupProgress) {
@@ -1809,6 +1810,7 @@ export class Service {
       next.activatedAt = Date.now();
       this.followups.save(next);
       worker.activeFollowupId = next.id;
+      worker.activeFollowupImages = next.imageAttachments;
       worker.error = undefined;
       worker.humanAcceptanceReady = false;
       worker.completion = undefined;

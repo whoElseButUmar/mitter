@@ -670,7 +670,7 @@ export function createWorkspaceController() {
     }
   };
 
-  const sendFollowup = async (id: string, request: ChangeRequest) => {
+  const sendFollowup = async (id: string, request: ChangeRequest, beforeSave?: () => Promise<void>) => {
     const task = snapshot().workers.find((entry) => entry.id === id);
 
     if (!task) {
@@ -687,6 +687,9 @@ export function createWorkspaceController() {
       }
     }
 
+    if (beforeSave) {
+      await beforeSave();
+    }
     const result = await rpc('worker.followup', { workerId: id, request });
     success('Follow-up saved in the same task.');
     return result;

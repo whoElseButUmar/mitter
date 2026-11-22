@@ -6,6 +6,7 @@ import { isProviderOrigin } from '../connections/providers.js';
 import { readAssistantMessage } from './assistant-reader.js';
 import { readCodeReply } from './code-replies.js';
 import { findComposer, composerText, sendComposerMessage } from './composer-operations.js';
+import { sameImageAttachments } from './composer-images.js';
 import { contentHidden, pageElements, generationActive, generationStopControls } from './page-elements.js';
 import { hasStreamRetry } from './provider-activity.js';
 import { discoverReceiptMessages } from './receipt-discovery.js';
@@ -186,6 +187,17 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
     failOperation('STOPPED', 'Paused from the chat page.');
   }
   if (
+    request.op === 'attach_image' &&
+    (!existingSession ||
+      existingSession.token !== request.token ||
+      existingSession.composerSession !== request.composerSession)
+  ) {
+    failOperation(
+      'IMAGE_DOCUMENT_CHANGED',
+      'ChatGPT reloaded while preparing images. The new composer must be checked.',
+    );
+  }
+  if (
     (request.op === 'clear_draft' || (request.op === 'commit' && request.composerSession !== undefined)) &&
     (!existingSession ||
       existingSession.token !== request.token ||
@@ -197,8 +209,22 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
     );
   }
   if (request.op !== 'probe' && (!existingSession || existingSession.token !== request.token)) {
+    let prepared = null;
     if (existingSession) {
       existingSession.stopped = true;
+      const previous = existingSession.prepared;
+      if (
+        request.op === 'prepare' &&
+        request.imageAttachments?.length &&
+        previous &&
+        previous.id === request.messageId &&
+        previous.text === request.text &&
+        sameImageAttachments(previous.imageAttachments, request.imageAttachments)
+      ) {
+        // A reconnect can reclaim only the exact pending image draft. Preserve its
+        // document-local upload attempts so a lost acknowledgement cannot resend.
+        prepared = previous;
+      }
     }
     // page-endpoint reads and replaces this exact plain object on reinjection.
     // Keep the global key, token, ledgers and object-identity retirement intact.
@@ -206,7 +232,7 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
       token: request.token,
       composerSession: crypto.randomUUID(),
       stopped: false,
-      prepared: null,
+      prepared,
       committed: new Map<string, CommittedMessage>(),
       reveals: new Map<string, MessageReveal>(),
     };

@@ -11,6 +11,7 @@ import { NativeRequestTimeout } from '../native-request.js';
 import { isReadOnlyReply, isIncompleteReplyJSON } from '../../../protocol/src/reply-json.js';
 import { assertFreshReplyExchange, boundReply, replyDigest, replyHeaders } from '../reply-recovery.js';
 import type { ProposalEnvelope } from '../../../protocol/src/proposal.js';
+import type { ImageAttachment } from '../../../protocol/src/schemas/image-attachments.js';
 import { ReplyValidationError, correctionAdvice, type ReplyIssue } from '../../../protocol/src/validation.js';
 import type { ReaderDiagnostic, TaskBoundary, Worker } from '../../../protocol/src/index.js';
 import { parseRpcParams, RpcResultValidationError } from '../../../protocol/src/rpc.js';
@@ -160,6 +161,8 @@ export class BridgeRunner {
         commitIntent: boolean;
         adoptBootstrapDraft?: true;
         composerSession?: string;
+        imageAttachments?: ImageAttachment[];
+        uploadedImages: number;
       }
     | undefined;
   private lastSendReadiness = '';
@@ -980,7 +983,13 @@ export class BridgeRunner {
     op: DomRequest['op'],
     details: Pick<
       DomRequest,
-      'text' | 'messageId' | 'composerSession' | 'staleDraft' | 'adoptBootstrapDraft'
+      | 'text'
+      | 'messageId'
+      | 'composerSession'
+      | 'staleDraft'
+      | 'adoptBootstrapDraft'
+      | 'image'
+      | 'imageAttachments'
     > = {},
   ): Promise<ChatView> {
     // The new-chat route can be provisional. Only inspections may look across
@@ -1637,6 +1646,41 @@ export class BridgeRunner {
       await this.send(messagePayload(page.draftText), page, mode);
       return;
     }
+    if (
+      this.progress?.stage === 'prepared' &&
+      receiptBound &&
+      receipt?.imageAttachments?.length &&
+      receipt.exchangeId &&
+      !receipt.replacesExchangeId &&
+      !page.draft
+    ) {
+      if (page.busy) {
+        this.update('connecting', 'Waiting for the chat before restoring the image attachments…');
+        return;
+      }
+      const previousText = page.lastUserText;
+      if (
+        page.lastUserTruncated ||
+        (previousText && (await messageDigest(previousText)) !== receipt.priorUserHash) ||
+        (receipt.priorUserHash && !previousText) ||
+        (receipt.priorUserId && page.lastUserId !== receipt.priorUserId)
+      ) {
+        throw new PageBridgeError(
+          'PREPARED_MESSAGE_CHANGED',
+          'The chat changed while the images were being prepared. Open the original chat to continue.',
+        );
+      }
+      let prompt = this.bootstrapPrompt;
+      const bootstrap = buildExchangeMessage(prompt, receipt.exchangeId, worker);
+      if (!(await receiptMatches(bootstrap))) {
+        prompt = await this.loadReportPrompt(worker);
+        if (worker.control?.mode === 'fresh') {
+          prompt = this.bootstrapPrompt + '\n\nFRESH CONTINUATION FROM SAVED WORK\n' + prompt;
+        }
+      }
+      await this.send(prompt, page);
+      return;
+    }
     if (freshComposer && emptyBootstrapChat && page.draft) {
       const frame = unwrapMessage(page.draftText);
       if (frame && page.draftText === buildExchangeMessage(this.bootstrapPrompt, frame.exchangeId, worker)) {
@@ -2011,6 +2055,7 @@ export class BridgeRunner {
     }
     this.update('sending', preparationReason);
     const worker = this.boundWorker();
+    const images = this.imagesForSend(worker, savedPrepared, mode === 'resend');
     const frame = unwrapMessage(text);
     const goalHash = await messageDigest(worker.goal);
     const textHash = await messageDigest(text);
@@ -2030,6 +2075,9 @@ export class BridgeRunner {
     }
     if (expectsReplyTo) {
       receipt.expectsReplyTo = true;
+    }
+    if (images?.length) {
+      receipt.imageAttachments = images;
     }
     let payloadHash: string | undefined;
     if (frame) {
@@ -2068,10 +2116,66 @@ export class BridgeRunner {
       messageId,
       startedAt: this.now(),
       commitIntent: false,
+      uploadedImages: 0,
+      ...(images?.length && { imageAttachments: images }),
       ...(mode === 'adopt-bootstrap' && { adoptBootstrapDraft: true }),
     };
     this.lastSendReadiness = '';
     await this.advanceSend();
+  }
+
+  private imagesForSend(
+    worker: Worker,
+    savedPrepared: OutboundReceipt | undefined,
+    resend: boolean,
+  ): ImageAttachment[] | undefined {
+    if (savedPrepared) {
+      return savedPrepared.imageAttachments;
+    }
+    if (resend) {
+      return this.options.lastReceipt?.imageAttachments;
+    }
+    let images: ImageAttachment[] | undefined;
+    if (this.status.turns === 0) {
+      images = worker.imageAttachments;
+    }
+    if (
+      worker.activeFollowupId &&
+      this.progress?.imageFollowupId !== worker.activeFollowupId &&
+      worker.activeFollowupImages?.length
+    ) {
+      return [...(images ?? []), ...worker.activeFollowupImages];
+    }
+    return images;
+  }
+
+  private async attachImage(
+    attachment: ImageAttachment,
+    details: Pick<DomRequest, 'text' | 'messageId' | 'composerSession' | 'imageAttachments'>,
+  ): Promise<ChatView> {
+    let result = await this.requestPage('attach_image', { ...details, image: { attachment } });
+    if (result.readiness === 'image_needed') {
+      if (!this.dependencies.loadImage) {
+        throw new PageBridgeError(
+          'IMAGE_UNAVAILABLE',
+          'Open this task in the Chrome profile where you attached its images.',
+        );
+      }
+      let base64: string;
+      try {
+        base64 = await this.dependencies.loadImage(attachment);
+      } catch (error) {
+        throw new PageBridgeError(
+          'IMAGE_UNAVAILABLE',
+          'Miter could not open an attached image. Check the Chrome profile where it was added.',
+          false,
+          { cause: error },
+        );
+      }
+      this.assertCanContinue();
+      result = await this.requestPage('attach_image', { ...details, image: { attachment, base64 } });
+    }
+    return result;
   }
   /** Short, background-driven steps. A hidden page never owns our readiness
    * deadline. Retrying preparation is non-sending; commit retries require a
@@ -2095,12 +2199,15 @@ export class BridgeRunner {
       );
     }
     let prepared: ChatView | undefined;
+    const attachments = pending.imageAttachments;
+    const imageMetadata = { ...(attachments?.length && { imageAttachments: attachments }) };
     try {
       if (!pending.commitIntent) {
         prepared = await this.requestPage('prepare', {
           text: pending.text,
           messageId: pending.messageId,
           adoptBootstrapDraft: pending.adoptBootstrapDraft,
+          ...imageMetadata,
         });
         this.assertCanContinue();
         if (prepared.outcome === 'pending') {
@@ -2114,10 +2221,38 @@ export class BridgeRunner {
             true,
           );
         }
+        if (pending.composerSession !== prepared.composerSession) {
+          pending.uploadedImages = 0;
+        }
         if (prepared.composerSession === undefined) {
           delete pending.composerSession;
         } else {
           pending.composerSession = prepared.composerSession;
+        }
+        const image = attachments?.[pending.uploadedImages];
+        if (image && prepared.outcome === 'prepared') {
+          if (!pending.composerSession) {
+            throw new PageBridgeError(
+              'IMAGE_UNAVAILABLE',
+              'Reload Miter to enable images in the chat composer.',
+            );
+          }
+          const upload = await this.attachImage(image, {
+            text: pending.text,
+            messageId: pending.messageId,
+            composerSession: pending.composerSession,
+            ...imageMetadata,
+          });
+          this.assertCanContinue();
+          if (upload.outcome === 'attached') {
+            pending.uploadedImages++;
+          } else if (upload.outcome !== 'pending') {
+            throw new PageBridgeError('INVALID_PAGE_STATE', 'The chat did not confirm the image.');
+          }
+          this.sendReadiness('uploading_images');
+          if (pending.uploadedImages < (attachments?.length || 0)) {
+            return;
+          }
         }
         this.expectedRenderedUserText = prepared.renderedDraftText || '';
         if (this.options.lastReceipt) {
@@ -2165,6 +2300,10 @@ export class BridgeRunner {
         this.update('sending', sendReason);
         if (this.progress) {
           delete this.progress.approvedReply;
+          const followupId = this.boundWorker().activeFollowupId;
+          if (followupId && attachments?.length) {
+            this.progress.imageFollowupId = followupId;
+          }
         }
         this.sendCommitAttempted = true;
         this.status.turns++;
@@ -2181,6 +2320,7 @@ export class BridgeRunner {
           messageId: pending.messageId,
           composerSession: pending.composerSession,
           adoptBootstrapDraft: pending.adoptBootstrapDraft,
+          ...imageMetadata,
         });
       }
       this.assertCanContinue();
@@ -2206,6 +2346,12 @@ export class BridgeRunner {
         'COMPOSER_BUSY',
         'INSERT_REJECTED',
       ];
+      if (!pending.commitIntent && bridgeError?.code === 'IMAGE_DOCUMENT_CHANGED' && attachments?.length) {
+        delete pending.composerSession;
+        pending.uploadedImages = 0;
+        this.sendReadiness('uploading_images');
+        return;
+      }
       if (pending.commitIntent && bridgeError?.code === 'COMMIT_DOCUMENT_CHANGED') {
         await this.finishSendObservation(
           'The chat document changed. Checking for the saved message; nothing is being sent twice.',
@@ -2259,6 +2405,8 @@ export class BridgeRunner {
         'Chrome suspended the linked chat. Waiting for it to become available; the saved prompt is not being resent.';
     } else if (readiness === 'generating' || readiness === 'BUSY') {
       reason = 'Waiting for ChatGPT to finish before sending the saved prompt…';
+    } else if (readiness === 'uploading_images') {
+      reason = 'Waiting for the images to upload before sending…';
     } else if (this.pendingSend?.commitIntent) {
       reason = 'Confirming this prepared send in the same document…';
     }

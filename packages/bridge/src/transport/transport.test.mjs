@@ -360,6 +360,41 @@ test('forget releases transport bookkeeping for closed tabs', async () => {
   assert.equal(fixture.transport.documentGenerations.size, 0);
 });
 
+test('image-bearing composer operations upgrade an otherwise compatible stale reader', async () => {
+  const image = { id: '6cbada8b-171b-4ca8-847d-a7ca2f271be6', name: 'test.png', type: 'image/png', size: 3 };
+  let revision = PAGE_READER_REVISION - 1;
+  const fixture = transportFixture((message) => {
+    if (message.action.op === 'prepare') {
+      assert.equal(revision, PAGE_READER_REVISION);
+      assert.deepEqual(message.action.imageAttachments, [image]);
+      return pageView({ outcome: 'prepared' });
+    }
+    return pageView();
+  });
+  const send = fixture.api.send;
+  fixture.api.send = async (...args) => {
+    const reply = await send(...args);
+    if (args[1].kind === 'hello') {
+      reply.value.readerRevision = revision;
+    }
+    return reply;
+  };
+  fixture.api.inject = async (tabId) => {
+    fixture.injections.push(tabId);
+    revision = PAGE_READER_REVISION;
+  };
+  await fixture.transport.request(7, action);
+  const attach = {
+    ...action,
+    op: 'prepare',
+    text: 'Test',
+    messageId: 'image-intent',
+    imageAttachments: [image],
+  };
+  assert.equal((await fixture.transport.request(7, attach)).outcome, 'prepared');
+  assert.deepEqual(fixture.injections, [7]);
+});
+
 test('a forgotten pending connection cannot attach over a replacement connection', async () => {
   const fixture = transportFixture(() => pageView());
   const send = fixture.api.send;

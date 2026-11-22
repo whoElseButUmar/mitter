@@ -14,6 +14,7 @@ import { ReplyTickets } from './reply-tickets.js';
 import { errorMessage } from '../schemas/primitives.js';
 import { waitFor, chatOrigins } from './storage-reset.js';
 import { validateWorkspaceAction } from '../../../../packages/ui/src/workspace.js';
+import { readImageAttachment } from '../../../../packages/ui/src/image-attachment-store.js';
 import { DraftRewrites } from './draft-rewrites.js';
 import {
   assertFreshReplyExchange,
@@ -1238,6 +1239,15 @@ export function createTaskController(dependencies: TaskDependencies) {
         },
         log,
         publish,
+        async loadImage(attachment) {
+          const image = await readImageAttachment(attachment);
+          const bytes = new Uint8Array(await image.arrayBuffer());
+          let binary = '';
+          for (let offset = 0; offset < bytes.length; offset += 8192) {
+            binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+          }
+          return btoa(binary);
+        },
         page: (pageId, action) => {
           checkRunner();
 
@@ -1261,6 +1271,25 @@ export function createTaskController(dependencies: TaskDependencies) {
             return pageTransport.request(pageId, action, checkDraftOwner);
           }
 
+          if (action.op === 'attach_image' || action.imageAttachments?.length) {
+            return pageTransport.request(pageId, action, () => {
+              checkRunner();
+              checkStart();
+              checkAvailable();
+              const current = snapshot?.workers.find((entry) => entry.id === workerId);
+              if (
+                generation !== admissionGeneration ||
+                !matchesTaskBoundary(taskBoundary(current), expectedRun) ||
+                pageId !== tabId ||
+                links.get(workerId)?.id !== tabId
+              ) {
+                throw new PageBridgeError(
+                  'RUN_SUPERSEDED',
+                  'The task or chat changed before sending the images.',
+                );
+              }
+            });
+          }
           return pageTransport.request(pageId, action);
         },
       },

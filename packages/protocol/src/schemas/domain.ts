@@ -6,6 +6,7 @@ import { buildIdSchema, identifierSchema } from './primitives.js';
 import { settingsSchema } from './model-settings.js';
 import { readerDiagnosticSchema } from './reader-diagnostic.js';
 import { followupSummarySchema } from './requests.js';
+import { imageAttachmentsSchema } from './image-attachments.js';
 
 export const workerStateSchema = z
   .enum([
@@ -183,6 +184,7 @@ export const workerSchema = z
     projectId: z.string().describe('Owning project identifier.'),
     name: z.string().describe('User-visible task name.'),
     goal: z.string().describe('Full user task goal.'),
+    imageAttachments: imageAttachmentsSchema.optional().describe('Images selected for the initial task.'),
     checks: z.array(checkSchema).describe('Configured completion checks.'),
     mode: z.enum(['handoff', 'local']).describe('Worker execution mode.'),
     state: workerStateSchema,
@@ -221,6 +223,9 @@ export const workerSchema = z
     error: z.string().optional().describe('Current worker error, when present.'),
     observations: z.array(z.string().describe('Worker observation.')).describe('Ordered run observations.'),
     activeFollowupId: z.string().optional().describe('Currently active follow-up identifier.'),
+    activeFollowupImages: imageAttachmentsSchema
+      .optional()
+      .describe('Images for the follow-up identified by activeFollowupId.'),
     followups: z
       .array(followupSummarySchema)
       .optional()

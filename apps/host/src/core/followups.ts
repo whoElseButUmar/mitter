@@ -11,6 +11,16 @@ import { Store, parseStoredJSON } from './database.js';
 import { fileText, validateRelative } from './workspace.js';
 import { readControlOperation } from './service/schemas.js';
 
+function checkImageSupport(worker: Worker, request: FollowupRequest): void {
+  if (request.imageAttachments?.length && worker.mode !== 'handoff') {
+    throw new Error('Image attachments require a ChatGPT task.');
+  }
+}
+
+function sameImageAttachments(first: Followup, second: FollowupRequest): boolean {
+  return JSON.stringify(first.imageAttachments ?? []) === JSON.stringify(second.imageAttachments ?? []);
+}
+
 export function sameCodeSelection(
   first: CodeSelection | undefined,
   second: CodeSelection | undefined,
@@ -124,12 +134,14 @@ export class Followups {
     assertCurrentRun?: () => void,
   ): Promise<Followup> {
     const request = parseFollowup(raw);
+    checkImageSupport(worker, request);
     const previous = this.get(request.id);
 
     if (previous) {
       if (
         previous.workerId !== worker.id ||
         previous.instruction !== request.instruction ||
+        !sameImageAttachments(previous, request) ||
         !sameCodeSelection(previous.selection, request.selection)
       ) {
         throw new Error('This request ID was already used for different work.');
@@ -179,6 +191,7 @@ export class Followups {
     if (!request.instruction.trim()) {
       throw new Error('Enter a steering instruction.');
     }
+    checkImageSupport(worker, request);
 
     const previous = this.get(request.id);
     const operation = readControlOperation(
@@ -192,6 +205,7 @@ export class Followups {
       (previous.workerId !== worker.id ||
         previous.status !== 'queued' ||
         previous.instruction !== request.instruction ||
+        !sameImageAttachments(previous, request) ||
         !sameCodeSelection(previous.selection, request.selection))
     ) {
       throw new Error('This steering request ID was already used. Submit a new instruction.');

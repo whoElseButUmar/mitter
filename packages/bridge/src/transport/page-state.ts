@@ -118,7 +118,11 @@ export function readPageState(value: unknown, operation: DomRequest['op']): Chat
 
   const view = result.data;
   const composerOperation =
-    operation === 'prepare' || operation === 'commit' || operation === 'send' || operation === 'clear_draft';
+    operation === 'prepare' ||
+    operation === 'attach_image' ||
+    operation === 'commit' ||
+    operation === 'send' ||
+    operation === 'clear_draft';
 
   if (composerOperation && view.outcome === undefined) {
     throw new PageBridgeError(

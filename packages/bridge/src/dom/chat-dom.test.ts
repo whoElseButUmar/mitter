@@ -363,6 +363,38 @@ test('a retried committed send reconciles without touching the composer', async 
   );
 });
 
+test('a manual text send cannot confirm an image-bearing request', async (context) => {
+  for (const op of ['prepare', 'attach_image', 'commit'] as const) {
+    await context.test(op, async () => {
+      const session = sessionFixture();
+      session.committed.clear();
+      const prepared = session.prepared;
+      assert.ok(prepared);
+      prepared.imageAttachments = [
+        { id: '64aa3618-c2a8-4525-8a45-95263391ee9a', name: 'screenshot.png', type: 'image/png', size: 70 },
+      ];
+      const view = { ...viewFixture(), userCount: 1, lastUserText: prepared.text };
+      await assert.rejects(
+        sendComposerMessage(
+          {
+            ...request,
+            op,
+            text: prepared.text,
+            messageId: prepared.id,
+            imageAttachments: prepared.imageAttachments,
+          },
+          session,
+          async () => view,
+          () => {},
+          () => true,
+        ),
+        { code: 'IMAGE_SEND_UNCONFIRMED' },
+      );
+      assert.equal(session.committed.has(prepared.id), false);
+    });
+  }
+});
+
 test('reset retires both session versions and clears shared discovery hints', (context) => {
   class ElementFixture {}
   const previous = sessionFixture();

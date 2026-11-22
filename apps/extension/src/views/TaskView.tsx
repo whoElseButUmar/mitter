@@ -200,7 +200,8 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
             items={snapshot().workers.find((item) => item.id === id)?.followups || []}
             running={running.has(task().state) || !!bridge()?.active}
             disabled={!connected()}
-            send={(result) => sendFollowup(id, result)}
+            canAttachImages={task().mode === 'handoff'}
+            send={(result, beforeSave) => sendFollowup(id, result, beforeSave)}
             steer={async (request) => {
               const result = await rpc('bridge.steer', {
                 workerId: id,

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { BootstrapDraft } from '../bootstrap-draft.js';
 import { taskBoundarySchema, type Snapshot } from '../../../protocol/src/index.js';
+import type { ImageAttachment } from '../../../protocol/src/schemas/image-attachments.js';
 import type { DomRequest } from '../chat-dom.js';
 import { outboundReceiptSchema, type OutboundReceipt } from '../message-wire.js';
 import type { TaskProgress } from '../progress.js';
@@ -140,6 +141,7 @@ export type BridgeDependencies = {
   reconnectHost?(): Promise<Snapshot>;
   rpc(method: string, params: Record<string, unknown>): Promise<unknown>;
   page(tabId: number, request: DomRequest): Promise<unknown>;
+  loadImage?(attachment: ImageAttachment): Promise<string>;
   snapshot(): Snapshot | undefined;
   publish(status: BridgeStatus): void;
   log(kind: string, message: string): void;

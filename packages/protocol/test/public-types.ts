@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import type { ImageAttachment } from '../src/schemas/image-attachments.js';
 import type {
   Action,
   Check,
@@ -127,8 +128,12 @@ export type PublicTypeChecks = [
   Assert<Equal<RpcParams<typeof coreRpcRegistry, 'project.read'>['path'], string>>,
   Assert<Equal<Action, CurrentActions>>,
   Assert<Equal<Envelope, LegacyEnvelope>>,
-  Assert<Equal<Omit<Worker, 'hasPreviewSelection'>, LegacyWorker>>,
+  Assert<
+    Equal<Omit<Worker, 'hasPreviewSelection' | 'imageAttachments' | 'activeFollowupImages'>, LegacyWorker>
+  >,
   Assert<Equal<Worker['hasPreviewSelection'], true | undefined>>,
+  Assert<Equal<Worker['imageAttachments'], ImageAttachment[] | undefined>>,
+  Assert<Equal<Worker['activeFollowupImages'], ImageAttachment[] | undefined>>,
   Assert<Equal<Action, z.infer<typeof actionSchema>>>,
   Assert<Equal<Envelope, z.infer<typeof envelopeSchema>>>,
   Assert<Equal<Worker, z.infer<typeof workerSchema>>>,
