@@ -1,4 +1,5 @@
 .terminal-dock {
+  container-type: inline-size;
   flex: 0 0 auto;
   position: relative;
   min-height: min(60dvh, 16rem);
@@ -37,6 +38,19 @@
   flex: 0 0 auto;
   font-weight: 600;
   margin-inline-end: 2px;
+}
+
+.terminal-heading svg {
+  display: none;
+}
+
+@container (max-width: 17em) {
+  .terminal-heading svg {
+    display: block;
+  }
+  .terminal-heading span {
+    display: none;
+  }
 }
 
 .terminal-session-picker {

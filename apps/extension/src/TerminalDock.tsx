@@ -1,3 +1,4 @@
+import { Icon } from './icons';
 import { errorMessage } from './schemas/primitives';
 import { createAnimationFrames } from './ui/animation-frames';
 import { bindTerminalInput, readTerminalScreen } from './ui/terminal-session';
@@ -660,7 +661,10 @@ export function TerminalDock(props: {
       aria-label="Local terminal"
     >
       <div class="terminal-toolbar" role="group" aria-label="Terminal controls">
-        <strong>Terminal</strong>
+        <strong class="terminal-heading">
+          <Icon name="terminal" />
+          <span>Terminal</span>
+        </strong>
         <div
           class="terminal-session-picker"
           ref={(element) => {
