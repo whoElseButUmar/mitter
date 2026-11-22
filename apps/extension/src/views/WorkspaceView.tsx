@@ -275,6 +275,8 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
                       createProject={() => setModal('project-create')}
                       openProject={() => setModal('project')}
                       newTask={newWorker}
+                      runStarter={props.controller.starterRun.run}
+                      startingStarter={props.controller.starterRun.starting().has(navigation().projectId)}
                       chooseProject={chooseProject}
                       chooseTask={choose}
                       browseProjects={() => openLibrary('projects')}

@@ -141,6 +141,11 @@ export const coreRpcRegistry = Object.freeze({
   'project.context': contract(projectContextParamsSchema, projectContextSchema, true),
   'project.rename': contract(projectRenameParamsSchema, projectSchema, true),
   'project.add': contract(projectAddParamsSchema, projectSchema, true),
+  'project.starterTask': contract(
+    projectParamsSchema.strict().describe('Open the launch task belonging to this starter project.'),
+    workerSchema,
+    true,
+  ),
   'project.create': contract(projectCreateParamsSchema, projectSchema, true),
   'project.profile': contract(projectProfileParamsSchema, projectSchema, true),
   'worker.create': contract(workerCreateParamsSchema, workerSchema, true),

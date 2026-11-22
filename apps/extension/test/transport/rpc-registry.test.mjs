@@ -43,6 +43,7 @@ const forwarded = [
   'project.context',
   'project.add',
   'project.create',
+  'project.starterTask',
   'project.rename',
   'project.pickFolder',
   'project.reveal',

@@ -12,6 +12,8 @@ export function ProjectHome(props: {
   createProject: () => void;
   openProject: () => void;
   newTask: () => void;
+  runStarter: (projectId: string) => void;
+  startingStarter: boolean;
   chooseProject: (id: string) => void;
   chooseTask: (id: string) => void;
   browseProjects: () => void;
@@ -78,16 +80,31 @@ export function ProjectHome(props: {
           <>
             <h1>{project().name}</h1>
             <div class="button-row home-actions">
+              <Show when={project().starter}>
+                <button
+                  type="button"
+                  class="primary"
+                  disabled={!props.connected || props.startingStarter}
+                  onClick={() => props.runStarter(project().id)}
+                >
+                  <Show when={props.startingStarter} fallback="Run app">
+                    Starting…
+                  </Show>
+                </button>
+              </Show>
               <button
                 type="button"
-                classList={{ primary: !latestCompleted() }}
+                classList={{ primary: !latestCompleted() && !project().starter }}
                 disabled={!props.connected}
                 onClick={() => props.newTask()}
               >
                 New task
               </button>
             </div>
-            <Show when={!projectTasks().length}>
+            <Show when={project().starter && !projectTasks().length}>
+              <p class="muted small">Run app installs dependencies and opens the local preview.</p>
+            </Show>
+            <Show when={!projectTasks().length && !project().starter}>
               <p class="muted">
                 <Show when={props.connected} fallback="Reconnect to start a task in this project.">
                   Create your first task to build or change something.

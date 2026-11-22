@@ -18,6 +18,7 @@ export async function checkProjectHome(chrome, session) {
         'projects',
         'tasks',
         'empty',
+        'starter',
         'offline',
         'result',
         'result-unverified',
@@ -98,6 +99,27 @@ export async function checkProjectHome(chrome, session) {
               ['latest_result', 'older_result', 'tasks'],
             );
           }
+          continue;
+        }
+        if (mode === 'starter') {
+          assert.deepEqual(
+            await evaluate(chrome, session, 'window.mitterReleaseFixture.projectHome.actions()'),
+            [],
+          );
+          assert.equal(
+            await evaluate(
+              chrome,
+              session,
+              'document.querySelector(".home-actions .primary").textContent.trim()',
+            ),
+            'Run app',
+          );
+          await evaluate(chrome, session, 'document.querySelector(".home-actions .primary").focus()');
+          await press(chrome, session, 'Enter', 13);
+          assert.deepEqual(
+            await evaluate(chrome, session, 'window.mitterReleaseFixture.projectHome.actions()'),
+            ['run:saved_project_0'],
+          );
           continue;
         }
         if (mode === 'empty') {

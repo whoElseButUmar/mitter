@@ -17,6 +17,7 @@ export function createProjectHomeFixture(mount: (component: () => JSX.Element) =
   if (!project) {
     throw new Error('Project fixture requires its project.');
   }
+  const starterProject = projectSchema.parse({ ...project, starter: 'vite-ts-sqlite' });
   const tasks = Array.from({ length: 8 }, (_, index) =>
     workerSchema.parse({
       id: 'saved_task_' + index,
@@ -46,6 +47,7 @@ export function createProjectHomeFixture(mount: (component: () => JSX.Element) =
         'projects',
         'tasks',
         'empty',
+        'starter',
         'offline',
         'result',
         'result-unverified',
@@ -60,6 +62,10 @@ export function createProjectHomeFixture(mount: (component: () => JSX.Element) =
     let visibleTasks = tasks;
     if (mode === 'tasks' || mode === 'empty' || mode.startsWith('result')) {
       selectedProject = project;
+    }
+    if (mode === 'starter') {
+      selectedProject = starterProject;
+      visibleTasks = [];
     }
     if (mode === 'empty') {
       visibleTasks = [];
@@ -121,6 +127,8 @@ export function createProjectHomeFixture(mount: (component: () => JSX.Element) =
         createProject={() => actions.push('create')}
         openProject={() => actions.push('open')}
         newTask={() => actions.push('task')}
+        runStarter={(id) => actions.push('run:' + id)}
+        startingStarter={false}
         chooseProject={(id) => actions.push(id)}
         chooseTask={(id) => actions.push(id)}
         browseProjects={() => actions.push('projects')}

@@ -13,6 +13,7 @@ const stateSchema = z
             parentRoot: z.string().describe('The exact selected parent path.'),
             folderName: z.string().describe('The reviewed single new folder name.'),
             name: z.string().describe('The project display name sent to the host.'),
+            starter: z.literal('vite-ts-sqlite').optional().describe('The explicitly selected starter.'),
           })
           .describe('One explicit project creation request.'),
       )
@@ -47,6 +48,7 @@ async function enter(chrome, session, name, value) {
 export async function checkProjectForm(chrome, session) {
   try {
     await evaluate(chrome, session, fixture + '.mount()');
+    assert.equal(await evaluate(chrome, session, "document.querySelector('select[name=starter]').value"), '');
     await click(chrome, session, 'button[type=submit]');
     assert.equal(
       await evaluate(chrome, session, 'document.activeElement?.getAttribute("name")'),
@@ -149,7 +151,17 @@ export async function checkProjectForm(chrome, session) {
     await enter(chrome, session, 'folderName', 'Saved create draft');
     await enter(chrome, session, 'root', '/manual/create');
     await enter(chrome, session, 'name', 'Create display name');
+    await click(chrome, session, '[role=combobox]');
+    await click(chrome, session, '[role=option][data-value="vite-ts-sqlite"]');
+    assert.equal(
+      await evaluate(chrome, session, "document.querySelector('select[name=starter]').value"),
+      'vite-ts-sqlite',
+    );
     await click(chrome, session, '.project-mode-switch button[aria-pressed=false]');
+    assert.equal(
+      await evaluate(chrome, session, "document.querySelector('select[name=starter]') === null"),
+      true,
+    );
     assert.equal(await evaluate(chrome, session, 'document.querySelector("input[name=root]").value'), '');
     await enter(chrome, session, 'root', '/manual/open');
     await enter(chrome, session, 'name', 'Open display name');
@@ -174,6 +186,7 @@ export async function checkProjectForm(chrome, session) {
     );
     await click(chrome, session, '.project-mode-switch button[aria-pressed=false]');
     await click(chrome, session, 'button[type=submit]');
+    assert.equal((await state(chrome, session)).requests[0].starter, 'vite-ts-sqlite');
     await evaluate(chrome, session, fixture + '.fail()');
     await waitFor(
       chrome,

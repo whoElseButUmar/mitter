@@ -11,6 +11,8 @@ Miter is a Chrome workspace for building and editing local projects. Give it a t
 
 To install from source, use Node.js 26 or newer and run `node scripts/setup.mjs`. Setup downloads the pinned dependencies and terminal font. For updates, reload the Miter card in Chrome and reopen the workspace. If Chrome already loads Miter from a source checkout, follow the [installation and migration guide](scripts/installation/README.md) before moving it. Local installer bundles are unsigned.
 
+For a database-backed starting point, choose **Create project → Vite + TypeScript + SQLite**. The starter includes a working notes form, a Node API and a SQLite database. Choose **Run app** on the project to install its dependencies and open the app. Outside Miter, use the commands in the generated README.
+
 ## How a task runs
 
 The extension sends the task and relevant project context to the selected model. The native host checks proposed file edits against recorded reads, journals changes, and runs registered project commands with approval. Approved commands run with your user permissions. Stopping a task cannot undo their external effects. Projects and task history live in `~/.mitter` or the configured `MITTER_HOME`.

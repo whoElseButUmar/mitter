@@ -9,12 +9,15 @@ import { parseProfile } from '../commands.js';
 import type { Store } from '../database.js';
 import { canonicalRoot, overlaps } from '../workspace.js';
 import { canonicalProjectParent, existingProjectFolder } from '../project-folders.js';
+import { installStarter } from '../starters/install.js';
+import { viteSqliteStarter } from '../starters/vite-sqlite.js';
 import { hasErrorCode } from '../types.js';
 import { parseDisplayName, parseOptionalFlag } from './request-parsing.js';
 
 /** Owns registered projects; worktree views share the base project's revision. */
 export class ProjectCatalog {
   readonly projects = new Map<string, Project>();
+  private readonly creating = new Set<string>();
 
   constructor(
     private readonly store: Pick<Store, 'projects' | 'saveProject'>,
@@ -46,10 +49,19 @@ export class ProjectCatalog {
     const name = text(params.name, 'project name', 60);
     parseRpcParams(coreRpcRegistry, 'project.add', params);
     const root = await existingProjectFolder(requestedRoot);
+    this.assertAvailable(root);
     return this.register(root, name);
   }
 
-  private register(root: string, name: string): Project {
+  private assertAvailable(root: string) {
+    for (const pending of this.creating) {
+      if (overlaps(root, pending)) {
+        throw new Error('Miter is creating a project in this location. Wait for it to finish.');
+      }
+    }
+  }
+
+  private register(root: string, name: string, starter?: Project['starter']): Project {
     if (overlaps(root, this.dataDir)) {
       throw new Error('Do not register Mitter’s own data directory.');
     }
@@ -77,6 +89,7 @@ export class ProjectCatalog {
       root,
       profiles: [],
       revision: 0,
+      ...(starter && { starter }),
     };
     this.store.saveProject(project);
     this.projects.set(project.id, project);
@@ -93,6 +106,13 @@ export class ProjectCatalog {
     if (overlaps(root, this.dataDir)) {
       throw new Error('Choose a location outside Miter’s own data directory.');
     }
+    if ((await canonicalProjectParent(parent)) !== parent) {
+      throw new Error('The parent folder changed. Choose the location again before creating a project.');
+    }
+    const currentParent = await fs.stat(parent);
+    if (currentParent.dev !== before.dev || currentParent.ino !== before.ino) {
+      throw new Error('The parent folder was replaced. Choose the location again before creating a project.');
+    }
     for (const existing of this.projects.values()) {
       if (overlaps(root, existing.root)) {
         throw new Error(
@@ -105,47 +125,62 @@ export class ProjectCatalog {
     if (this.projects.size >= 50) {
       throw new Error('Miter supports at most 50 saved projects. Open one of your existing projects.');
     }
-    if ((await canonicalProjectParent(parent)) !== parent) {
-      throw new Error('The parent folder changed. Choose the location again before creating a project.');
-    }
-    const currentParent = await fs.stat(parent);
-    if (currentParent.dev !== before.dev || currentParent.ino !== before.ino) {
-      throw new Error('The parent folder was replaced. Choose the location again before creating a project.');
-    }
+    this.assertAvailable(root);
+    this.creating.add(root);
     try {
-      await fs.mkdir(root, { recursive: false });
-    } catch (error) {
-      if (hasErrorCode(error, 'EEXIST')) {
+      try {
+        await fs.mkdir(root, { recursive: false });
+      } catch (error) {
+        if (hasErrorCode(error, 'EEXIST')) {
+          throw new Error(
+            'A folder or file with that name already exists. Use Open existing for that folder, or choose another name.',
+            { cause: error },
+          );
+        }
         throw new Error(
-          'A folder or file with that name already exists. Use Open existing for that folder, or choose another name.',
+          'The new folder could not be created. Check the location and its permissions; nothing was overwritten.',
           { cause: error },
         );
       }
-      throw new Error(
-        'The new folder could not be created. Check the location and its permissions; nothing was overwritten.',
-        { cause: error },
-      );
-    }
-    try {
-      const after = await fs.stat(parent);
-      const created = await fs.lstat(root);
-      if (
-        before.dev !== after.dev ||
-        before.ino !== after.ino ||
-        created.isSymbolicLink() ||
-        !created.isDirectory() ||
-        (await canonicalRoot(root)) !== root
-      ) {
-        throw new Error('The selected location changed while the folder was being created.');
+      try {
+        const after = await fs.stat(parent);
+        const created = await fs.lstat(root, { bigint: true });
+        if (
+          before.dev !== after.dev ||
+          before.ino !== after.ino ||
+          created.isSymbolicLink() ||
+          !created.isDirectory() ||
+          (await canonicalRoot(root)) !== root
+        ) {
+          throw new Error('The selected location changed while the folder was being created.');
+        }
+        if (input.starter) {
+          await installStarter(root, created, viteSqliteStarter(input.name));
+          const canonical = await fs.realpath(root);
+          const current = await fs.lstat(root, { bigint: true });
+          if (current.dev !== created.dev || current.ino !== created.ino || canonical !== root) {
+            throw new Error('The new folder was replaced while writing the starter.');
+          }
+        }
+        return this.register(root, input.name, input.starter);
+      } catch (error) {
+        if (input.starter) {
+          throw new Error(
+            'Could not finish creating the starter in “' +
+              root +
+              '”. Check that folder for files already created. Use a new folder to try again.',
+            { cause: error },
+          );
+        }
+        throw new Error(
+          'Folder creation started at “' +
+            root +
+            '”, but project registration could not be confirmed. Check that folder and use Open existing. Miter did not remove it.',
+          { cause: error },
+        );
       }
-      return this.register(root, input.name);
-    } catch (error) {
-      throw new Error(
-        'Folder creation started at “' +
-          root +
-          '”, but project registration could not be confirmed. Check that folder and use Open existing. Miter did not remove it.',
-        { cause: error },
-      );
+    } finally {
+      this.creating.delete(root);
     }
   }
 

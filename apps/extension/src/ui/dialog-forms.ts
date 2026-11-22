@@ -116,6 +116,7 @@ export function createProjectDraft(options: ProjectDraftOptions) {
     create: { root: '', name: '', named: false },
   });
   const [folderName, writeFolderName] = createSignal('');
+  const [starter, setStarter] = createSignal<ProjectCreateParams['starter']>();
   const root = () => fields()[mode()].root;
   const name = () => fields()[mode()].name;
   let rootRevision = 0;
@@ -211,6 +212,7 @@ export function createProjectDraft(options: ProjectDraftOptions) {
           const parsed = projectCreateParamsSchema.safeParse({
             parentRoot: location,
             folderName: folderName(),
+            ...(starter() && { starter: starter() }),
             name: displayName,
           });
           if (!parsed.success) {
@@ -260,6 +262,8 @@ export function createProjectDraft(options: ProjectDraftOptions) {
     setMode,
     folderName,
     setFolderName,
+    starter,
+    setStarter,
     choose,
     save,
     close,

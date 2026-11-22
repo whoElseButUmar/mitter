@@ -500,6 +500,27 @@ export class Service {
       case 'project.add': {
         return this.catalog.add(params);
       }
+      case 'project.starterTask': {
+        const input = parseRpcParams(serviceRpcRegistry, method, params);
+        const project = this.catalog.get(input.projectId);
+        if (!project.starter) {
+          throw new Error('This project was created without a starter.');
+        }
+        const taskId = 'starter-' + project.id;
+        return (
+          this.workers.get(taskId) ??
+          this.createWorker(
+            {
+              projectId: project.id,
+              name: 'Run app',
+              goal: 'Run the Vite app',
+              mode: 'local',
+              workspaceMode: 'shared',
+            },
+            taskId,
+          )
+        );
+      }
       case 'project.create': {
         return this.catalog.create(params);
       }
@@ -1047,7 +1068,10 @@ export class Service {
     }
   }
 
-  private async createWorker(params: Record<string, unknown>): Promise<Worker> {
+  private async createWorker(
+    params: Record<string, unknown>,
+    taskId: string = randomUUID(),
+  ): Promise<Worker> {
     if (this.workers.size >= 200) {
       throw new Error('This preview supports at most 200 saved tasks. Closing a tab preserves its record.');
     }
@@ -1056,7 +1080,7 @@ export class Service {
     const creation = parseWorkerCreation(params);
     const input = parseRpcParams(serviceRpcRegistry, 'worker.create', params);
     const worker: Worker = {
-      id: randomUUID(),
+      id: taskId,
       projectId: project.id,
       ...creation,
       state: 'idle',
@@ -1082,8 +1106,8 @@ export class Service {
       throw new Error('Choose shared workspace or worktree.');
     }
 
+    this.store.saveWorker(worker);
     const task = this.register(worker);
-    task.save();
     task.event('created', 'Worker created. Nothing runs until you press Run.');
 
     return worker;

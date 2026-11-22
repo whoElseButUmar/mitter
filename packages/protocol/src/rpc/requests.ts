@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { checkSchema, teamMessageActionSchema } from '../schemas/actions.js';
-import { profileSchema, taskBoundarySchema } from '../schemas/domain.js';
+import { profileSchema, projectSchema, taskBoundarySchema } from '../schemas/domain.js';
 import { settingsSchema } from '../schemas/model-settings.js';
 import { followupRequestSchema } from '../schemas/requests.js';
 import { identifierSchema, integerSchema, textSchema } from '../schemas/primitives.js';
@@ -210,11 +210,10 @@ export const projectCreateParamsSchema = z
       'The existing absolute parent directory chosen by the user.',
     ),
     folderName: projectFolderNameSchema,
+    starter: projectSchema.shape.starter,
     name: projectAddParamsSchema.shape.name,
   })
-  .describe(
-    'Explicit creation of one empty project folder; no recursive path creation or overwrite is allowed.',
-  );
+  .describe('Create one new folder, optionally with a bundled starter. Existing files are never replaced.');
 
 export type ProjectCreateParams = z.infer<typeof projectCreateParamsSchema>;
 

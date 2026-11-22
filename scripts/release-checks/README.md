@@ -17,3 +17,5 @@ The Chrome check defaults to `/Applications/Google Chrome.app/Contents/MacOS/Goo
 Chrome preparation and execution have a two-minute limit. The fresh-install check defaults to eight minutes; use `pnpm verify:fresh-install --timeout-ms=300000` to change it. Owned processes, profiles, checkouts, and state are removed on completion or failure. Chrome logs remain in `.cache/release-checks/chrome.log`; the fresh-install command prints its retained log path.
 
 These checks do not verify an authenticated ChatGPT conversation, OS permission prompts, Windows behavior, or GGUF generation. Test those in the target environment; local generation needs the optional runtime and a configured model file.
+
+On macOS, run the full starter trial with `MITER_TEST_STARTER_RELEASE=1 node --import ./packages/bridge/src/runner/test-source-loader.mjs --test apps/host/src/core/service/starter-release.test.mjs`. It creates a temporary project through Miter, checks the production build on desktop and mobile, then saves a note through the managed app and checks it again after Restart in a fresh browser.

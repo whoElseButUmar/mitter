@@ -46,6 +46,8 @@ function renderProjectResults(tasks, connected = true) {
       createProject() {},
       openProject() {},
       newTask() {},
+      runStarter() {},
+      startingStarter: false,
       chooseProject() {},
       chooseTask() {},
       browseProjects() {},

@@ -24,6 +24,7 @@ export const forwardedRpcRegistry = Object.freeze({
   'project.context': coreRpcRegistry['project.context'],
   'project.add': coreRpcRegistry['project.add'],
   'project.create': coreRpcRegistry['project.create'],
+  'project.starterTask': coreRpcRegistry['project.starterTask'],
   'project.rename': coreRpcRegistry['project.rename'],
   'project.pickFolder': coreRpcRegistry['project.pickFolder'],
   'project.reveal': coreRpcRegistry['project.reveal'],

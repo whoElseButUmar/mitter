@@ -224,6 +224,7 @@ const fixtures = {
   ],
   'project.rename': [{ ...projectRequest, name: 'Renamed' }, project],
   'project.add': [{ root: project.root, name: project.name }, project],
+  'project.starterTask': [projectRequest, worker],
   'project.create': [{ parentRoot: '/projects', folderName: 'New project', name: project.name }, project],
   'project.profile': [{ ...projectRequest, profile }, project],
   'worker.create': [{ ...projectRequest, mode: 'handoff', goal: worker.goal }, worker],

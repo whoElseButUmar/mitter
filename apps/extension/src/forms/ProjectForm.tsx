@@ -1,6 +1,7 @@
 import { Show } from 'solid-js';
 import { createProjectDraft, type ProjectDraftOptions } from '../ui/dialog-forms';
 import { syncInputValidity } from '../ui/dom';
+import { SelectSurface } from '../controls';
 import { Field, Modal } from '../components';
 import { Icon } from '../icons';
 import { projectFolderNameSchema } from '../../../../packages/protocol/src/rpc';
@@ -119,6 +120,25 @@ export function ProjectForm(props: ProjectDraftOptions) {
               autocomplete="off"
             />
           </Field>
+          <SelectSurface>
+            <Field label="Starter">
+              <select
+                name="starter"
+                value={draft.starter() ?? ''}
+                disabled={busy()}
+                onChange={(event) => {
+                  if (event.currentTarget.value === 'vite-ts-sqlite') {
+                    draft.setStarter('vite-ts-sqlite');
+                  } else {
+                    draft.setStarter(undefined);
+                  }
+                }}
+              >
+                <option value="">Blank project</option>
+                <option value="vite-ts-sqlite">Vite + TypeScript + SQLite</option>
+              </select>
+            </Field>
+          </SelectSurface>
         </Show>
         <button
           ref={picker}

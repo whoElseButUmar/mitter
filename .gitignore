@@ -9,6 +9,7 @@ dist/
 
 apps/extension/public/mitter-page.js
 apps/extension/public/preview-sandbox.js
+apps/extension/test/ui/.bundled-*/
 
 # Regenerated dependency and build files
 pnpm-lock.yaml

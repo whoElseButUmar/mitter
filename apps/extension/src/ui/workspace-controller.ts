@@ -29,6 +29,7 @@ import { workspaceStateSchema, notificationPreferencesSchema } from '../schemas/
 import type { AuxiliaryMessage, NotificationPreferences } from '../schemas/messages';
 import { errorMessage } from '../schemas/primitives';
 import { createTaskSound } from './task-sound';
+import { createStarterRun } from './starter-run';
 import { createWorkspaceTabs } from './workspace-tabs';
 import { TaskOutput } from './task-output';
 import { performDraftRewrite } from './rewrite-draft';
@@ -524,6 +525,16 @@ export function createWorkspaceController() {
     newWorker,
     setView: output.setView,
     setTextValue,
+  });
+  const starterRun = createStarterRun({
+    rpc,
+    projectId: () => navigation().projectId,
+    openTask: async (id) => {
+      const next = await tabs.navigate({ type: 'open', kind: 'task', id });
+      return !!next && selected() === id;
+    },
+    showTerminal: showAppTerminal,
+    failed: setNotice,
   });
 
   const rewriteDraft = (request: RewriteRequest, signal: AbortSignal) =>
@@ -1084,6 +1095,7 @@ export function createWorkspaceController() {
     terminalMounted,
     runFocus,
     showAppTerminal,
+    starterRun,
     setupFocus,
     showSetupTerminal,
     reviewingSetup,

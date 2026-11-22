@@ -44,6 +44,10 @@ export const projectSchema = z
     id: z.string().describe('Project identifier.'),
     name: z.string().describe('Project display name.'),
     root: z.string().describe('Host-owned absolute project root.'),
+    starter: z
+      .literal('vite-ts-sqlite')
+      .optional()
+      .describe('The bundled starter used when creating this project.'),
     profiles: z.array(profileSchema).describe('Configured command profiles.'),
     revision: z.int().nonnegative().describe('Nonnegative whole-number project configuration revision.'),
     mission: z.string().optional().describe('Optional project mission.'),

@@ -84,6 +84,8 @@ export function TaskNavigationFixture(props: { mode: 'project' | 'setup' }) {
           createProject={() => controller.setModal('project-create')}
           openProject={() => controller.setModal('project')}
           newTask={controller.newWorker}
+          startingStarter={false}
+          runStarter={controller.starterRun.run}
           chooseProject={controller.tabs.chooseProject}
           chooseTask={controller.tabs.choose}
           browseProjects={() => controller.tabs.openLibrary('projects')}
