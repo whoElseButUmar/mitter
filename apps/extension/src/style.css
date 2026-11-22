@@ -1169,11 +1169,77 @@ select {
   transform: rotate(90deg);
 }
 
-.task-details p {
-  margin-top: 10px;
-  max-height: 200px;
-  overflow: auto;
-  padding-right: 8px;
+.task-markdown {
+  max-width: 72ch;
+  margin-block: var(--space-sm) var(--space-md);
+  color: var(--muted);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.task-markdown p {
+  white-space: normal;
+}
+
+.task-markdown > :first-child {
+  margin-top: 0;
+}
+
+.task-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.task-markdown :is(h1, h2, h3, h4, h5, h6) {
+  margin-block: var(--space-lg) var(--space-xs);
+  font-size: 1em;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.task-markdown strong {
+  color: var(--text);
+}
+
+.task-markdown :is(ul, ol) {
+  margin-block: var(--space-xs) var(--space-sm);
+  padding-inline-start: 1.5em;
+}
+
+.task-markdown blockquote {
+  margin-inline: 0;
+  padding-inline-start: var(--space-md);
+  border-inline-start: 2px solid var(--line);
+}
+
+.task-markdown a {
+  color: var(--accent);
+}
+
+.task-markdown code {
+  background: var(--panel);
+  border-radius: 3px;
+  padding: 0.12em 0.3em;
+}
+
+.task-markdown pre {
+  white-space: pre-wrap;
+}
+
+.task-markdown pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.task-markdown table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+.task-markdown :is(th, td) {
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--line);
+  text-align: start;
 }
 
 .start-intro {

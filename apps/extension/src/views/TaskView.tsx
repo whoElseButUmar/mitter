@@ -1,5 +1,6 @@
 import { runningStates as running } from '../ui/task-view';
 import { SelectedPreviewElement } from '../components/SelectedPreviewElement';
+import { TaskMarkdown } from '../components/TaskMarkdown';
 import { TaskEditor } from './TaskEditor';
 import { TaskDiagnostics } from './TaskDiagnostics';
 import { taskStatus } from '../ui/task-status';
@@ -9,13 +10,15 @@ import type { Worker } from '../../../../packages/protocol/src/index';
 import { approvalDescription } from '../ui/task-view';
 import { FollowupPanel } from '../Followups';
 import { ContextArea } from '../ContextArea';
-import { Show } from 'solid-js';
+import { createResource, Show } from 'solid-js';
 import { createApprovalTrust } from '../ui/approval-trust';
 
 import { displayTaskName } from '../../../../packages/protocol/src/task-brief';
 import { TaskAppRunButton } from '../components/TaskAppRunButton';
 import { Icon } from '../icons';
 import { SetupCommandReview, setupReviewKey } from '../components/SetupCommandReview';
+import { savedChatResultSchema } from '../schemas/local-results';
+import { callResult } from '../ui/rpc';
 
 export function TaskView(props: { controller: WorkspaceController; task: Worker }) {
   const {
@@ -39,6 +42,20 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
 
   const task = () => props.task;
   const progress = () => taskStatus(task(), bridge());
+  const [savedChat] = createResource(
+    () => connected() && task().state === 'complete' && task().mode === 'handoff' && task().id,
+    async (workerId) => {
+      try {
+        const result = await callResult(rpc, savedChatResultSchema, 'bridge.hasSavedChat', { workerId });
+        if (result.saved) {
+          return workerId;
+        }
+      } catch {
+        // This optional action returns after the next connection or task change.
+      }
+      return undefined;
+    },
+  );
 
   return (
     <div class="task-layout">
@@ -91,6 +108,16 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
                     Opening…
                   </Show>
                 </button>
+                <Show when={task().mode === 'handoff' && savedChat() === task().id}>
+                  <button
+                    type="button"
+                    disabled={!connected() || busy()}
+                    onClick={() => void action('bridge.openChat', { workerId: task().id })}
+                  >
+                    <Icon name="external" />
+                    Open chat
+                  </button>
+                </Show>
               </div>
             </Show>
           </div>
@@ -99,7 +126,7 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
               <Icon name="right" />
               Task details
             </summary>
-            <p>{task().goal.replace(/^(Worker name|The goal):\s*/i, '')}</p>
+            <TaskMarkdown source={task().goal.replace(/^(Worker name|The goal):\s*/i, '')} />
             <Show when={task().worktree}>
               <small class="muted">Isolated worktree · {task().worktree?.branch}</small>
             </Show>
@@ -121,7 +148,7 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
               {(summary) => (
                 <>
                   <strong>Model summary</strong>
-                  <p>{summary()}</p>
+                  <TaskMarkdown source={summary()} />
                 </>
               )}
             </Show>

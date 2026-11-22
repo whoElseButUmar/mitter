@@ -62,7 +62,7 @@ export function TaskDiagnostics(props: {
               </Show>
             </p>
             <div class="bridge-note">
-              <Show when={!recoveryVisible()}>
+              <Show when={!recoveryVisible() && props.task.state !== 'complete'}>
                 <button disabled={!connected() || busy()} onClick={() => void action('bridge.openChat')}>
                   Open chat
                 </button>

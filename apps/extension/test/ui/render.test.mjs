@@ -5,6 +5,7 @@ import {
   renderRunner,
   renderAttention,
   renderTaskState,
+  renderCompletedChat,
   renderAppearance,
   renderDialogs,
   renderOwnedForms,
@@ -14,6 +15,30 @@ import {
 import { projectSchema } from '../../../../packages/protocol/src/index.ts';
 import { renderToString } from 'solid-js/web';
 import { ProjectHome } from '../../src/views/ProjectHome.tsx';
+import { TaskMarkdown } from '../../src/components/TaskMarkdown.tsx';
+
+test('task Markdown formats headings, lists, emphasis, code, and safe links', () => {
+  const source =
+    'Build **table tennis**.\n\n### Tech Stack\n\n- React\n- `Vite`\n\n[Docs](https://example.com)';
+  const html = renderToString(() => TaskMarkdown({ source }));
+  assert.match(html, /<strong>table tennis<\/strong>/);
+  assert.match(html, /<h3>Tech Stack<\/h3>/);
+  assert.match(html, /<ul>\s*<li>React<\/li>\s*<li><code>Vite<\/code><\/li>/);
+  assert.match(html, /<a href="https:\/\/example\.com" target="_blank" rel="noopener noreferrer">Docs<\/a>/);
+});
+
+test('task Markdown keeps pasted HTML inert and prevents remote embeds and active links', () => {
+  const source = [
+    '<img src="https://example.com/image.png" onerror="alert(1)">',
+    '![a screenshot](https://example.com/screenshot.png)',
+    '[Open](javascript:alert%281%29)',
+    '[Read local](file:///example.txt)',
+  ].join('\n\n');
+  const html = renderToString(() => TaskMarkdown({ source }));
+  assert.match(html, /&lt;img/);
+  assert.match(html, /a screenshot/);
+  assert.doesNotMatch(html, /<img|<a\s|screenshot\.png/);
+});
 
 function buttons(html) {
   return [...html.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)].map((match) => ({
@@ -24,6 +49,15 @@ function buttons(html) {
       .trim(),
   }));
 }
+
+test('completed task actions keep Open chat beside Run and Open files when a saved chat exists', async () => {
+  const linked = buttons(await renderCompletedChat(true)).map((button) => button.label);
+  assert.ok(linked.includes('Run'));
+  assert.ok(linked.includes('Open files'));
+  assert.equal(linked.filter((label) => label === 'Open chat').length, 1);
+  const unlinked = buttons(await renderCompletedChat(false)).map((button) => button.label);
+  assert.ok(!unlinked.includes('Open chat'));
+});
 
 function labels(task, state) {
   return buttons(renderRunner(task, state)).map((button) => button.label);

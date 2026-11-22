@@ -107,6 +107,7 @@ const local = [
   'bridge.replyApply',
   'bridge.list',
   'bridge.lastChat',
+  'bridge.hasSavedChat',
   'bridge.tabs',
   'bridge.newChat',
   'bridge.openChat',

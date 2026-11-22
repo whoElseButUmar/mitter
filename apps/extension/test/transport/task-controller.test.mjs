@@ -490,6 +490,28 @@ function mutationParams(method) {
   return {};
 }
 
+test('a completed task keeps its saved chat available after the original tab closes', async (context) => {
+  const state = setup(context);
+  state.worker(worker({ state: 'complete' }));
+  const link = {
+    id: 7,
+    providerId: 'chatgpt',
+    projectId: 'project',
+    url: 'https://chatgpt.com/c/conversation',
+    title: 'Task chat',
+    newChat: false,
+  };
+  state.stored[LINK_STORAGE_KEY] = { version: 3, links: { worker: link } };
+  state.tasks.update(state.current);
+  assert.deepEqual(await state.tasks.request('bridge.hasSavedChat', { workerId: 'worker' }), { saved: true });
+  assert.deepEqual(await state.tasks.request('bridge.hasSavedChat', { workerId: 'missing' }), {
+    saved: false,
+  });
+  assert.deepEqual(state.creations, [], 'Looking up the saved chat never opens a tab.');
+  assert.deepEqual(await state.tasks.request('bridge.openChat', { workerId: 'worker' }), { opened: true });
+  assert.deepEqual(state.creations, [{ url: link.url, active: true }]);
+});
+
 function linkedReply(state, replyTo) {
   const link = { id: 7, url: 'https://chatgpt.com/c/conversation', title: 'Task chat', newChat: false };
   state.stored[LEGACY_LINK_STORAGE_KEY] = { version: 2, links: { worker: link } };

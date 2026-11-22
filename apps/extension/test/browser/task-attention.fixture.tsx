@@ -29,6 +29,7 @@ export type TaskViewScenario =
 type AttentionFixtureProps = {
   reason: string;
   receiving: boolean;
+  savedChat?: boolean | undefined;
   consoleOpen: boolean;
   workerError: string;
   completion?: CompletionRecord | undefined;
@@ -210,6 +211,9 @@ export function TaskAttentionFixture(props: AttentionFixtureProps) {
         }
         if (method === 'debug.read') {
           return [];
+        }
+        if (method === 'bridge.hasSavedChat' && params.workerId === task.id) {
+          return { saved: props.savedChat ?? false };
         }
         if (method === 'worker.asset' && props.scenario === 'unverified-app') {
           return {

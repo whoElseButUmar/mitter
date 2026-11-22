@@ -21,6 +21,10 @@ The production build downloads `FiraCodeNerdFontMono-Regular.ttf` from Nerd Font
 
 Imported fonts keep their own licenses. Fonts are not installed into the operating system.
 
+## Markdown
+
+Miter renders task Markdown with [markdown-it](https://github.com/markdown-it/markdown-it) 15.0.3 (MIT). The extension includes its license and the notices for its bundled browser dependencies at `licenses/markdown-it.txt`.
+
 ## Framework previews
 
 Miter ships pnpm 12.11.2 and the matching macOS executable for installing project dependencies. The installer retains pnpm's MIT license and third-party notices. [pnpm](https://github.com/pnpm/pnpm)

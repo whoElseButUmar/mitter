@@ -55,6 +55,10 @@ export const resumeResultSchema = z
     status: bridgeStatusSchema.optional().describe('The resumed chat session status, when available.'),
   })
   .describe('The result of reconnecting a task to its original chat without replay.');
+
+export const savedChatResultSchema = z
+  .strictObject({ saved: z.boolean().describe('Whether this task has a saved conversation address.') })
+  .describe('Availability of a task’s saved conversation without opening a tab.');
 export type ResumeResult = z.infer<typeof resumeResultSchema>;
 
 export const continuePendingResultSchema = z
@@ -178,6 +182,7 @@ export const localRpcRegistry = Object.freeze({
     mutation: false,
   },
   'bridge.lastChat': { params: workerParametersSchema, result: chatLinkSchema.nullable(), mutation: false },
+  'bridge.hasSavedChat': { params: workerParametersSchema, result: savedChatResultSchema, mutation: false },
   'bridge.tabs': {
     params: emptyRpcParamsSchema,
     result: z

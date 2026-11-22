@@ -2531,6 +2531,20 @@ export function createTaskController(dependencies: TaskDependencies) {
         return (
           (await chats.saved(workerParametersSchema.parse(params).workerId, false, checkAvailable)) || null
         );
+      case 'bridge.hasSavedChat': {
+        const { workerId } = workerParametersSchema.parse(params);
+        await links.ready;
+        checkAvailable();
+        const worker = snapshot?.workers.find((entry) => entry.id === workerId);
+        const link = links.get(workerId);
+        return {
+          saved: Boolean(
+            worker?.mode === 'handoff' &&
+            link?.url.includes('/c/') &&
+            (!link.projectId || link.projectId === worker.projectId),
+          ),
+        };
+      }
       case 'bridge.resume':
         return resumeChat(bridgeResumeSchema.parse(params).workerId, admission, undefined, params);
 

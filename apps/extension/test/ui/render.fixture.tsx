@@ -1,4 +1,5 @@
-import { renderToString } from 'solid-js/web';
+import { Suspense } from 'solid-js';
+import { renderToString, renderToStringAsync } from 'solid-js/web';
 import type { CompletionRecord, Worker } from '../../../../packages/protocol/src/index';
 import type { BridgeStatus } from '../../../../packages/bridge/src/runner/types';
 import { TaskRunnerControls } from '../../src/views/TaskRunnerControls';
@@ -68,6 +69,22 @@ export function renderTaskState(scenario: TaskViewScenario, lowerBound = false) 
       lowerBound={lowerBound}
       onAction={() => {}}
     />
+  ));
+}
+
+export function renderCompletedChat(savedChat: boolean) {
+  return renderToStringAsync(() => (
+    <Suspense>
+      <TaskAttentionFixture
+        reason=""
+        receiving={false}
+        consoleOpen={false}
+        workerError=""
+        scenario="ready"
+        savedChat={savedChat}
+        onAction={() => {}}
+      />
+    </Suspense>
   ));
 }
 
