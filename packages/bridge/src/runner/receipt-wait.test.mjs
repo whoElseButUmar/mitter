@@ -343,6 +343,72 @@ test('a later known user remains an intervention barrier after generation ends',
   await harness.runner.settled();
 });
 
+test('a reformatted sent report waits for exact source recovery instead of rejecting a slow reply', async () => {
+  const harness = createHarness();
+  const page = harness.dependencies.page;
+  harness.dependencies.page = async (tabId, request) => {
+    const view = await page(tabId, request);
+    if (request.op === 'prepare') {
+      return { ...view, draftText: request.text };
+    }
+    return view;
+  };
+  await harness.runner.start();
+  const prior = harness.showReply();
+  await harness.runner.tick();
+  harness.advance(1800);
+  await harness.runner.tick();
+  assert.equal(harness.imports.length, 1);
+  harness.worker.state = 'review';
+  await harness.runner.tick();
+  assert.equal(harness.commits.length, 2);
+
+  const sent = harness.commits[1].text;
+  assert.ok(harness.progress().lastReceipt.composerHash);
+  const reformatted = sent.replace('CURRENT REPLY CONTRACT', 'CURRENT  REPLY CONTRACT');
+  assert.notEqual(reformatted, sent);
+  harness.setView({
+    lastUserText: reformatted,
+    lastUserId: 'report_user',
+    userIds: ['sent_user', 'report_user'],
+    lastRole: 'assistant',
+    busy: true,
+    complete: false,
+    codeReplyIssue: 'NEWER_USER_MESSAGE',
+    codeReplyCount: 0,
+    codeReplyIds: [prior.id],
+    transcript: mixedTranscript({
+      state: 'ready',
+      unknownTurns: 0,
+      unclassifiedTail: false,
+      receiptDiscovery: {
+        state: 'mismatch',
+        candidates: 1,
+        matches: 0,
+        tailBranches: 0,
+        responseControls: 0,
+      },
+    }),
+  });
+  await harness.runner.tick();
+  harness.advance(45_000);
+  await harness.runner.tick();
+  assert.equal(harness.runner.status.phase, 'waiting_reply');
+  assert.equal(harness.commits.length, 2);
+  assert.equal(harness.imports.length, 1);
+
+  const reply = harness.showReply({ id: 'after_report' });
+  harness.setView({ lastUserText: sent, busy: false, transcript: undefined, codeReplyIssue: undefined });
+  await harness.runner.tick();
+  harness.advance(1800);
+  await harness.runner.tick();
+  assert.equal(harness.imports.length, 2);
+  assert.deepEqual(JSON.parse(harness.imports[1].text), reply);
+  assert.equal(harness.commits.length, 2);
+  await harness.runner.stop();
+  await harness.runner.settled();
+});
+
 test('a rejected or failed inspection restarts completion stability without renewing the send', async (context) => {
   for (const interruption of ['unknown transcript branch', 'failed page read']) {
     await context.test(interruption, async () => {

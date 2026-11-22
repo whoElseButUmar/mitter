@@ -19,7 +19,7 @@ import { identifierSchema, nonNegativeIntegerSchema } from '../schemas/primitive
 
 export const USER_READER_VERSION = 'user-turn/8';
 // Increment when packaged DOM behavior changes without changing the compatible reader protocol.
-export const PAGE_READER_REVISION = 11;
+export const PAGE_READER_REVISION = 12;
 // Build verification checks this exact marker in the packaged page script.
 export const ASSISTANT_READER_VERSION = 'logical-pre/5-user-turn/8-discovery/8-code-reply/6-send/4-control/2';
 

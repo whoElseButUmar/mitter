@@ -163,6 +163,8 @@ test(
       'serialized-unmarked-link',
       'serialized-extra-node',
       'serialized-source-exact',
+      'serialized-source-cancel-collapses',
+      'serialized-source-cancel-collapses-edited',
       'serialized-source-edited',
       'serialized-source-typing',
       'serialized-source-replaced-user',
@@ -656,6 +658,21 @@ test(
                   cancel.onclick = () => {
                     globalThis.sourceClicks.push('cancel');
                     scope.replaceChildren(...original);
+                    if (scenario.startsWith('serialized-source-cancel-collapses')) {
+                      const restored = scope.querySelector('[data-user-message-bubble="true"]');
+                      const full = [...restored.childNodes];
+                      const expand = document.createElement('button');
+                      expand.type = 'button';
+                      expand.textContent = 'Show more';
+                      expand.onclick = () => {
+                        globalThis.sourceClicks.push('expand');
+                        restored.replaceChildren(...full);
+                        if (scenario.endsWith('-edited')) {
+                          restored.querySelector('p').append(' Changed after the editor closed.');
+                        }
+                      };
+                      restored.replaceChildren('Collapsed message', expand);
+                    }
                     if (scenario === 'serialized-source-replaced-user') {
                       scope.parentElement.setAttribute('data-chatgpt-search-message-ids', assistantId);
                     } else if (scenario === 'serialized-source-replaced-reply') {
@@ -724,13 +741,19 @@ test(
           );
           if (scenario.startsWith('serialized-source-')) {
             const verified =
-              scenario === 'serialized-source-exact' || scenario === 'serialized-source-invalidated';
+              scenario === 'serialized-source-exact' ||
+              scenario === 'serialized-source-cancel-collapses' ||
+              scenario === 'serialized-source-invalidated';
             assert.equal(await matchesReceipt(result.view.lastUserText, receipt), verified);
             if (scenario === 'serialized-source-typing') {
               assert.deepEqual(result.sourceClicks, ['edit']);
               assert.equal(result.editorText, 'My edit');
             } else {
-              assert.deepEqual(result.sourceClicks, ['edit', 'cancel']);
+              const expected = ['edit', 'cancel'];
+              if (scenario.startsWith('serialized-source-cancel-collapses')) {
+                expected.push('expand');
+              }
+              assert.deepEqual(result.sourceClicks, expected);
               assert.equal(result.editorText, undefined);
             }
             if (scenario === 'serialized-source-invalidated') {

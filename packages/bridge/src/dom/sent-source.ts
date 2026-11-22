@@ -6,7 +6,7 @@ import { forgetSentSource, rememberSentSource } from './session-state.js';
 import { contentHidden, generationActive, htmlElements } from './page-elements.js';
 import { discoverMessages, messageIdentity, messageRole } from './transcript-discovery.js';
 import type { ChatView, DomRequest } from './types.js';
-import { editableText, readUserMessageVariants } from './user-reader.js';
+import { editableText, messageDisclosure, readUserMessageVariants } from './user-reader.js';
 
 const turnSelector = '[data-chatgpt-search-unit-key$=":user"][data-chatgpt-search-message-ids]';
 const bubbleSelector = '[data-user-message-bubble="true"]';
@@ -186,16 +186,42 @@ export async function recoverSentSource(
     scope.removeEventListener('beforeinput', onInput, true);
     scope.removeEventListener('input', onInput, true);
   }
-  const restored = await waitForElement(
+  let restored = await waitForElement(
     scope,
     () => (!scope.querySelector('form') && uniqueVisible(scope, bubbleSelector)) || undefined,
   );
-  if (
-    !restored ||
-    source.length > 160000 ||
-    unwrapMessage(source)?.exchangeId !== exchange ||
-    readUserMessageVariants(restored).texts[0] !== view.lastUserText
-  ) {
+  if (!restored || source.length > 160000 || unwrapMessage(source)?.exchangeId !== exchange) {
+    return false;
+  }
+
+  // ChatGPT can remount a long message in its collapsed state after Cancel.
+  // Compare the same visible text again before trusting the saved fingerprint.
+  const disclosure = messageDisclosure(restored);
+  if (disclosure.collapsed) {
+    const [expand] = disclosure.controls;
+    if (
+      disclosure.controls.length !== 1 ||
+      !expand ||
+      !scope.contains(expand) ||
+      lastBoundTurn(id, view.assistantId, exchange) !== scope ||
+      findComposer() !== field ||
+      composerText(field) !== '' ||
+      generationActive()
+    ) {
+      return false;
+    }
+    checkSession();
+    expand.click();
+    restored = await waitForElement(scope, () => {
+      const expanded = uniqueVisible(scope, bubbleSelector);
+      if (expanded && !messageDisclosure(expanded).collapsed) {
+        return expanded;
+      }
+      return undefined;
+    });
+  }
+  checkSession();
+  if (!restored || readUserMessageVariants(restored).texts[0] !== view.lastUserText) {
     return false;
   }
   const observer = new MutationObserver(() => {

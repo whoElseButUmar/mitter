@@ -2808,7 +2808,7 @@ export class BridgeRunner {
         !page.lastUserTruncated &&
         !!page.lastUserText &&
         (await this.matchesSavedReceipt(page.lastUserText));
-      if (ownLatestReport) {
+      if (ownLatestReport || (onlyPriorReplies && this.waitingForSentSource(page))) {
         return false;
       }
       throw new PageBridgeError(
@@ -2989,6 +2989,28 @@ export class BridgeRunner {
     return (
       (!!page.lastUserId && this.priorUserIds.has(page.lastUserId)) ||
       (!!page.lastUserText && normalizeMessage(page.lastUserText) === normalizeMessage(this.previousUserText))
+    );
+  }
+
+  private waitingForSentSource(page: ChatView): boolean {
+    const receipt = this.options.lastReceipt;
+    const exchange = receipt?.exchangeId;
+    if (
+      !receipt?.composerHash ||
+      !receipt.expectsReplyTo ||
+      !exchange ||
+      page.lastUserTruncated ||
+      (receipt.acknowledgedUserId && receipt.acknowledgedUserId !== page.lastUserId) ||
+      page.transcript?.unclassifiedTail ||
+      page.transcript?.receiptDiscovery?.state !== 'mismatch' ||
+      (!page.busy && page.complete && page.codeReply?.replyTo === exchange)
+    ) {
+      return false;
+    }
+    // The wrapper is only a reason to keep waiting. Recovery still requires
+    // the full saved composer hash and the corresponding completed reply.
+    return [page.lastUserText, ...(page.lastUserCandidates ?? [])].some(
+      (text) => unwrapMessage(text)?.exchangeId === exchange,
     );
   }
 
@@ -3197,6 +3219,18 @@ export class BridgeRunner {
           'The send could not be confirmed in the page. No send was repeated. Resume rechecks the existing conversation.',
         );
       }
+      return false;
+    }
+    if (this.waitingForSentSource(page)) {
+      this.conflictingUserObservation = undefined;
+      this.userVisibilitySince ??= this.now();
+      if (!page.busy && idleElapsed(this.userVisibilitySince) > 120000) {
+        throw new PageBridgeError(
+          'SAVED_SEND_MISMATCH',
+          'Miter could not verify ChatGPT’s displayed copy of the sent message. Resume to recheck the same chat.',
+        );
+      }
+      this.update('waiting_reply', 'Waiting for ChatGPT to finish so Miter can verify the sent message.');
       return false;
     }
     // A partially hydrated bubble must be observed unchanged twice before it is
