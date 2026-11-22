@@ -22,7 +22,7 @@ export type NativeRPC = {
 type NativeHostDependencies = {
   allow(method: string): boolean;
   snapshot(snapshot: HostSnapshot): void;
-  resetRequired(error: string): void;
+  resetRequired(error: string, version?: string, buildId?: string): void;
   disconnected(error: string): void;
   log(kind: string, message: string): void;
 };
@@ -78,7 +78,11 @@ export class NativeHost {
         } else if (message.event === 'snapshot') {
           this.dependencies.snapshot(message.data);
         } else {
-          this.dependencies.resetRequired(message.error || 'Data reset incomplete.');
+          this.dependencies.resetRequired(
+            message.error || 'Data reset incomplete.',
+            message.version,
+            message.buildId,
+          );
         }
       } catch (error) {
         const detail = 'Invalid native host message: ' + errorMessage(error);

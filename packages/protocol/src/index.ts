@@ -8,6 +8,8 @@ export {
   EXTENSION_ORIGIN,
   NATIVE_HOST_NAME,
 } from './constants.js';
+export { BUILD_ID, matchesBuild, describeBuild } from './build-id.js';
+export { buildIdSchema } from './schemas/primitives.js';
 export { object, text, integer, only, id } from './helpers.js';
 export { parseAction, parseCheck, parseChecks } from './parsing/actions.js';
 export { formatSetupCommand } from './setup-command.js';

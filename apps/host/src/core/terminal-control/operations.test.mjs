@@ -6,7 +6,7 @@ import test from 'node:test';
 import { fixture, makeProgress } from '../service/test-fixture.mjs';
 import { printStatus } from '../../cli/output.ts';
 import { TerminalOperations } from './operations.ts';
-import { APP_VERSION } from '../../../../../packages/protocol/src/index.ts';
+import { APP_VERSION, BUILD_ID } from '../../../../../packages/protocol/src/index.ts';
 
 function request(method, params) {
   return { version: 1, id: randomUUID(), token: 'a'.repeat(64), method, params };
@@ -45,12 +45,31 @@ test('an absent or outdated browser prevents project and task effects', async (c
   assert.deepEqual(list.browserVersionMismatch, {
     extensionVersion: 'old-version',
     hostVersion: APP_VERSION,
+    hostBuildId: BUILD_ID,
   });
   const mismatch = await operations.dispatch(request('start', start(projectPath, { createProject: true })));
   assert.equal(mismatch.state, 'failed');
   assert.ok(mismatch.error.includes('old-version') && mismatch.error.includes(APP_VERSION));
   assert.equal(service.workers.size, before);
   await assert.rejects(fs.stat(projectPath), { code: 'ENOENT' });
+});
+
+test('a relay for different source at the same version cannot claim or admit a new task', async (context) => {
+  const { service, root } = await fixture(context);
+  const operations = new TerminalOperations(service);
+  const current = relay({ buildId: BUILD_ID });
+  await operations.claim(current);
+  const before = service.workers.size;
+  const incompatible = { ...current, buildId: '0123456789abcdef' };
+  await assert.rejects(operations.claim(incompatible), /0123456789abcdef.*Reload/);
+  const status = await operations.dispatch(request('list', {}));
+  assert.equal(status.browserConnected, false);
+  assert.equal(status.browserVersionMismatch.extensionBuildId, incompatible.buildId);
+  const result = await operations.dispatch(request('start', start(root)));
+  assert.equal(result.state, 'failed');
+  assert.equal(service.workers.size, before);
+  await operations.claim(current);
+  assert.equal((await operations.dispatch(request('list', {}))).browserConnected, true);
 });
 
 test('a version mismatch expires, clears on a matching poll and leaves a healthy owner in place', async (context) => {
@@ -193,7 +212,6 @@ test('host restart interrupts uncertain claims without replay, and exact late ac
   const second = new TerminalOperations(service);
   const interrupted = await second.dispatch(request('start', input));
   assert.equal(interrupted.state, 'interrupted');
-  assert.deepEqual(await second.claim(session), { command: null });
   await second.complete({
     sessionId: session.sessionId,
     requestId: input.requestId,
@@ -203,6 +221,10 @@ test('host restart interrupts uncertain claims without replay, and exact late ac
   const resolved = await second.dispatch(request('operation', { requestId: input.requestId }));
   assert.equal(resolved.state, 'succeeded');
   assert.equal(resolved.error, undefined);
+  const list = await second.dispatch(request('list', {}));
+  assert.equal(list.browserConnected, false);
+  assert.equal((await second.dispatch(request('start', start(root)))).state, 'failed');
+  assert.deepEqual(await second.claim(session), { command: null });
 });
 
 test('a lost claim acknowledgement becomes interrupted when the relay is ready again, while busy heartbeats preserve it', async (context) => {

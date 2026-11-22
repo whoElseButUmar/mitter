@@ -235,6 +235,7 @@ export function WorkspaceDialogs(props: { controller: WorkspaceController }) {
           <SetupPanel
             connected={props.controller.connected()}
             error={props.controller.connectionError()}
+            builds={props.controller.connectionBuilds()}
             rpc={rpc}
             reconnect={() => props.controller.client.reconnect()}
             reload={reloadWorkspace}

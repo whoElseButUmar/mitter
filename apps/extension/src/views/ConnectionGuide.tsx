@@ -1,9 +1,17 @@
 import { createSignal, onCleanup, Show } from 'solid-js';
 import { connectionHelp } from '../ui/connection-help';
+import type { ConnectionBuilds } from '../client';
 import { Icon } from '../icons';
 
-export function ConnectionAction(props: { error: string; reconnect: () => void; reload: () => void }) {
-  const help = () => connectionHelp(props.error);
+type ConnectionOptions = {
+  error: string;
+  builds?: ConnectionBuilds | undefined;
+  reconnect: () => void;
+  reload: () => void;
+};
+
+export function ConnectionAction(props: ConnectionOptions) {
+  const help = () => connectionHelp(props.error, props.builds);
   return (
     <Show when={help().action !== 'wait'}>
       <button
@@ -23,8 +31,8 @@ export function ConnectionAction(props: { error: string; reconnect: () => void; 
   );
 }
 
-export function ConnectionGuide(props: { error: string; reconnect: () => void; reload: () => void }) {
-  const help = () => connectionHelp(props.error);
+export function ConnectionGuide(props: ConnectionOptions) {
+  const help = () => connectionHelp(props.error, props.builds);
   const [copyMessage, setCopyMessage] = createSignal('');
   let alive = true;
   onCleanup(() => {
@@ -50,6 +58,13 @@ export function ConnectionGuide(props: { error: string; reconnect: () => void; r
       <div class="button-row">
         <ConnectionAction {...props} />
       </div>
+      <Show when={help().action === 'reload'}>
+        <p class="small">
+          If the builds still differ, run <strong>Install Miter.command</strong>. In this Chrome profile, open{' '}
+          <code>chrome://extensions</code>, choose <strong>Load unpacked</strong> in Developer mode, and
+          select the extension folder shown by the installer.
+        </p>
+      </Show>
       <details class="setup-disclosure">
         <summary>
           <Icon name="down" />

@@ -1,4 +1,4 @@
-import { APP_VERSION } from '../../../../packages/protocol/src/index.js';
+import { APP_VERSION, BUILD_ID } from '../../../../packages/protocol/src/index.js';
 import {
   terminalClaimResultSchema,
   terminalCompleteResultSchema,
@@ -20,7 +20,7 @@ type TerminalControlDependencies = {
 
 /** Native-only terminal commands use the same admission and permission checks as the workspace. */
 export class TerminalControl {
-  private readonly sessionId = crypto.randomUUID();
+  private sessionId = crypto.randomUUID();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private polling = false;
   private started = false;
@@ -44,6 +44,14 @@ export class TerminalControl {
 
   disconnected(): void {
     this.connection = Symbol('terminal connection');
+  }
+
+  incompatible(): void {
+    this.disconnected();
+    this.sessionId = crypto.randomUUID();
+    this.pending = undefined;
+    this.acknowledged = undefined;
+    this.active = undefined;
   }
 
   dispose(): void {
@@ -78,6 +86,7 @@ export class TerminalControl {
 
     this.polling = true;
     const connection = this.connection;
+    const sessionId = this.sessionId;
 
     try {
       await this.dependencies.ready();
@@ -110,8 +119,9 @@ export class TerminalControl {
 
       const acceptCommand = this.active === undefined;
       const response = await this.dependencies.native('terminal.claim', {
-        sessionId: this.sessionId,
+        sessionId,
         version: APP_VERSION,
+        buildId: BUILD_ID,
         available: acceptCommand,
       });
       const parsed = terminalClaimResultSchema.safeParse(response);
@@ -122,7 +132,7 @@ export class TerminalControl {
 
       const command = parsed.data.command;
 
-      if (!command || this.closed) {
+      if (!command || this.closed || this.sessionId !== sessionId) {
         return;
       }
 

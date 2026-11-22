@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { APP_VERSION, type Snapshot } from '../../../packages/protocol/src/index.js';
+import { APP_VERSION, BUILD_ID, matchesBuild, type Snapshot } from '../../../packages/protocol/src/index.js';
 import {
   auxiliaryMessageSchema,
   backgroundHelloSchema,
@@ -11,6 +11,13 @@ import {
   type AuxiliaryMessage,
 } from './schemas/messages.js';
 import { errorMessage, invalidRPCResult } from './schemas/primitives.js';
+import {
+  diagnosticRequest,
+  hostMismatch,
+  viewMismatch,
+  type ConnectionBuilds,
+} from './transport/build-connection.js';
+export type { ConnectionBuilds } from './transport/build-connection.js';
 import { PendingRequests } from './transport/pending-requests.js';
 import {
   validateViewParams,
@@ -47,11 +54,13 @@ export class HostClient {
   private handshakeId = '';
   private hostCompatible = false;
   private hostError: string | undefined;
+  private identities: ConnectionBuilds = {};
 
   constructor(
     private onSnapshot: (snapshot: Snapshot) => void,
     private onConnection: (connected: boolean, error?: string) => void,
     private onAux: (message: AuxiliaryMessage) => void = () => {},
+    private onBuilds: (builds: ConnectionBuilds) => void = () => {},
   ) {}
 
   private clearRetry(): void {
@@ -97,6 +106,8 @@ export class HostClient {
     this.backgroundReady = false;
     this.hostCompatible = false;
     this.hostError = undefined;
+    this.identities = {};
+    this.onBuilds(this.identities);
     const removeListeners = this.removePortListeners;
     this.removePortListeners = undefined;
 
@@ -199,15 +210,19 @@ export class HostClient {
             return;
           }
 
-          if (message.version !== APP_VERSION) {
-            this.failHandshake(
-              `Miter background version ${message.version} differs from this view (${APP_VERSION}). ` +
-                'Open chrome://extensions, click Reload on Miter, then reopen the workspace. ' +
-                'Reloading only this tab does not update the background. No operation was sent.',
-            );
+          this.identities = {
+            background: { version: message.version, buildId: message.buildId },
+            ...(message.helper && { helper: message.helper }),
+          };
+          this.onBuilds(this.identities);
+          if (!matchesBuild(message.version, message.buildId)) {
+            this.failHandshake(viewMismatch({ version: APP_VERSION, buildId: BUILD_ID }, message));
             return;
           }
 
+          if (message.helper && !matchesBuild(message.helper.version, message.helper.buildId)) {
+            this.hostError = hostMismatch(message.helper.version, message.helper.buildId);
+          }
           this.backgroundReady = true;
           this.finishHandshake();
           this.scheduleHeartbeat(port);
@@ -223,14 +238,17 @@ export class HostClient {
         }
 
         this.retries = 0;
-        this.onSnapshot(message.data);
-        this.hostCompatible = message.data.runtime.version === APP_VERSION;
+        const { version, buildId } = message.data.runtime;
+        this.identities = { ...this.identities, helper: { version: version ?? 'unknown', buildId } };
+        this.onBuilds(this.identities);
+        this.hostCompatible = matchesBuild(version, buildId);
         this.hostError = undefined;
 
         if (!this.hostCompatible) {
-          this.hostError = 'Reload Miter after setup to connect the matching local host.';
+          this.hostError = hostMismatch(version, buildId);
         }
 
+        this.onSnapshot(message.data);
         this.onConnection(this.hostCompatible, this.hostError);
       } else if (message.event === 'connection') {
         if (!this.backgroundReady) {
@@ -239,7 +257,10 @@ export class HostClient {
 
         if (!message.connected) {
           this.hostCompatible = false;
-          this.hostError = message.error;
+          const { helper: _previous, ...current } = this.identities;
+          this.identities = { ...current, ...(message.helper && { helper: message.helper }) };
+          this.onBuilds(this.identities);
+          this.hostError = message.error ?? this.hostError;
         }
 
         this.onConnection(this.hostCompatible, this.hostError);
@@ -310,7 +331,7 @@ export class HostClient {
     this.onConnection(false);
 
     try {
-      port.postMessage({ type: 'hello', id, version: APP_VERSION });
+      port.postMessage({ type: 'hello', id, version: APP_VERSION, buildId: BUILD_ID });
     } catch {
       this.disconnected(port, 'The extension connection closed during its version check.');
     }
@@ -374,6 +395,9 @@ export class HostClient {
       }
     }
 
+    if (!this.hostCompatible && this.hostError && !diagnosticRequest(method)) {
+      throw new Error(this.hostError);
+    }
     let timeoutMs = 45000;
     let timeoutDetail = 'The local host did not respond.';
 

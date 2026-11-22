@@ -7,7 +7,12 @@ import { OutputQueue } from './core/output-queue.js';
 import { openRuntime, defaultDataDir } from './runtime.js';
 import { fileURLToPath } from 'node:url';
 import { FrameDecoder, encodeFrame } from './core/framing.js';
-import { parseRequest, EXTENSION_ORIGIN } from '../../../packages/protocol/src/index.js';
+import {
+  APP_VERSION,
+  BUILD_ID,
+  parseRequest,
+  EXTENSION_ORIGIN,
+} from '../../../packages/protocol/src/index.js';
 import { errorMessage } from './core/types.js';
 import { startTerminalControl } from './core/terminal-control/server.js';
 const portable = process.argv.includes('--portable');
@@ -431,6 +436,8 @@ try {
 if (runtime.resetRequired) {
   send({
     event: 'resetRequired',
+    version: APP_VERSION,
+    buildId: BUILD_ID,
     error: 'A previous data reset did not finish. Retry Clear all Miter data.',
   });
 } else {

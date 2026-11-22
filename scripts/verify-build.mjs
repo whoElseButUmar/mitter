@@ -214,6 +214,17 @@ export async function verifyBuild(root) {
   const terminalFont = await verifyBundledFont(output);
   const bundledImports = await checkBundleImports(output);
 
+  const background = await readFile(path.join(output, 'background.js'), 'utf8');
+  if (
+    typeof protocol.BUILD_ID !== 'string' ||
+    !/^[a-f0-9]{16}$/.test(protocol.BUILD_ID) ||
+    !background.includes(protocol.BUILD_ID)
+  ) {
+    throw new Error(
+      'The extension and local helper have different build IDs. Run pnpm build to rebuild them together.',
+    );
+  }
+
   return buildVerificationSchema.parse({
     version: sourcePackage.version,
     extensionId,

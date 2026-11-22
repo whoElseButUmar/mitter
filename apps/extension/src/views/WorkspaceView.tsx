@@ -27,6 +27,7 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
     navigation,
     connected,
     connectionError,
+    connectionBuilds,
     selected,
     success,
     setNotice,
@@ -233,9 +234,10 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
             </Show>
             <Show when={!connected() && snapshot().projects.length > 0}>
               <div class="connection-banner">
-                <span role="status">{connectionHelp(connectionError()).title}</span>
+                <span role="status">{connectionHelp(connectionError(), connectionBuilds()).title}</span>
                 <ConnectionAction
                   error={connectionError()}
+                  builds={connectionBuilds()}
                   reconnect={() => client.reconnect()}
                   reload={reloadWorkspace}
                 />
@@ -258,6 +260,7 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
                       <SetupPanel
                         connected={connected()}
                         error={connectionError()}
+                        builds={connectionBuilds()}
                         rpc={rpc}
                         reconnect={() => client.reconnect()}
                         reload={reloadWorkspace}

@@ -31,12 +31,13 @@ async function prepare(directory) {
     },
   });
 
-  await buildChromeFixture(extension);
+  const { BUILD_ID } = await import('../../dist/packages/protocol/src/build-id.js');
+  await buildChromeFixture(extension, BUILD_ID);
 }
 
-export async function buildChromeFixture(directory) {
+export async function buildChromeFixture(directory, buildId) {
   // The live check supplies the packaged workspace's loaded stylesheets later.
-  const fixture = await buildBrowserFixture(directory, { includeSourceStyles: false });
+  const fixture = await buildBrowserFixture(directory, { includeSourceStyles: false, buildId });
 
   const bundle = await rolldown({
     input: path.join(root, 'scripts/release-checks/chrome-preview-fixture.mjs'),

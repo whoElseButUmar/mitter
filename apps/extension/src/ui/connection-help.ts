@@ -1,4 +1,25 @@
-export function connectionHelp(error: string) {
+import { matchesBuild } from '../../../../packages/protocol/src/index';
+import type { ConnectionBuilds } from '../client';
+
+export function hasBuildMismatch(builds?: ConnectionBuilds): boolean {
+  return [builds?.background, builds?.helper].some(
+    (build) => build !== undefined && !matchesBuild(build.version, build.buildId),
+  );
+}
+
+export function connectionHelp(error: string, builds?: ConnectionBuilds) {
+  if (
+    hasBuildMismatch(builds) ||
+    /version|matching local host|reload miter after setup|build mismatch|different builds/i.test(error)
+  ) {
+    return {
+      title: 'Finish updating Miter',
+      detail: 'Reload Miter to reconnect the workspace and local helper.',
+      action: 'reload',
+      label: 'Reload extension',
+    };
+  }
+
   if (/background did not answer the workspace check/i.test(error)) {
     return {
       title: 'Reconnect the extension',
@@ -15,15 +36,6 @@ export function connectionHelp(error: string) {
       detail: 'Open Install Miter.command from your installer, then check the connection here.',
       action: 'install',
       label: 'Check connection',
-    };
-  }
-
-  if (/version|matching local host|reload miter after setup/i.test(error)) {
-    return {
-      title: 'Finish updating Miter',
-      detail: 'Reload the extension to finish the update. Your saved projects and tasks are kept.',
-      action: 'reload',
-      label: 'Reload extension',
     };
   }
 

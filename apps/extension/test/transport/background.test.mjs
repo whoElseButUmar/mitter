@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { reloadWorkspace } from '../../src/workspace-reload.ts';
 import { startBackground } from '../../src/background-controller.ts';
-import { chromeEvent, mockPort, deferred, settle } from './chrome-mock.mjs';
-import { APP_VERSION } from '../../../../packages/protocol/src/index.ts';
+import { chromeEvent, mockPort, deferred, settle, snapshot } from './chrome-mock.mjs';
+import { APP_VERSION, BUILD_ID } from '../../../../packages/protocol/src/index.ts';
 
 function runtime(context) {
   context.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
@@ -52,9 +52,14 @@ test('background opens the native terminal relay without a workspace view', asyn
   context.mock.timers.tick(1000);
   await settle();
   assert.equal(native.length, 1);
+  assert.equal(native[0].messages.length, 0);
+  native[0].onMessage.emit({ event: 'snapshot', data: snapshot });
+  context.mock.timers.tick(1000);
+  await settle();
   const claim = native[0].messages[0];
   assert.equal(claim.method, 'terminal.claim');
   assert.equal(claim.params.version, APP_VERSION);
+  assert.equal(claim.params.buildId, BUILD_ID);
   assert.equal(claim.params.available, true);
   native[0].onMessage.emit({ id: claim.id, ok: true, result: { command: null } });
   await settle();
@@ -107,6 +112,7 @@ test('one failed background listener removal does not prevent remaining teardown
   const view = mockPort('mitter-ui');
   events.connections.emit(view);
   view.onMessage.emit({ type: 'hello', id: 'version-check', version: APP_VERSION });
+  native[0].onMessage.emit({ event: 'snapshot', data: snapshot });
   view.onMessage.emit({ id: 'prompt', method: 'worker.prompt', params: { workerId: 'worker' } });
   await settle();
   const remove = events.clicks.removeListener;
@@ -154,6 +160,7 @@ test('background disposal removes all owned Chrome listeners and liveness timers
   const view = mockPort('mitter-ui');
   events.connections.emit(view);
   view.onMessage.emit({ type: 'hello', id: 'version-check', version: APP_VERSION });
+  native[0].onMessage.emit({ event: 'snapshot', data: snapshot });
   view.onMessage.emit({ id: 'prompt', method: 'worker.prompt', params: { workerId: 'worker' } });
   await settle();
   assert.equal(native.length, 1);
@@ -225,4 +232,49 @@ test('a requested extension update returns to its window once and reuses a survi
   await settle();
   assert.deepEqual(records, {});
   assert.equal(activated.length, 1);
+});
+
+test('a same-release helper mismatch blocks new work, reset and terminal polling until a matching snapshot', async (context) => {
+  const { events, native } = runtime(context);
+  const background = startBackground();
+  context.after(() => background.dispose());
+  const view = mockPort('mitter-ui');
+  events.connections.emit(view);
+  view.onMessage.emit({ type: 'hello', id: 'hello', version: APP_VERSION, buildId: BUILD_ID });
+  const create = {
+    id: 'create',
+    method: 'project.create',
+    params: { parentRoot: '/projects', folderName: 'notes', name: 'Notes' },
+  };
+  view.onMessage.emit(create);
+  await settle();
+  assert.equal(native[0].messages.length, 0);
+  assert.match(view.messages.find((message) => message.id === 'create').error, /Checking the local helper/);
+  const stale = { ...snapshot, runtime: { ...snapshot.runtime, buildId: 'a'.repeat(16) } };
+  native[0].onMessage.emit({ event: 'snapshot', data: stale });
+  view.onMessage.emit({ ...create, id: 'old-create' });
+  view.onMessage.emit({ id: 'debug', method: 'debug.read', params: {} });
+  const reset = mockPort('miter-data-view');
+  events.connections.emit(reset);
+  reset.onMessage.emit({ type: 'reset-start', id: 'old-reset', confirmation: 'CLEAR' });
+  context.mock.timers.tick(6000);
+  await settle();
+  assert.equal(native[0].messages.length, 0);
+  assert.match(view.messages.find((message) => message.id === 'old-create').error, /aaaaaaaaaaaaaaaa/);
+  assert.equal(view.messages.find((message) => message.id === 'debug').ok, true);
+  assert.match(reset.messages.find((message) => message.id === 'old-reset').error, /aaaaaaaaaaaaaaaa/);
+  const peer = view.messages.find((message) => message.event === 'connection' && message.helper);
+  assert.equal(peer.helper.buildId, stale.runtime.buildId);
+  native[0].onMessage.emit({
+    event: 'snapshot',
+    data: { ...snapshot, runtime: { ...snapshot.runtime, buildId: BUILD_ID } },
+  });
+  await settle();
+  assert.equal(native[0].messages.length, 0);
+  context.mock.timers.tick(1000);
+  await settle();
+  assert.deepEqual(
+    native[0].messages.map((message) => message.method),
+    ['terminal.claim'],
+  );
 });

@@ -1,3 +1,4 @@
+import { auxiliaryPort } from './transport/build-connection.js';
 import { TERMINAL_PORT } from '../../../packages/terminal/src/protocol.js';
 import {
   parseTerminalResult,
@@ -12,7 +13,7 @@ export class TerminalClient {
 
   constructor(disconnected: () => void) {
     this.connection = new ViewRequestPort(
-      TERMINAL_PORT,
+      auxiliaryPort(TERMINAL_PORT),
       'Terminal view closed. No input was sent.',
       () => 'Terminal disconnected. Input was not replayed.',
       disconnected,

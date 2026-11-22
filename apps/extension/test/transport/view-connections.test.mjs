@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ViewConnections } from '../../src/background/view-connections.ts';
 import { chromeEvent, mockPort, deferred, settle } from './chrome-mock.mjs';
-import { APP_VERSION } from '../../../../packages/protocol/src/index.ts';
+import { APP_VERSION, BUILD_ID } from '../../../../packages/protocol/src/index.ts';
 
 function connectView(connected, port) {
   connected.emit(port);
@@ -10,7 +10,12 @@ function connectView(connected, port) {
   if (port.name === 'mitter-ui' && port.onMessage.size > 0) {
     assert.equal(port.messages.shift().connected, false);
     port.onMessage.emit({ type: 'hello', id: 'version-check', version: APP_VERSION });
-    assert.deepEqual(port.messages.shift(), { type: 'hello', id: 'version-check', version: APP_VERSION });
+    assert.deepEqual(port.messages.shift(), {
+      type: 'hello',
+      id: 'version-check',
+      version: APP_VERSION,
+      buildId: BUILD_ID,
+    });
   }
 }
 
@@ -167,11 +172,21 @@ test('UI requests and host connects wait for a matching view version on each por
   port.onMessage.emit({ type: 'reconnect' });
   assert.equal(connections, 0);
   port.onMessage.emit({ type: 'hello', id: 'exact-id', version: 'older-view' });
-  assert.deepEqual(port.messages.at(-2), { type: 'hello', id: 'exact-id', version: APP_VERSION });
+  assert.deepEqual(port.messages.at(-2), {
+    type: 'hello',
+    id: 'exact-id',
+    version: APP_VERSION,
+    buildId: BUILD_ID,
+  });
   assert.equal(port.messages.at(-1).connected, false);
   assert.equal(connections, 0);
   port.onMessage.emit({ type: 'hello', id: 'matching', version: APP_VERSION });
-  assert.deepEqual(port.messages.at(-2), { type: 'hello', id: 'matching', version: APP_VERSION });
+  assert.deepEqual(port.messages.at(-2), {
+    type: 'hello',
+    id: 'matching',
+    version: APP_VERSION,
+    buildId: BUILD_ID,
+  });
   assert.deepEqual(port.messages.at(-1), initial);
   assert.equal(connections, 1);
   port.onMessage.emit({ type: 'reconnect' });

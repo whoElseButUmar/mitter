@@ -163,6 +163,59 @@ async function checkReadinessRetry(chrome, session, mode) {
   );
 }
 
+async function checkBuildMismatch(chrome, session, mode, width) {
+  await show(chrome, session, mode);
+  await assertFits(chrome, session, mode, width);
+  const report = await evaluate(
+    chrome,
+    session,
+    `(() => {
+    const versions = document.querySelector('.build-versions');
+    return { expanded:versions.open, rows: Array.from(versions.querySelectorAll('dt')).map(dt => [dt.textContent, dt.nextElementSibling.textContent]),
+      recovery:document.querySelector('.connection-guide').innerText };
+  })()`,
+  );
+  assert.equal(report.expanded, true);
+  assert.equal(report.rows[0][0], 'Extension');
+  const installed = report.rows[0][1];
+  assert.match(installed, /build /);
+  const mismatched = report.rows[1][1];
+  if (mode === 'different-background-build') {
+    assert.equal(report.rows[1][0], 'Background worker');
+    assert.deepEqual(report.rows[2], ['Local helper', 'Not reported']);
+  } else {
+    assert.deepEqual(
+      report.rows.map((row) => row[0]),
+      ['Extension', 'Local helper'],
+    );
+  }
+  assert.notEqual(mismatched, installed);
+  assert.equal(mismatched.split(' ')[0], installed.split(' ')[0], 'Same version, different fingerprints');
+  assert.match(report.recovery, /Load unpacked/);
+  await activate(chrome, session, 'Reload extension');
+  assert.deepEqual(await evaluate(chrome, session, fixture + '.inspect()'), {
+    actions: ['reload'],
+    readinessCalls: 0,
+  });
+  await evaluate(chrome, session, fixture + '.transition("ready")');
+  await ready(chrome, session);
+  const matching = await evaluate(
+    chrome,
+    session,
+    `(() => {
+    const versions = document.querySelector('.build-versions');
+    return {expanded:versions.open, rows:Array.from(versions.querySelectorAll('dd')).map(dd=>dd.textContent)};
+  })()`,
+  );
+  assert.deepEqual(matching, { expanded: false, rows: [installed, installed] });
+  await evaluate(chrome, session, fixture + '.transition("disconnected")');
+  assert.equal(
+    await evaluate(chrome, session, "document.querySelector('.build-versions dd:last-child').textContent"),
+    'Not reported',
+    'A disconnected helper does not retain the previous build as current.',
+  );
+}
+
 export async function checkSetup(chrome, session) {
   try {
     for (const width of [1024, 320, 290]) {
@@ -194,6 +247,9 @@ export async function checkSetup(chrome, session) {
           true,
           'Setup diagnostics stay collapsed by default.',
         );
+      }
+      for (const mode of ['different-helper-build', 'different-background-build']) {
+        await checkBuildMismatch(chrome, session, mode, width);
       }
       await checkConnecting(chrome, session);
       for (const mode of ['missing', 'disconnected', 'background']) {

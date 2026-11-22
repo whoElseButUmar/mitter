@@ -25,7 +25,17 @@ export async function evaluate(chrome, session, expression, contextId = undefine
   );
 
   if (result.exceptionDetails) {
-    throw new Error('Browser expression failed: ' + expression, { cause: result.exceptionDetails });
+    const exception = result.exceptionDetails.exception;
+    let detail = '';
+    if (
+      exception &&
+      typeof exception === 'object' &&
+      'description' in exception &&
+      typeof exception.description === 'string'
+    ) {
+      detail = '\n' + exception.description.slice(0, 1200);
+    }
+    throw new Error('Browser expression failed: ' + expression + detail, { cause: result.exceptionDetails });
   }
 
   return result.result.value;

@@ -17,7 +17,7 @@ const runtimeAliases = new Map([
 
 export const FIXTURE_STYLESHEET_SLOT = '<!-- Release fixture stylesheets -->';
 
-export async function buildBrowserFixture(directory, { includeSourceStyles = true } = {}) {
+export async function buildBrowserFixture(directory, { includeSourceStyles = true, buildId } = {}) {
   await mkdir(directory, { recursive: true });
   const html = path.join(directory, 'fixture.html');
   const script = path.join(directory, 'fixture.js');
@@ -26,6 +26,7 @@ export async function buildBrowserFixture(directory, { includeSourceStyles = tru
   const bundle = await rolldown({
     input: path.join(fixtureDirectory, 'browser.fixture.tsx'),
     platform: 'browser',
+    ...(buildId && { transform: { define: { __MITER_BUILD_ID__: JSON.stringify(buildId) } } }),
     plugins: [
       {
         name: 'solid-browser-fixture',

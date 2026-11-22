@@ -1,4 +1,7 @@
 import { Show } from 'solid-js';
+import { APP_VERSION, BUILD_ID, describeBuild, matchesBuild } from '../../../../packages/protocol/src/index';
+import type { ConnectionBuilds } from '../client';
+import { hasBuildMismatch } from '../ui/connection-help';
 import type { Readiness } from '../../../../packages/protocol/src/rpc';
 import { createReadiness } from '../ui/readiness';
 import type { ViewRPC } from '../ui/rpc';
@@ -42,8 +45,48 @@ export function ReadinessDetails(props: { report: Readiness }) {
   );
 }
 
+function BuildVersions(props: { builds: ConnectionBuilds | undefined; mismatch: boolean }) {
+  const helper = () => {
+    const build = props.builds?.helper;
+    if (build) {
+      return describeBuild(build.version, build.buildId);
+    }
+    return 'Not reported';
+  };
+  const differentBackground = () => {
+    const build = props.builds?.background;
+    if (build && !matchesBuild(build.version, build.buildId)) {
+      return build;
+    }
+    return undefined;
+  };
+  return (
+    <details class="setup-disclosure build-versions" open={props.mismatch}>
+      <summary>
+        <Icon name="down" />
+        Build versions
+      </summary>
+      <dl class="health-details">
+        <dt>Extension</dt>
+        <dd>{describeBuild(APP_VERSION, BUILD_ID)}</dd>
+        <Show when={differentBackground()}>
+          {(build) => (
+            <>
+              <dt>Background worker</dt>
+              <dd>{describeBuild(build().version, build().buildId)}</dd>
+            </>
+          )}
+        </Show>
+        <dt>Local helper</dt>
+        <dd>{helper()}</dd>
+      </dl>
+    </details>
+  );
+}
+
 export function SetupPanel(props: {
   connected: boolean;
+  builds?: ConnectionBuilds | undefined;
   error: string;
   rpc: ViewRPC;
   reconnect: () => void;
@@ -53,13 +96,22 @@ export function SetupPanel(props: {
   newTask: () => void;
   projectName?: string | undefined;
 }) {
-  const readiness = createReadiness(() => props.connected, props.rpc);
+  const mismatch = () => hasBuildMismatch(props.builds);
+  const ready = () => props.connected && !mismatch();
+  const readiness = createReadiness(ready, props.rpc);
 
   return (
     <div class="setup-panel">
       <Show
-        when={props.connected}
-        fallback={<ConnectionGuide error={props.error} reconnect={props.reconnect} reload={props.reload} />}
+        when={ready()}
+        fallback={
+          <ConnectionGuide
+            error={props.error}
+            builds={props.builds}
+            reconnect={props.reconnect}
+            reload={props.reload}
+          />
+        }
       >
         <Show when={props.projectName} fallback={<h1>Start your project</h1>}>
           {(name) => (
@@ -131,6 +183,7 @@ export function SetupPanel(props: {
           </button>
         </Show>
       </Show>
+      <BuildVersions builds={props.builds} mismatch={mismatch()} />
     </div>
   );
 }

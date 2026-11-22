@@ -1,3 +1,4 @@
+import { auxiliaryPort } from './transport/build-connection.js';
 import { TERMINAL_PORT } from '../../../packages/terminal/src/protocol.js';
 import { documentURL, errorMessage } from './schemas/primitives.js';
 import { rpcRequestSchema } from './schemas/messages.js';
@@ -18,7 +19,7 @@ export function bindTerminalPort(
   const sender = port.sender;
 
   if (
-    port.name !== TERMINAL_PORT ||
+    port.name !== auxiliaryPort(TERMINAL_PORT) ||
     sender?.id !== dependencies.extensionId ||
     (sender.frameId !== undefined && sender.frameId !== 0) ||
     (sender.origin !== undefined && sender.origin !== 'chrome-extension://' + dependencies.extensionId) ||

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { buildIdSchema } from '../schemas/primitives.js';
 import { VERSION } from '../constants.js';
 import { workerStateSchema } from '../schemas/domain.js';
 import { rpcCounterSchema, rpcTimestampSchema, sha256Schema } from './primitives.js';
@@ -38,6 +39,7 @@ export const stateBackupsSchema = z
 export const healthSchema = z
   .strictObject({
     version: z.string().describe('The installed application version.'),
+    buildId: buildIdSchema.optional().describe('The installed helper build fingerprint, when available.'),
     protocol: z.literal(VERSION).describe('The exact host protocol version.'),
     node: z.string().describe('The current Node runtime version.'),
     platform: z.string().describe('The current Node operating-system platform.'),

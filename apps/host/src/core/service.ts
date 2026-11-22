@@ -15,6 +15,7 @@ import type {
 } from '../../../../packages/protocol/src/index.js';
 import {
   APP_VERSION,
+  BUILD_ID,
   VERSION,
   id,
   integer,
@@ -363,6 +364,7 @@ export class Service {
       settings: { ...this.settings },
       runtime: {
         version: APP_VERSION,
+        buildId: BUILD_ID,
         node: process.version,
         workflow: this.workflowName,
         models,

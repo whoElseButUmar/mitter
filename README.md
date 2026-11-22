@@ -9,7 +9,7 @@ Miter is a Chrome workspace for building and editing local projects. Give it a t
 3. Open Miter and choose **Create project** or **Open existing project**.
 4. Select **New task**, describe what you want, and start. For example, “Build a reading list where I can save books, mark them as read, and find them again after a reload.”
 
-To install from source, use Node.js 26 or newer and run `node scripts/setup.mjs`. Setup downloads the pinned dependencies and terminal font. For updates, reload the Miter card in Chrome and reopen the workspace. If Chrome already loads Miter from a source checkout, follow the [installation and migration guide](scripts/installation/README.md) before moving it. Local installer bundles are unsigned.
+To install from source, use Node.js 26 or newer and run `node scripts/setup.mjs`. Setup downloads the pinned dependencies and terminal font. After an update, open **Setup & connection** to check the running extension and local helper. Each shows a release number and a build ID. If the IDs differ, choose **Reload extension**. If the mismatch persists, run the installer and load its managed extension folder in the Chrome profile you use for Miter. If Chrome already loads Miter from a source checkout, follow the [installation and migration guide](scripts/installation/README.md) before moving it. Local installer bundles are unsigned.
 
 For a database-backed starting point, choose **Create project → Vite + TypeScript + SQLite**. The starter includes a working notes form, a Node API and a SQLite database. Choose **Run app** on the project to install its dependencies and open the app. Outside Miter, use the commands in the generated README.
 

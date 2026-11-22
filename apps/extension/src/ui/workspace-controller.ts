@@ -22,7 +22,7 @@ import type { DebugEntry } from '../../../../packages/bridge/src/diagnostics';
 import { ToastCenter, mountToasts } from '../../../../packages/ui/src/toast';
 import { emptyWorkspace, currentTask, type WorkspaceState } from '../../../../packages/ui/src/workspace';
 import { closeActivePopover } from '../../../../packages/ui/src/popover';
-import { HostClient } from '../client';
+import { HostClient, type ConnectionBuilds } from '../client';
 import type { ChangeRequest } from '../FileViewer';
 import { followupSchema } from '../schemas/host-results';
 import { workspaceStateSchema, notificationPreferencesSchema } from '../schemas/messages';
@@ -71,6 +71,7 @@ export function createWorkspaceController() {
   const [navigation, setNavigation] = createSignal(emptyWorkspace());
   const [connected, setConnected] = createSignal(false);
   const [connectionError, setConnectionError] = createSignal('');
+  const [connectionBuilds, setConnectionBuilds] = createSignal<ConnectionBuilds>({});
   const selected = createMemo(() => currentTask(navigation()));
 
   // New-task forms capture their project when opened, never when submitted.
@@ -348,6 +349,7 @@ export function createWorkspaceController() {
         }
       }
     },
+    setConnectionBuilds,
   );
   const rpc = client.request.bind(client);
 
@@ -1078,6 +1080,7 @@ export function createWorkspaceController() {
     navigation,
     connected,
     connectionError,
+    connectionBuilds,
     selected,
     formProjectId,
     pickedElement,

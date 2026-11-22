@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
-import { APP_VERSION } from '../../../../packages/protocol/src/index.ts';
+import { APP_VERSION, BUILD_ID } from '../../../../packages/protocol/src/index.ts';
 import { HostClient } from '../../src/client.ts';
 import { FilePreviewClient } from '../../src/file-preview-client.ts';
 import { TerminalClient } from '../../src/terminal-client.ts';
@@ -402,6 +402,7 @@ test('HostClient routes validated messages once, preserving heartbeat and event 
   assert.deepEqual(connections, [[false], [false, 'Unavailable']]);
   assert.deepEqual(auxiliary, [{ event: 'workspaceError', error: 'Not saved' }]);
 
+  port.onMessage.emit({ event: 'snapshot', data: snapshot });
   const pending = client.request('worker.prompt', { workerId: 'worker' }, z.string());
   const requestId = port.messages[0].id;
   context.mock.timers.tick(15000);
@@ -416,8 +417,8 @@ test('HostClient routes validated messages once, preserving heartbeat and event 
     ok: true,
     result: 'not a response',
   });
-  assert.equal(snapshots.length, 1);
-  assert.equal(connections.length, 3);
+  assert.equal(snapshots.length, 2);
+  assert.equal(connections.length, 4);
   port.onMessage.emit({ id: requestId, ok: true, result: 'exact response' });
   assert.equal(await pending, 'exact response');
 });
@@ -429,7 +430,7 @@ test('HostClient waits for its exact background version challenge before sending
   const reading = client.request('worker.prompt', { workerId: 'worker' });
   const port = ports[0];
   const hello = port.messages[0];
-  assert.deepEqual(hello, { type: 'hello', id: hello.id, version: APP_VERSION });
+  assert.deepEqual(hello, { type: 'hello', id: hello.id, version: APP_VERSION, buildId: BUILD_ID });
   port.onMessage.emit({ type: 'hello', id: 'wrong-nonce', version: APP_VERSION });
   port.onMessage.emit({ event: 'snapshot', data: snapshot });
   port.onMessage.emit({ event: 'connection', connected: true });

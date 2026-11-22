@@ -3,7 +3,7 @@ import { dataResetStateSchema } from '../../../../packages/bridge/src/data-reset
 import { bridgeStatusSchema } from '../../../../packages/bridge/src/runner/types.js';
 import { debugEntrySchema } from '../../../../packages/bridge/src/diagnostics.js';
 import { snapshotSchema } from './host-results.js';
-import { requestSchema, responseSchema } from '../../../../packages/protocol/src/index.js';
+import { buildIdSchema, requestSchema, responseSchema } from '../../../../packages/protocol/src/index.js';
 import { WorkspaceStateSchema } from '../../../../packages/ui/src/workspace.js';
 import { identifierSchema, parametersSchema } from './primitives.js';
 
@@ -85,11 +85,19 @@ export const snapshotMessageSchema = z
   })
   .describe('An authoritative host snapshot event.');
 
+const peerBuildSchema = z
+  .object({
+    version: z.string(),
+    buildId: buildIdSchema.optional(),
+  })
+  .describe('A release and optional build fingerprint reported by a live connection.');
+
 export const connectionMessageSchema = z
   .object({
     event: z.literal('connection'),
     connected: z.boolean().describe('Whether the host version is compatible.'),
     error: z.string().optional().describe('Why the host is unavailable or incompatible.'),
+    helper: peerBuildSchema.optional().describe('Live identity from the current native port, if available.'),
   })
   .describe('Host connection status.');
 
@@ -99,6 +107,8 @@ export const nativeMessageSchema = z
     rpcResponseSchema,
     z.object({
       event: z.literal('resetRequired'),
+      version: z.string().optional().describe('Local helper release during reset recovery.'),
+      buildId: buildIdSchema.optional().describe('Local helper build during reset recovery.'),
       error: z.string().optional().describe('Why the native reset requires recovery.'),
     }),
   ])
@@ -110,6 +120,7 @@ export const uiControlSchema = z
       type: z.literal('hello'),
       id: identifierSchema,
       version: z.string().min(1).describe('The version compiled into the connecting view.'),
+      buildId: buildIdSchema.optional().describe('The compiled view build, when available.'),
     }),
     z.object({ type: z.literal('ping'), id: identifierSchema }),
     z.object({ type: z.literal('reconnect') }),
@@ -121,6 +132,8 @@ export const backgroundHelloSchema = z
     type: z.literal('hello'),
     id: identifierSchema,
     version: z.string().min(1).describe('The version compiled into the running background.'),
+    buildId: buildIdSchema.optional().describe('The compiled background build, when available.'),
+    helper: peerBuildSchema.optional().describe('Current native identity, when the helper is connected.'),
   })
   .describe('The background version returned for an exact view challenge.');
 

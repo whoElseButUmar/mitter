@@ -1,4 +1,6 @@
 import { createSignal, onCleanup, type JSX } from 'solid-js';
+import { APP_VERSION, BUILD_ID } from '../../../../packages/protocol/src/index';
+import type { ConnectionBuilds } from '../../src/client';
 import { readinessSchema } from '../../../../packages/protocol/src/rpc';
 import { SetupPanel } from '../../src/views/SetupPanel';
 
@@ -7,6 +9,8 @@ const modes = [
   'missing',
   'unsupported',
   'version',
+  'different-helper-build',
+  'different-background-build',
   'connecting',
   'disconnected',
   'background',
@@ -32,6 +36,25 @@ function connectionError(mode: string) {
       return 'Miter’s background did not answer the workspace check.';
     default:
       return '';
+  }
+}
+
+function builds(mode: string): ConnectionBuilds {
+  const current = { version: APP_VERSION, buildId: BUILD_ID };
+  let other = 'aaaaaaaaaaaaaaaa';
+  if (BUILD_ID === other) {
+    other = 'bbbbbbbbbbbbbbbb';
+  }
+  const mismatch = { version: APP_VERSION, buildId: other };
+  switch (mode) {
+    case 'different-helper-build':
+      return { background: current, helper: mismatch };
+    case 'different-background-build':
+      return { background: mismatch };
+    case 'ready':
+      return { background: current, helper: current };
+    default:
+      return {};
   }
 }
 
@@ -84,6 +107,7 @@ export function createSetupFixture(mount: (component: () => JSX.Element) => void
         <SetupPanel
           connected={['ready', 'unsupported', 'readiness-error'].includes(mode())}
           error={connectionError(mode())}
+          builds={builds(mode())}
           rpc={async (method) => {
             if (method !== 'system.readiness') {
               throw new Error('Setup must not issue a task mutation: ' + method);

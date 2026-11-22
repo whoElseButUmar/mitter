@@ -1,4 +1,5 @@
-import { APP_VERSION } from '../../../packages/protocol/src/index.js';
+import { diagnosticRequest, hostMismatch, type PeerBuild } from './transport/build-connection.js';
+import { APP_VERSION, BUILD_ID, describeBuild, matchesBuild } from '../../../packages/protocol/src/index.js';
 import {
   DataResetCoordinator,
   resetPreparationSchema,
@@ -20,11 +21,29 @@ export function startBackground() {
   let reset: DataResetCoordinator | undefined;
   let lastEvent = 0;
   let announced = false;
+  let helper: PeerBuild | undefined;
+  const setHelper = (version?: string, buildId?: string) => {
+    helper = { version: version ?? 'unknown', buildId };
+    helperMismatch = undefined;
+    if (!matchesBuild(version, buildId)) {
+      helperMismatch = hostMismatch(version, buildId);
+    }
+  };
+  let helperMismatch: string | undefined;
   let disposed = false;
   let restartTimer: ReturnType<typeof setTimeout> | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   const pageIds = new Set<number>();
   const blocked = () => reset?.blocked ?? false;
+  const requireHelper = () => {
+    if (helperMismatch) {
+      throw new Error(helperMismatch);
+    }
+    if (!helper) {
+      host.connect();
+      throw new Error('Checking the local helper build. Try again once Miter connects.');
+    }
+  };
   const getReset = (): DataResetCoordinator => {
     if (!reset) {
       throw new Error('The reset coordinator is not initialized.');
@@ -36,6 +55,9 @@ export function startBackground() {
   const log = (kind: string, message: string) => diagnostics.add(kind, message);
   const host = new NativeHost({
     allow(method) {
+      if (!diagnosticRequest(method)) {
+        requireHelper();
+      }
       if (!blocked() || ['system.resetPrepare', 'system.reset', 'system.resetComplete'].includes(method)) {
         return true;
       }
@@ -47,25 +69,34 @@ export function startBackground() {
       );
     },
     snapshot(snapshot) {
-      if (blocked() || disposed) {
+      if (disposed) {
         return;
       }
-
-      tasks.update(snapshot);
-      const compatible = snapshot.runtime.version === APP_VERSION;
-      let error: string | undefined;
-
-      if (!compatible) {
-        error =
-          `Local host ${snapshot.runtime.version || 'unknown'} differs from Miter ${APP_VERSION}. ` +
-          'Finish setup, then reload Miter in Chrome’s extensions page.';
+      const { version, buildId } = snapshot.runtime;
+      const wasReady = !!helper && !helperMismatch;
+      setHelper(version, buildId);
+      if (helperMismatch) {
+        terminal.incompatible();
+        if (wasReady) {
+          tasks.disconnected();
+        }
       }
-
-      views.broadcast({ event: 'connection', connected: compatible, error });
+      if (blocked()) {
+        return;
+      }
+      tasks.update(snapshot);
+      views.broadcast({ event: 'connection', connected: !helperMismatch, helper, error: helperMismatch });
 
       if (!announced) {
         announced = true;
-        log('host.ready', `Host ${snapshot.runtime.version || 'unknown'}; extension ${APP_VERSION}.`);
+        log(
+          'host.ready',
+          'Helper ' +
+            describeBuild(version, buildId) +
+            '; background ' +
+            describeBuild(APP_VERSION, BUILD_ID) +
+            '.',
+        );
       }
 
       for (const event of [...snapshot.events].reverse()) {
@@ -79,8 +110,18 @@ export function startBackground() {
         }
       }
     },
-    resetRequired: (error) => getReset().recover(error),
+    resetRequired(error, version, buildId) {
+      setHelper(version, buildId);
+      if (helperMismatch) {
+        terminal.incompatible();
+        views.broadcast({ event: 'connection', connected: false, helper, error: helperMismatch });
+        return;
+      }
+      getReset().recover(error);
+    },
     disconnected(error) {
+      helper = undefined;
+      helperMismatch = undefined;
       announced = false;
       terminal.disconnected();
       tasks.disconnected();
@@ -90,14 +131,36 @@ export function startBackground() {
     log,
   });
   const rpc: NativeRPC = host.request.bind(host);
+  const request = async (method: string, params: Record<string, unknown>) => {
+    if (diagnosticRequest(method)) {
+      if (method === 'debug.read') {
+        return diagnostics.read();
+      }
+      return rpc(method, params);
+    }
+    // Workspace initialization can read current state before the startup snapshot arrives.
+    // Its task-state reader validates that reply before syncing browser preferences.
+    if (method !== 'workspace.read' || helperMismatch) {
+      requireHelper();
+    }
+    return tasks.request(method, params);
+  };
   const views = new ViewConnections({
     reset: getReset,
+    currentHelper: () => helper,
+    requireHelper,
     rpc,
     connect: () => {
       host.connect();
     },
-    request: (method, params) => tasks.request(method, params),
-    initialMessages: () => tasks.initialMessages(),
+    request,
+    initialMessages: () => {
+      const messages = tasks.initialMessages();
+      if (helperMismatch) {
+        messages.push({ event: 'connection', connected: false, helper, error: helperMismatch });
+      }
+      return messages;
+    },
     log,
   });
   const notifications = new TaskNotifications({
@@ -110,16 +173,17 @@ export function startBackground() {
   const tasks = createTaskController({
     rpc,
     broadcast: (message) => views.broadcast(message),
-    blocked,
+    blocked: () => blocked() || !!helperMismatch,
     ready: () => getReset().ready,
+    requireHelper,
     notifications,
     diagnostics,
   });
   const terminal = new TerminalControl({
     native: rpc,
-    request: (method, params) => tasks.request(method, params),
+    request,
     ready: () => getReset().ready,
-    blocked,
+    blocked: () => blocked() || !!helperMismatch,
     log,
   });
 

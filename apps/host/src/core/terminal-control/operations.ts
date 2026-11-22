@@ -4,6 +4,8 @@ import path from 'node:path';
 import { z } from 'zod';
 import {
   APP_VERSION,
+  BUILD_ID,
+  matchesBuild,
   projectSchema,
   workerSchema,
   type TaskBoundary,
@@ -91,7 +93,8 @@ export class TerminalOperations {
   private closed = false;
   private lastHeartbeat = 0;
   private browserSession: string | undefined;
-  private rejectedRelay: { extensionVersion: string; at: number } | undefined;
+  private rejectedRelay:
+    { mismatch: Parameters<typeof terminalVersionMismatchMessage>[0]; at: number } | undefined;
 
   constructor(
     private readonly service: Service,
@@ -151,7 +154,7 @@ export class TerminalOperations {
     if (!this.rejectedRelay || this.connected() || this.now() - this.rejectedRelay.at > 60_000) {
       return;
     }
-    return { extensionVersion: this.rejectedRelay.extensionVersion, hostVersion: APP_VERSION };
+    return this.rejectedRelay.mismatch;
   }
 
   private read(requestId: string): Receipt {
@@ -507,11 +510,18 @@ export class TerminalOperations {
     const input = terminalClaimParamsSchema.parse(value);
 
     return this.serialize(() => {
-      if (input.version !== APP_VERSION) {
-        this.rejectedRelay = { extensionVersion: input.version, at: this.now() };
-        throw new Error(
-          terminalVersionMismatchMessage({ extensionVersion: input.version, hostVersion: APP_VERSION }),
-        );
+      if (!matchesBuild(input.version, input.buildId)) {
+        const mismatch = {
+          extensionVersion: input.version,
+          ...(input.buildId && { extensionBuildId: input.buildId }),
+          hostVersion: APP_VERSION,
+          hostBuildId: BUILD_ID,
+        };
+        this.rejectedRelay = { mismatch, at: this.now() };
+        if (this.browserSession === input.sessionId) {
+          this.lastHeartbeat = Number.NEGATIVE_INFINITY;
+        }
+        throw new Error(terminalVersionMismatchMessage(mismatch));
       }
       this.rejectedRelay = undefined;
 
@@ -630,10 +640,8 @@ export class TerminalOperations {
         throw new Error('This acknowledgement does not match the operation’s browser claim.');
       }
 
-      if (this.browserSession === undefined || this.browserSession === input.sessionId) {
-        this.browserSession = input.sessionId;
-        this.lastHeartbeat = this.now();
-      }
+      // Late receipts can acknowledge old work after an upgrade. Only a matching
+      // poll establishes or refreshes a lease for new commands.
 
       if (receipt.acknowledgement) {
         if (JSON.stringify(receipt.acknowledgement) !== JSON.stringify(input)) {

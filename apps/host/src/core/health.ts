@@ -1,7 +1,7 @@
 import { databaseVersion, databaseCheckSchema } from '../adapters/sqlite.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { APP_VERSION, VERSION, type Worker } from '../../../../packages/protocol/src/index.js';
+import { APP_VERSION, BUILD_ID, VERSION, type Worker } from '../../../../packages/protocol/src/index.js';
 import type { Store } from './database.js';
 import { listStateBackups } from './backups.js';
 import type { Health } from '../../../../packages/protocol/src/rpc.js';
@@ -23,6 +23,7 @@ export async function inspectHealth(
 
   return {
     version: APP_VERSION,
+    buildId: BUILD_ID,
     protocol: VERSION,
     node: process.version,
     platform: process.platform,

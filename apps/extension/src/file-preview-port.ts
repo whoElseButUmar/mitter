@@ -1,3 +1,4 @@
+import { auxiliaryPort } from './transport/build-connection.js';
 import { parseFileTarget } from '../../../packages/ui/src/file-target.js';
 import { assetRequestSchema, validateAssetChunk } from './schemas/preview.js';
 import { rpcRequestSchema } from './schemas/messages.js';
@@ -19,7 +20,7 @@ export function bindFilePreviewPort(
   const url = sender?.url;
 
   if (
-    port.name !== 'miter-file-preview' ||
+    port.name !== auxiliaryPort('miter-file-preview') ||
     sender?.id !== dependencies.extensionId ||
     !url ||
     documentURL(url) !== dependencies.viewerURL ||

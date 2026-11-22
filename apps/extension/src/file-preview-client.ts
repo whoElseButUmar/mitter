@@ -1,10 +1,11 @@
+import { auxiliaryPort } from './transport/build-connection.js';
 import { assetRequestSchema, validateAssetChunk, type AssetChunk } from './schemas/preview.js';
 import { ViewRequestPort } from './transport/view-request-port.js';
 
 /** One lightweight read-only connection. Reconnection never triggers execution. */
 export class FilePreviewClient {
   private readonly connection = new ViewRequestPort(
-    'miter-file-preview',
+    auxiliaryPort('miter-file-preview'),
     'File window closed.',
     (detail) => detail || 'File connection closed. Reload to reconnect.',
   );

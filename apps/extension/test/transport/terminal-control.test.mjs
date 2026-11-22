@@ -420,3 +420,23 @@ test('terminal control methods are native capabilities and cannot be forwarded b
   assert.equal(viewRpcRegistry['terminal.claim'], undefined);
   assert.equal(viewRpcRegistry['terminal.complete'], undefined);
 });
+
+test('a helper build change retires a late claim and its receipt', async (context) => {
+  const current = command();
+  const state = setup(context, current);
+  const pending = deferred();
+  state.handleNative(() => pending.promise);
+  await state.tick();
+  const previousId = state.native[0].params.sessionId;
+  state.relay.incompatible();
+  pending.resolve({ command: current });
+  await settle();
+  state.handleNative(async () => ({ command: null }));
+  await state.tick();
+  assert.deepEqual(
+    state.native.map(({ method }) => method),
+    ['terminal.claim', 'terminal.claim'],
+  );
+  assert.notEqual(previousId, state.native[1].params.sessionId);
+  assert.equal(state.dispatched.length, 0);
+});

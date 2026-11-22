@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { describeBuild } from './build-id.js';
+import { buildIdSchema } from './schemas/primitives.js';
 import { previewStartResultSchema } from './rpc/preview.js';
 import { workerCreationSchema } from './rpc/requests.js';
 import {
@@ -146,10 +148,16 @@ const relayVersion = z.string().min(1).max(100).describe('The application versio
 const versionMismatchSchema = z.strictObject({
   extensionVersion: relayVersion.describe('The running Chrome extension version that attempted to connect.'),
   hostVersion: relayVersion.describe('The version required by the running native host.'),
+  extensionBuildId: buildIdSchema
+    .optional()
+    .describe('The fingerprint provided by the browser relay, if known.'),
+  hostBuildId: buildIdSchema.optional().describe('The fingerprint of the running helper, if known.'),
 });
 
 export function terminalVersionMismatchMessage(mismatch: z.infer<typeof versionMismatchSchema>): string {
-  return `The Chrome extension reports Miter ${mismatch.extensionVersion}. The local helper requires ${mismatch.hostVersion}. Reload Miter in chrome://extensions in the Chrome profile you use for tasks.`;
+  const extension = describeBuild(mismatch.extensionVersion, mismatch.extensionBuildId);
+  const host = describeBuild(mismatch.hostVersion, mismatch.hostBuildId);
+  return `The Chrome extension reports Miter ${extension}. The local helper requires ${host}. Reload Miter in chrome://extensions in the Chrome profile you use for tasks.`;
 }
 
 export const terminalListSchema = z
@@ -250,6 +258,7 @@ export const terminalClaimParamsSchema = z
   .strictObject({
     sessionId: operationId,
     version: relayVersion.describe('The running extension version; it must match this host.'),
+    buildId: buildIdSchema.optional().describe('The running extension fingerprint; legacy relays omit it.'),
     available: z
       .boolean()
       .describe('Whether the relay is ready for another command; false still refreshes its heartbeat.'),

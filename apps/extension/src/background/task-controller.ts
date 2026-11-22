@@ -1,3 +1,4 @@
+import { hostMismatch } from '../transport/build-connection.js';
 import {
   localRpcRegistry,
   type BridgeStartResult,
@@ -22,7 +23,7 @@ import {
   type ReplyPreview,
 } from '../../../../packages/bridge/src/reply-recovery.js';
 import {
-  APP_VERSION,
+  matchesBuild,
   type Snapshot,
   type TaskBoundary,
   type Worker,
@@ -103,6 +104,7 @@ type TaskDependencies = {
   rpc: NativeRPC;
   broadcast(message: unknown): void;
   blocked(): boolean;
+  requireHelper?(): void;
   ready(): Promise<void>;
   notifications: TaskNotifications;
   diagnostics: Diagnostics;
@@ -203,8 +205,8 @@ function canRecoverWait(
 }
 
 function requireChatStartWorker(fresh: Snapshot, workerId: string): Worker {
-  if (fresh.runtime.version !== APP_VERSION) {
-    throw new Error('Reload Miter after completing setup so the host and extension versions match.');
+  if (!matchesBuild(fresh.runtime.version, fresh.runtime.buildId)) {
+    throw new Error(hostMismatch(fresh.runtime.version, fresh.runtime.buildId));
   }
 
   const worker = fresh.workers.find((worker) => worker.id === workerId);
@@ -229,6 +231,14 @@ function requireChatStartWorker(fresh: Snapshot, workerId: string): Worker {
 export function createTaskController(dependencies: TaskDependencies) {
   const { rpc, broadcast, notifications, diagnostics } = dependencies;
   let disposed = false;
+  async function readTaskState(): Promise<Snapshot> {
+    const fresh = await rpc('state', {}, snapshotSchema);
+    const { version, buildId } = fresh.runtime;
+    if (!matchesBuild(version, buildId)) {
+      throw new PageBridgeError('HOST_VERSION_MISMATCH', hostMismatch(version, buildId));
+    }
+    return fresh;
+  }
   const checkAvailable = (): void => {
     if (dependencies.blocked() || disposed) {
       throw new Error(
@@ -420,6 +430,9 @@ export function createTaskController(dependencies: TaskDependencies) {
           return Promise.reject(new Error('Data reset in progress. No page operation was sent.'));
         }
 
+        if (!stopping && !handshake.success) {
+          dependencies.requireHelper?.();
+        }
         return chrome.tabs.sendMessage(tabId, message, { frameId: 0 });
       },
       inject: async (tabId) => {
@@ -456,7 +469,12 @@ export function createTaskController(dependencies: TaskDependencies) {
   }
 
   function reattachWaitingReplies(): void {
-    if (!snapshot || snapshot.runtime.version !== APP_VERSION || disposed || dependencies.blocked()) {
+    if (
+      !snapshot ||
+      !matchesBuild(snapshot.runtime.version, snapshot.runtime.buildId) ||
+      disposed ||
+      dependencies.blocked()
+    ) {
       return;
     }
     for (const summary of snapshot.bridgeProgress ?? []) {
@@ -534,7 +552,7 @@ export function createTaskController(dependencies: TaskDependencies) {
       const checkpoint = fresh.bridgeProgress?.find((item) => item.workerId === workerId);
       const savedLink = links.get(workerId);
       if (
-        fresh.runtime.version !== APP_VERSION ||
+        !matchesBuild(fresh.runtime.version, fresh.runtime.buildId) ||
         !current ||
         !checkpoint ||
         !canRecoverWait(current, checkpoint) ||
@@ -694,7 +712,7 @@ export function createTaskController(dependencies: TaskDependencies) {
       check,
       async verify() {
         check();
-        const fresh = await rpc('state', {}, snapshotSchema);
+        const fresh = await readTaskState();
         check();
 
         if (expectedRun) {
@@ -740,7 +758,7 @@ export function createTaskController(dependencies: TaskDependencies) {
       check,
       async verify() {
         check();
-        const fresh = await (admission?.verify() ?? rpc('state', {}, snapshotSchema));
+        const fresh = await (admission?.verify() ?? readTaskState());
         check();
         const worker = fresh.workers.find((worker) => worker.id === workerId);
         checkWorker(worker);
@@ -774,7 +792,7 @@ export function createTaskController(dependencies: TaskDependencies) {
 
   async function refreshSnapshot(check: () => void = () => {}, admission?: TaskAdmission): Promise<Snapshot> {
     // Reviewed intents must reject intervening updates before caching a late state response.
-    const fresh = await (admission?.verify() ?? rpc('state', {}, snapshotSchema));
+    const fresh = await (admission?.verify() ?? readTaskState());
     admission?.check();
     snapshot = fresh;
     check();
@@ -795,7 +813,7 @@ export function createTaskController(dependencies: TaskDependencies) {
 
     try {
       await runners.get(workerId)?.flushed();
-      const before = await rpc('state', {}, snapshotSchema);
+      const before = await readTaskState();
       snapshot = before;
       const task = before.workers.find((worker) => worker.id === workerId);
 
@@ -1018,7 +1036,7 @@ export function createTaskController(dependencies: TaskDependencies) {
             );
           }
 
-          const fresh = await rpc('state', {}, snapshotSchema);
+          const fresh = await readTaskState();
           checkStartup();
           checkWorker(fresh.workers.find((current) => current.id === workerId));
           snapshot = fresh;
@@ -1029,7 +1047,7 @@ export function createTaskController(dependencies: TaskDependencies) {
           checkAvailable();
           const before = snapshot;
           const connection = hostConnection;
-          const fresh = await rpc('state', {}, snapshotSchema);
+          const fresh = await readTaskState();
           checkRunner();
           checkStart();
           checkAvailable();
@@ -1039,12 +1057,6 @@ export function createTaskController(dependencies: TaskDependencies) {
           if (connection !== hostConnection) {
             throw new Error(
               'The local host disconnected again during the state read. Its result was discarded.',
-            );
-          }
-          if (fresh.runtime.version !== APP_VERSION) {
-            throw new PageBridgeError(
-              'HOST_VERSION_MISMATCH',
-              'Complete setup and reload Miter so the host and extension versions match.',
             );
           }
           // A newer pushed state may contain Pause/Stop. Never replace it with a late read.
@@ -1179,7 +1191,7 @@ export function createTaskController(dependencies: TaskDependencies) {
           if (tab.url !== destination + '/') {
             return;
           }
-          const fresh = await rpc('state', {}, snapshotSchema);
+          const fresh = await readTaskState();
           checkStartup();
           checkWorker(fresh.workers.find((current) => current.id === workerId));
           if (
@@ -1408,8 +1420,8 @@ export function createTaskController(dependencies: TaskDependencies) {
       check();
       const fresh = await refreshSnapshot(check, startup);
 
-      if (fresh.runtime.version !== APP_VERSION) {
-        throw new Error('Reload Miter after completing setup so the host and extension versions match.');
+      if (!matchesBuild(fresh.runtime.version, fresh.runtime.buildId)) {
+        throw new Error(hostMismatch(fresh.runtime.version, fresh.runtime.buildId));
       }
 
       const worker = fresh.workers.find((item) => item.id === workerId);
@@ -1654,8 +1666,8 @@ export function createTaskController(dependencies: TaskDependencies) {
     check();
     const fresh = await refreshSnapshot(check);
 
-    if (fresh.runtime.version !== APP_VERSION) {
-      throw new Error('Complete setup and reload Miter so the host and extension versions match.');
+    if (!matchesBuild(fresh.runtime.version, fresh.runtime.buildId)) {
+      throw new Error(hostMismatch(fresh.runtime.version, fresh.runtime.buildId));
     }
 
     const worker = fresh.workers.find((item) => item.id === workerId);
@@ -2185,7 +2197,7 @@ export function createTaskController(dependencies: TaskDependencies) {
         return { stopped: false };
       }
 
-      const fresh = await rpc('state', {}, snapshotSchema);
+      const fresh = await readTaskState();
       const worker = fresh.workers.find((worker) => worker.id === workerId);
 
       if (
@@ -2658,7 +2670,7 @@ export function createTaskController(dependencies: TaskDependencies) {
       }
     };
     check();
-    const current = snapshot ?? (await rpc('state', {}, snapshotSchema));
+    const current = snapshot ?? (await readTaskState());
     check();
 
     if (!current.workers.some((worker) => worker.id === workerId)) {
@@ -2746,14 +2758,20 @@ export function createTaskController(dependencies: TaskDependencies) {
       return messages;
     },
     update(next: Snapshot): void {
-      if (dependencies.blocked() || disposed) {
+      if (disposed) {
         return;
       }
-
-      snapshot = next;
-      if (next.runtime.version === APP_VERSION) {
-        completedPreviews.update(next);
+      if (!matchesBuild(next.runtime.version, next.runtime.buildId)) {
+        snapshot = next;
+        broadcast({ event: 'snapshot', data: next });
+        invalidateStarts();
+        return;
       }
+      if (dependencies.blocked()) {
+        return;
+      }
+      snapshot = next;
+      completedPreviews.update(next);
       reattachWaitingReplies();
       notifications.snapshot(next);
       broadcast({ event: 'snapshot', data: next });

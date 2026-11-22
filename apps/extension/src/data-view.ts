@@ -1,3 +1,4 @@
+import { auxiliaryPort } from './transport/build-connection.js';
 import type { DataResetState } from '../../../packages/bridge/src/data-reset.js';
 import { RESET_VIEW_PARAM } from '../../../packages/bridge/src/reset-views.js';
 import { resetMessageSchema } from './schemas/messages.js';
@@ -136,7 +137,7 @@ export function connectResetView(
     let current: chrome.runtime.Port;
 
     try {
-      current = chrome.runtime.connect({ name: 'miter-data-view' });
+      current = chrome.runtime.connect({ name: auxiliaryPort('miter-data-view') });
       port = current;
     } catch (error) {
       disconnected(errorMessage(error));

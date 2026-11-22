@@ -6,10 +6,13 @@ import { bindFilePreviewPort } from '../file-preview-port.js';
 import { resetStartSchema, rpcRequestSchema, uiControlSchema } from '../schemas/messages.js';
 import { documentURL, errorMessage } from '../schemas/primitives.js';
 import type { NativeRPC } from '../transport/native-host.js';
-import { APP_VERSION } from '../../../../packages/protocol/src/index.js';
+import { auxiliaryPort, viewMismatch, type PeerBuild } from '../transport/build-connection.js';
+import { APP_VERSION, BUILD_ID, matchesBuild } from '../../../../packages/protocol/src/index.js';
 
 type ViewDependencies = {
   reset(): DataResetCoordinator;
+  requireHelper?(): void;
+  currentHelper?(): PeerBuild | undefined;
   rpc: NativeRPC;
   connect(): void;
   request(method: string, params: Record<string, unknown>): Promise<unknown>;
@@ -168,6 +171,12 @@ export class ViewConnections {
       }
 
       const request = message.data;
+      try {
+        this.dependencies.requireHelper?.();
+      } catch (error) {
+        this.post(port, { id: request.id, ok: false, error: errorMessage(error) });
+        return;
+      }
       void reset
         .clear(request.confirmation)
         .then(() => this.post(port, { id: request.id, ok: true }))
@@ -212,7 +221,7 @@ export class ViewConnections {
   };
 
   private bind(port: chrome.runtime.Port): void {
-    if (port.name === 'miter-data-view') {
+    if (port.name === auxiliaryPort('miter-data-view')) {
       this.bindReset(port);
       return;
     }
@@ -224,10 +233,10 @@ export class ViewConnections {
       return;
     }
 
-    if (port.name === 'miter-terminal' || port.name === 'miter-file-preview') {
+    if (port.name === auxiliaryPort('miter-terminal') || port.name === auxiliaryPort('miter-file-preview')) {
       let dispose: (() => void) | undefined;
 
-      if (port.name === 'miter-terminal') {
+      if (port.name === auxiliaryPort('miter-terminal')) {
         dispose = bindTerminalPort(port, {
           extensionId: chrome.runtime.id,
           viewURLs: this.viewURLs,
@@ -266,7 +275,7 @@ export class ViewConnections {
     this.views.add(port);
     let compatible = false;
     let initialized = false;
-    const reloadMessage =
+    let reloadMessage =
       'Miter could not confirm a matching view version. Open chrome://extensions, click Reload on Miter, ' +
       'then reopen the workspace. No operation was sent.';
     const inFlight = new Set<string>();
@@ -279,7 +288,10 @@ export class ViewConnections {
 
       if (control.success) {
         if (control.data.type === 'hello') {
-          compatible = control.data.version === APP_VERSION;
+          compatible = matchesBuild(control.data.version, control.data.buildId);
+          if (!compatible) {
+            reloadMessage = viewMismatch(control.data, { version: APP_VERSION, buildId: BUILD_ID });
+          }
 
           if (compatible) {
             this.readyViews.add(port);
@@ -287,7 +299,14 @@ export class ViewConnections {
             this.readyViews.delete(port);
           }
 
-          this.post(port, { type: 'hello', id: control.data.id, version: APP_VERSION });
+          const helper = this.dependencies.currentHelper?.();
+          this.post(port, {
+            type: 'hello',
+            id: control.data.id,
+            version: APP_VERSION,
+            buildId: BUILD_ID,
+            ...(helper && { helper }),
+          });
 
           if (!compatible) {
             this.post(port, { event: 'connection', connected: false, error: reloadMessage });

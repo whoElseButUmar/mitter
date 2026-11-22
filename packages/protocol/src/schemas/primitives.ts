@@ -1,5 +1,10 @@
 import { z } from 'zod';
 
+export const buildIdSchema = z
+  .string()
+  .regex(/^(?:source|[a-f0-9]{16})$/)
+  .describe('The source fingerprint stamped into an installed Miter build.');
+
 /** These bounds count UTF-16 code units, not transport bytes. */
 export function textSchema(label: string, maximum = 4000, allowEmpty = false) {
   const message = `Invalid ${label} (maximum ${maximum} characters).`;

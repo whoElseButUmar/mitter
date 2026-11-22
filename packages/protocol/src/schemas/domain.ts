@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { VERSION } from '../constants.js';
 import { actionSchema, checkSchema } from './actions.js';
 import { envelopeSchema } from './envelopes.js';
-import { identifierSchema } from './primitives.js';
+import { buildIdSchema, identifierSchema } from './primitives.js';
 import { settingsSchema } from './model-settings.js';
 import { readerDiagnosticSchema } from './reader-diagnostic.js';
 import { followupSummarySchema } from './requests.js';
@@ -309,6 +309,9 @@ export const bridgeProgressSummarySchema = z
 export const runtimeSchema = z
   .strictObject({
     version: z.string().optional().describe('Optional installed runtime version.'),
+    buildId: buildIdSchema
+      .optional()
+      .describe('The fingerprint reported by this helper; older helpers omit it.'),
     node: z.string().describe('Node runtime status.'),
     workflow: z.string().describe('Workflow runtime status.'),
     models: z.string().describe('Model runtime status.'),

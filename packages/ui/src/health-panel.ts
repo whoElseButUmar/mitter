@@ -1,3 +1,4 @@
+import { describeBuild } from '../../protocol/src/index.js';
 import { textElement } from './dom/elements.js';
 import type { HealthReport } from './forms/report-schemas.js';
 import { callCoreRpc } from './rpc.js';
@@ -96,7 +97,7 @@ export function mountHealthPanel(root: HTMLElement, options: HealthPanelOptions)
     }
 
     for (const [label, value] of [
-      ['Version', next.version],
+      ['Helper build', describeBuild(next.version, next.buildId)],
       ['Runtime', next.node + ' · ' + next.workflow],
       ['Tasks', next.tasks.total + ' saved · ' + next.tasks.active + ' executing locally'],
       ['State directory', next.dataDirectory],

@@ -129,7 +129,10 @@ async function verificationFixture(context) {
     'dist/packages/bridge/src/page-transport.js',
     'export const PAGE_CHANNEL = "fixture-channel"; export const PAGE_READER = "fixture-reader";',
   );
-  await fixture.write('dist/packages/protocol/src/index.js', 'export const APP_VERSION = "' + version + '";');
+  await fixture.write(
+    'dist/packages/protocol/src/index.js',
+    'export const APP_VERSION = "' + version + '"; export const BUILD_ID = "abcdef0123456789";',
+  );
 
   for (const filename of [
     'apps/host/src/native.js',
@@ -166,7 +169,7 @@ async function verificationFixture(context) {
     await fixture.write(output + '/' + filename, '<!doctype html>\n');
   }
 
-  await fixture.write(output + '/background.js', 'globalThis.backgroundFixture = true;\n');
+  await fixture.write(output + '/background.js', 'globalThis.backgroundFixture = "abcdef0123456789";\n');
   await fixture.write(output + '/fonts/' + FONT_FILE, fontBytes);
   await fixture.write(output + '/fonts/OFL.txt', 'Copyright fixture\nSIL OPEN FONT LICENSE Version 1.1\n');
   await fixture.write(output + '/fonts/FONT-SOURCE.json', JSON.stringify(recordedFont));
@@ -204,6 +207,15 @@ test('build verification succeeds without changing assets and preserves its repo
   assert.deepEqual(buildVerificationSchema.parse(result), result);
   assert.deepEqual(await ownedFiles(fixture.root), originalFiles);
   assert.deepEqual(await readFile(fontFile), originalFont);
+});
+
+test('build verification rejects a same-version helper and background built from different sources', async (context) => {
+  const fixture = await verificationFixture(context);
+  await fixture.write(
+    fixture.output + '/background.js',
+    'globalThis.backgroundFixture = "fedcba9876543210";',
+  );
+  await assert.rejects(fixture.verifyBuild(fixture.root), /different build IDs/);
 });
 
 test('build verification rejects missing or empty host entrypoints without executing them', async (context) => {

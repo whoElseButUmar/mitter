@@ -1,6 +1,6 @@
 {
   "name": "mitter",
-  "version": "1.0.0-rc.65",
+  "version": "1.0.0-rc.66",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@12.11.2",
@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "pnpm build:host && pnpm build:extension && pnpm verify:build",
-    "build:host": "tsc -p tsconfig.host.json && node scripts/build-page.mjs",
+    "build:host": "tsc -p tsconfig.host.json && node scripts/build/stamp-host.mjs && node scripts/build-page.mjs",
     "build:extension": "node scripts/check-security-policy.mjs && node scripts/check-extension-boundaries.mjs && pnpm --filter @mitter/extension build",
     "check": "pnpm check:standards && pnpm format:check && pnpm check:protocol && pnpm check:bridge && pnpm check:terminal && pnpm check:ui && pnpm check:host && pnpm check:extension && pnpm check:scripts",
     "check:standards": "node scripts/check-source-standards.mjs",
