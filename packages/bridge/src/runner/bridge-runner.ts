@@ -1,10 +1,5 @@
 import { z } from 'zod';
-import {
-  bootstrapDraftSchema,
-  matchesBootstrapDraft,
-  rawDraftDigest,
-  type BootstrapDraft,
-} from '../bootstrap-draft.js';
+import { bootstrapDraftSchema, matchesBootstrapDraft, rawDraftDigest } from '../bootstrap-draft.js';
 import {
   ReplyGapTracker,
   REPLY_GAP_IDLE_MS,
@@ -20,6 +15,7 @@ import { ReplyValidationError, correctionAdvice, type ReplyIssue } from '../../.
 import type { ReaderDiagnostic, TaskBoundary, Worker } from '../../../protocol/src/index.js';
 import { parseRpcParams, RpcResultValidationError } from '../../../protocol/src/rpc.js';
 import type { ChatView, DomRequest } from '../chat-dom.js';
+import { isEmptyChat } from '../dom/types.js';
 import { PageBridgeError } from '../page-transport.js';
 import {
   matchesRecoverableWait,
@@ -162,6 +158,7 @@ export class BridgeRunner {
         messageId: string;
         startedAt: number;
         commitIntent: boolean;
+        adoptBootstrapDraft?: true;
         composerSession?: string;
       }
     | undefined;
@@ -981,10 +978,10 @@ export class BridgeRunner {
 
   private async requestPage(
     op: DomRequest['op'],
-    text?: string,
-    messageId?: string,
-    composerSession?: string,
-    staleDraft?: BootstrapDraft,
+    details: Pick<
+      DomRequest,
+      'text' | 'messageId' | 'composerSession' | 'staleDraft' | 'adoptBootstrapDraft'
+    > = {},
   ): Promise<ChatView> {
     // The new-chat route can be provisional. Only inspections may look across
     // that transition; writes remain pinned to the last proven exact URL.
@@ -1004,10 +1001,7 @@ export class BridgeRunner {
       op,
       token: this.options.token,
       url: expected,
-      text,
-      messageId,
-      composerSession,
-      staleDraft,
+      ...details,
       expiresAt: this.activeTimeDeadline,
       allowConversationBind: this.pendingConversationBind,
       preservePause: this.options.reattachRevision !== undefined || undefined,
@@ -1590,13 +1584,11 @@ export class BridgeRunner {
       }
       if (proof) {
         const verified = bootstrapDraftSchema.parse(proof);
-        page = await this.requestPage(
-          'clear_draft',
-          page.draftText,
-          undefined,
-          page.composerSession,
-          verified,
-        );
+        page = await this.requestPage('clear_draft', {
+          text: page.draftText,
+          composerSession: page.composerSession,
+          staleDraft: verified,
+        });
         this.assertCanContinue();
         if (page.outcome !== 'cleared' || page.draft) {
           throw new PageBridgeError('DRAFT_CONFLICT', 'The restored draft could not be cleared safely.');
@@ -1626,6 +1618,11 @@ export class BridgeRunner {
         !!page.lastUserText &&
         (await receiptMatches(page.lastUserText)));
     this.assertCanContinue();
+    const emptyBootstrapChat =
+      this.pendingConversationBind &&
+      chatStartURL(page.url, true) === this.bootstrapOrigin &&
+      isEmptyChat(page) &&
+      !page.busy;
     if (page.draft && (await receiptMatches(page.draftText))) {
       if (this.progress && ['commit_intent', 'waiting_reply'].includes(this.progress.stage)) {
         throw new PageBridgeError(
@@ -1633,8 +1630,20 @@ export class BridgeRunner {
           'A prior Send may have happened, but its draft is still present. It was not sent twice. Check the linked chat before continuing.',
         );
       }
-      await this.send(messagePayload(page.draftText), page);
+      let mode: 'adopt-bootstrap' | undefined;
+      if (emptyBootstrapChat && this.progress?.stage === 'prepared' && this.status.turns === 0) {
+        mode = 'adopt-bootstrap';
+      }
+      await this.send(messagePayload(page.draftText), page, mode);
       return;
+    }
+    if (freshComposer && emptyBootstrapChat && page.draft) {
+      const frame = unwrapMessage(page.draftText);
+      if (frame && page.draftText === buildExchangeMessage(this.bootstrapPrompt, frame.exchangeId, worker)) {
+        // The host has no previous Send and the full draft matches this exact task.
+        await this.send(frame.payload, page, 'adopt-bootstrap');
+        return;
+      }
     }
     if (
       this.progress?.stage === 'prepared' &&
@@ -1734,20 +1743,7 @@ export class BridgeRunner {
     // durable exact-zero checkpoint distinguishes that case from a missing
     // conversation with earlier sends or imported work. Only a blank new-chat
     // root can continue; an uncertain or prepared send still requires recovery.
-    const unsentNewChat =
-      this.options.newChat === true &&
-      this.pendingConversationBind &&
-      chatStartURL(page.url, true) === this.bootstrapOrigin &&
-      isUnsentBootstrap(this.progress) &&
-      !this.options.lastReceipt &&
-      page.count === 0 &&
-      page.userCount === 0 &&
-      !page.lastRole &&
-      !page.lastUserText &&
-      !page.assistantText &&
-      !page.codeReply &&
-      !page.busy &&
-      !page.draft;
+    const unsentNewChat = freshComposer && emptyBootstrapChat && !page.draft;
     if (this.options.resumeExisting && !ownedUser && !ownedAssistant && !page.draft && !unsentNewChat) {
       if (page.count === 0 || (page.busy && !page.lastUserText)) {
         this.update('connecting', 'Reopening the saved chat… Waiting for this task’s messages.');
@@ -1902,7 +1898,7 @@ export class BridgeRunner {
     return buildReportPrompt(this.nextStepPrompt, report);
   }
 
-  private async send(text: string, page: ChatView, confirmedResend = false): Promise<void> {
+  private async send(text: string, page: ChatView, mode?: 'resend' | 'adopt-bootstrap'): Promise<void> {
     this.assertCanContinue();
     if (this.status.turns >= this.status.maxTurns) {
       throw new PageBridgeError(
@@ -1934,13 +1930,14 @@ export class BridgeRunner {
       // unlinked send. This is allowed only against the saved full receipt.
       expectsReplyTo =
         !!frame &&
-        saved?.expectsReplyTo === true &&
-        frame.exchangeId === saved.exchangeId &&
-        saved.workerId === worker.id &&
-        saved.projectId === worker.projectId &&
-        saved.goalHash === (await messageDigest(worker.goal)) &&
-        (await matchesReceipt(text, saved));
-    } else if (confirmedResend) {
+        ((mode === 'adopt-bootstrap' && !saved) ||
+          (saved?.expectsReplyTo === true &&
+            frame.exchangeId === saved.exchangeId &&
+            saved.workerId === worker.id &&
+            saved.projectId === worker.projectId &&
+            saved.goalHash === (await messageDigest(worker.goal)) &&
+            (await matchesReceipt(text, saved))));
+    } else if (mode === 'resend') {
       if (!(await this.matchesSavedReceipt(text))) {
         throw new PageBridgeError(
           'RESEND_MISMATCH',
@@ -2071,6 +2068,7 @@ export class BridgeRunner {
       messageId,
       startedAt: this.now(),
       commitIntent: false,
+      ...(mode === 'adopt-bootstrap' && { adoptBootstrapDraft: true }),
     };
     this.lastSendReadiness = '';
     await this.advanceSend();
@@ -2099,7 +2097,11 @@ export class BridgeRunner {
     let prepared: ChatView | undefined;
     try {
       if (!pending.commitIntent) {
-        prepared = await this.requestPage('prepare', pending.text, pending.messageId);
+        prepared = await this.requestPage('prepare', {
+          text: pending.text,
+          messageId: pending.messageId,
+          adoptBootstrapDraft: pending.adoptBootstrapDraft,
+        });
         this.assertCanContinue();
         if (prepared.outcome === 'pending') {
           this.sendReadiness(prepared.readiness || 'send_not_ready');
@@ -2174,7 +2176,12 @@ export class BridgeRunner {
       if (prepared && ['already_clicked', 'already_sent'].includes(prepared.outcome || '')) {
         result = prepared;
       } else {
-        result = await this.requestPage('commit', pending.text, pending.messageId, pending.composerSession);
+        result = await this.requestPage('commit', {
+          text: pending.text,
+          messageId: pending.messageId,
+          composerSession: pending.composerSession,
+          adoptBootstrapDraft: pending.adoptBootstrapDraft,
+        });
       }
       this.assertCanContinue();
       if (result.outcome === 'pending') {
@@ -4090,7 +4097,7 @@ export class BridgeRunner {
       this.assertCanContinue();
       // Confirmation belongs to these reviewed bytes, not mutable recovery state.
       // Reserve another turn without repeating an imported action batch.
-      await this.send(expectedPrompt, view, true);
+      await this.send(expectedPrompt, view, 'resend');
       const pending = !!this.pendingSend;
       if (pending) {
         this.dependencies.log(

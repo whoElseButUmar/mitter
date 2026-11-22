@@ -3,7 +3,7 @@ import { normalizeMessageText } from '../schemas/primitives.js';
 import { composerSelector, pageElements } from './page-elements.js';
 import type { ComposerState } from './session-state.js';
 import { editableText } from './user-reader.js';
-import type { ChatView, DomRequest, PreparedMessage } from './types.js';
+import { isEmptyChat, type ChatView, type DomRequest, type PreparedMessage } from './types.js';
 
 export type { ComposerState } from './session-state.js';
 
@@ -77,6 +77,12 @@ function preparedUserChanged(view: ChatView, prepared: PreparedMessage): boolean
   );
 }
 
+function checkBootstrapDraft(request: DomRequest, view: ChatView, text: string): void {
+  if (request.adoptBootstrapDraft && (!isEmptyChat(view) || view.draftText !== text)) {
+    failOperation('DRAFT_CHANGED', 'The prepared task draft or chat changed. No new Send was attempted.');
+  }
+}
+
 export async function sendComposerMessage(
   request: DomRequest,
   session: ComposerState,
@@ -130,6 +136,7 @@ export async function sendComposerMessage(
     if (previousView.busy) {
       return { ...previousView, outcome: 'pending', readiness: 'generating' };
     }
+    checkBootstrapDraft(request, previousView, outgoingText);
     const composerField = findComposer();
     if (!composerField) {
       failOperation('COMPOSER_MISSING', 'ChatGPT’s composer is not ready. Check that you are signed in.');
@@ -237,6 +244,7 @@ export async function sendComposerMessage(
   if (previousView.busy) {
     return { ...previousView, outcome: 'pending', readiness: 'generating' };
   }
+  checkBootstrapDraft(request, previousView, outgoingText);
   const composer = findComposer();
   if (!composer || normalizeMessageText(composerText(composer)) !== normalizeMessageText(outgoingText)) {
     failOperation('DRAFT_CHANGED', 'The draft changed before sending. Mitter did not click Send.');

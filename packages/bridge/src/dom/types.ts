@@ -12,9 +12,9 @@ import { identifierSchema, nonNegativeIntegerSchema } from '../schemas/primitive
 
 export const USER_READER_VERSION = 'user-turn/8';
 // Increment when packaged DOM behavior changes without changing the compatible reader protocol.
-export const PAGE_READER_REVISION = 8;
+export const PAGE_READER_REVISION = 9;
 // Build verification checks this exact marker in the packaged page script.
-export const ASSISTANT_READER_VERSION = 'logical-pre/5-user-turn/8-discovery/8-code-reply/6-send/3-control/2';
+export const ASSISTANT_READER_VERSION = 'logical-pre/5-user-turn/8-discovery/8-code-reply/6-send/4-control/2';
 
 export const domRequestSchema = z
   .object({
@@ -41,6 +41,10 @@ export const domRequestSchema = z
     text: z.string().optional().describe('Outgoing composer text, unchanged by the bridge.'),
     messageId: z.string().optional().describe('Send intent ID used to prevent duplicate clicks.'),
     composerSession: identifierSchema.optional().describe('Document that prepared this send intent.'),
+    adoptBootstrapDraft: z
+      .literal(true)
+      .optional()
+      .describe('Prepare and send only if the existing bootstrap draft is still in an empty chat.'),
     staleDraft: bootstrapDraftSchema
       .optional()
       .describe('Exact confirmed stale draft authorized by the coordinator.'),
@@ -407,6 +411,18 @@ export const chatViewSchema = z
   })
   .describe('Operation-dependent page observations without implicit defaults or execution authority.');
 export type ChatView = z.infer<typeof chatViewSchema>;
+
+export function isEmptyChat(view: ChatView): boolean {
+  return (
+    view.count === 0 &&
+    view.userCount === 0 &&
+    !view.lastRole &&
+    !view.lastUserText &&
+    !view.assistantText &&
+    !view.codeReply &&
+    (!view.transcript || view.transcript.state === 'empty')
+  );
+}
 
 export const preparedMessageSchema = z
   .object({

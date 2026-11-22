@@ -553,7 +553,7 @@ test('structural and direct-code diagnostic keys retain reply identity across re
   const harness = createHarness({
     view: {
       assistantReadStats: {
-        extractor: 'logical-pre/5-user-turn/8-discovery/8-code-reply/6-send/3-control/2',
+        extractor: 'logical-pre/5-user-turn/8-discovery/8-code-reply/6-send/4-control/2',
         preElements: 1,
         visiblePreElements: 1,
         nestedWrappers: 0,

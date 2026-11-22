@@ -3102,6 +3102,19 @@ button.miter-toast-close:hover {
   margin: 0 0 var(--space-md);
 }
 
+.terminal-load-failure {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  border-top: 1px solid var(--line);
+}
+
+.terminal-load-failure p {
+  margin: 0;
+}
+
 .connection-guide pre,
 .setup-panel pre {
   white-space: pre-wrap;

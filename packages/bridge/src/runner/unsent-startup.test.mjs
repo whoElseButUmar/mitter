@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createHarness } from './fixtures.mjs';
 
+const { buildExchangeMessage } = await import('./prompts.ts');
+
 const newChatOptions = { newChat: true, url: 'https://chatgpt.com/' };
 // The page adapter removes the root's trailing slash in its observations.
 const emptyNewChat = { url: 'https://chatgpt.com' };
@@ -110,6 +112,37 @@ test('resuming an unsent task still preserves a restored unrelated draft', async
   await assert.rejects(harness.runner.start(), { code: 'DRAFT_CONFLICT' });
   assert.equal(harness.commits.length, 0);
   assert.equal(harness.progress().turns, 0);
+});
+
+test('an exact framed bootstrap in a never-sent chat keeps its exchange and sends once', async () => {
+  const progress = await pausedBeforeSend();
+  const exchangeId = 'abcd1234-1234-1234-1234-abcd12341234';
+  const worker = { id: progress.workerId, projectId: progress.projectId };
+  const draftText = buildExchangeMessage('BOOTSTRAP', exchangeId, worker);
+  const harness = resumedHarness(progress, { view: { draft: true, draftText } });
+
+  await harness.runner.start();
+  assert.deepEqual(
+    harness.commits.map((commit) => commit.text),
+    [draftText],
+  );
+  assert.equal(harness.progress().lastReceipt.exchangeId, exchangeId);
+  assert.equal(harness.progress().lastReceipt.expectsReplyTo, true);
+  assert.equal(harness.progress().turns, 1);
+  assert.equal(harness.commits[0].adoptBootstrapDraft, true);
+  await harness.runner.stop();
+});
+
+test('an edited bootstrap with the same exchange ID remains untouched', async () => {
+  const progress = await pausedBeforeSend();
+  const exchangeId = 'abcd1234-1234-1234-1234-abcd12341234';
+  const worker = { id: progress.workerId, projectId: progress.projectId };
+  const draftText = buildExchangeMessage('BOOTSTRAP\nUser edit', exchangeId, worker);
+  const harness = resumedHarness(progress, { view: { draft: true, draftText } });
+
+  await assert.rejects(harness.runner.start(), { code: 'DRAFT_CONFLICT' });
+  assert.equal(harness.events.includes('page:prepare'), false);
+  assert.equal(harness.commits.length, 0);
 });
 
 test('exact zero-turn progress cannot authorize sending into another populated chat', async () => {

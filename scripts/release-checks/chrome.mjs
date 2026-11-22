@@ -1,5 +1,17 @@
 import assert from 'node:assert/strict';
-import { access, appendFile, lstat, mkdir, mkdtemp, open, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  access,
+  appendFile,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { errorMessage, isMainModule, parseContract } from '../helpers/runtime.mjs';
@@ -32,6 +44,28 @@ import {
 import { evaluate, waitFor, page, press, click, checkDialogs, checkResources } from './chrome-ui.mjs';
 
 const root = path.resolve(import.meta.dirname, '../..');
+
+async function checkMissingTerminalChunk(chrome, session, extension) {
+  const chunks = path.join(extension, 'chunks');
+  const filename = (await readdir(chunks)).find((entry) => /^TerminalDock-.*\.js$/.test(entry));
+  assert.ok(filename, 'Expected the deferred terminal module.');
+  const modulePath = path.join(chunks, filename);
+  const relocated = modulePath + '.relocated';
+
+  await rename(modulePath, relocated);
+  try {
+    await click(chrome, session, '.statusbar button[title^="App runs and shells"]');
+    await waitFor(
+      chrome,
+      session,
+      `document.querySelector('.terminal-load-failure button')?.textContent.trim() === 'Reload Miter'`,
+      'missing terminal chunk offers a reload inside the workspace',
+    );
+    assert.equal(await evaluate(chrome, session, '!!document.querySelector(".app-shell")'), true);
+  } finally {
+    await rename(relocated, modulePath);
+  }
+}
 
 async function main() {
   if (process.argv.length > 2 || !['darwin', 'linux'].includes(process.platform)) {
@@ -166,6 +200,7 @@ async function main() {
     console.log('PASS: production client/background/native host save and read back a temporary project.');
     await appendFile(logPath, '\nNative round trip: ' + JSON.stringify(nativeResult) + '\n');
     await checkWorkspaceJourney(chrome, app.session, native.project, modelPath);
+    await checkMissingTerminalChunk(chrome, app.session, path.join(directory, 'extension'));
     parseContract(
       targetCloseSchema,
       await chrome.request('Target.closeTarget', { targetId: app.targetId }),
@@ -174,6 +209,7 @@ async function main() {
     console.log(
       'PASS: real workspace create/open/reopen project, first task and saved navigation without duplicates.',
     );
+    console.log('PASS: a missing terminal chunk offers Reload Miter without breaking the workspace.');
 
     const readerEvidence = await checkDomReader(chrome, fixture.session, id, {
       onEvidence: (evidence) =>

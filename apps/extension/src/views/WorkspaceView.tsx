@@ -15,11 +15,26 @@ import { connectionHelp } from '../ui/connection-help';
 import { ConnectionAction } from './ConnectionGuide';
 import { ProjectHome } from './ProjectHome';
 
-const TerminalDock = lazy(() =>
-  import('../TerminalDock').then((module) => ({
-    default: module.TerminalDock,
-  })),
-);
+function TerminalLoadFailure(props: { visible: boolean }) {
+  return (
+    <section class="terminal-load-failure" aria-label="Terminal" hidden={!props.visible}>
+      <p role="status">The terminal couldn’t load.</p>
+      <button type="button" onClick={() => void reloadWorkspace().catch(() => window.location.reload())}>
+        Reload Miter
+      </button>
+    </section>
+  );
+}
+
+const TerminalDock = lazy(async () => {
+  try {
+    const module = await import('../TerminalDock');
+    return { default: module.TerminalDock };
+  } catch {
+    // A source build can replace chunks while the previous side panel is open.
+    return { default: TerminalLoadFailure };
+  }
+});
 
 export function WorkspaceView(props: { controller: WorkspaceController; children?: JSX.Element }) {
   const {

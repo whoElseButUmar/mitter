@@ -112,7 +112,7 @@ test('chat-dom retains its original runtime exports and reader version', () => {
   assert.equal(adapter.readAssistantMessage, readAssistantMessage);
   assert.equal(
     adapter.ASSISTANT_READER_VERSION,
-    'logical-pre/5-user-turn/8-discovery/8-code-reply/6-send/3-control/2',
+    'logical-pre/5-user-turn/8-discovery/8-code-reply/6-send/4-control/2',
   );
 });
 
@@ -411,6 +411,30 @@ test('reset retires both session versions and clears shared discovery hints', (c
 });
 
 for (const op of ['prepare', 'commit'] as const) {
+  test(`${op}: an adopted bootstrap cannot refill a cleared composer or send into a changed chat`, async () => {
+    for (const changed of [
+      { draft: false, draftText: '' },
+      { count: 1, userCount: 1 },
+    ]) {
+      const session = sessionFixture();
+      const prepared = session.prepared;
+      assert.ok(prepared);
+      session.committed.clear();
+      const view = { ...viewFixture(), assistantText: '', draft: true, draftText: prepared.text, ...changed };
+      await assert.rejects(
+        sendComposerMessage(
+          { ...request, op, text: prepared.text, messageId: prepared.id, adoptBootstrapDraft: true },
+          session,
+          async () => view,
+          () => {},
+          () => true,
+        ),
+        { code: 'DRAFT_CHANGED' },
+      );
+      assert.equal(session.committed.size, 0);
+    }
+  });
+
   test(`${op}: manual Send evidence remains identical before either page mutation`, async (context) => {
     for (const evidence of ['text', 'rendered text', 'changed identity']) {
       await context.test(evidence, async () => {
