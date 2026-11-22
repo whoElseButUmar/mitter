@@ -282,11 +282,19 @@ export const bundledWriteSchema = z
   })
   .describe('Copy a packaged reference into an ordinary, version-checked file write.');
 
+export const generateImageActionSchema = z
+  .strictObject({
+    type: z.literal('generateImage').describe('Ask Miter to open ChatGPT’s image mode.'),
+    prompt: textSchema('visual description of one requested image', 2000),
+  })
+  .describe('Request one image in the linked chat. Send this proposal on its own.');
+
 export const proposalActionSchema = z
-  .union([actionSchema, referencedEditSchema, bundledWriteSchema])
+  .union([actionSchema, referencedEditSchema, bundledWriteSchema, generateImageActionSchema])
   .describe('A model proposal action, retaining legacy exact-hash edit support.');
 
 export type Action = z.infer<typeof actionSchema>;
 export type Check = z.infer<typeof checkSchema>;
 export type ReferencedEdit = z.infer<typeof referencedEditSchema>;
+export type GenerateImageAction = z.infer<typeof generateImageActionSchema>;
 export type ProposalAction = z.infer<typeof proposalActionSchema>;

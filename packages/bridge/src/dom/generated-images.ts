@@ -40,6 +40,39 @@ export function generatedImageSource(rawSource: string, pageOrigin: string): URL
 
 type ImageCandidate = { element: HTMLImageElement; source: URL };
 
+function generatedPreviewBlob(image: HTMLImageElement, message: HTMLElement): URL | undefined {
+  if (!image.currentSrc.startsWith('blob:') || !image.complete || !image.naturalWidth) {
+    return;
+  }
+  const preview = image.closest('button[data-testid="generated-image-preview"][aria-hidden="false"]');
+  const tile = preview?.closest('[data-web-image-tile="true"]');
+  const gallery = tile?.closest('[data-testid="generated-image-gallery"]');
+  const response = gallery?.closest('[data-response-body]');
+  if (
+    !preview ||
+    !response ||
+    !message.contains(response) ||
+    !/^Generated image [1-9]\d*$/.test(preview.getAttribute('aria-label') || '')
+  ) {
+    return;
+  }
+
+  // The page owns this object URL. Use only a rendered image from its own
+  // generated-image preview, not a URL supplied by the model or user.
+  const source = new URL(image.currentSrc);
+  const prefix = location.origin + '/';
+  if (
+    source.origin === location.origin &&
+    !source.hash &&
+    !source.search &&
+    source.pathname.startsWith(prefix) &&
+    /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(source.pathname.slice(prefix.length))
+  ) {
+    return source;
+  }
+  return;
+}
+
 function visibleGeneratedImages(messages: HTMLElement[], user: HTMLElement): ImageCandidate[] {
   const userIndex = messages.indexOf(user);
   if (userIndex === -1) {
@@ -64,7 +97,9 @@ function visibleGeneratedImages(messages: HTMLElement[], user: HTMLElement): Ima
         continue;
       }
       const rawSource = image.currentSrc || image.getAttribute('src');
-      const source = rawSource && generatedImageSource(rawSource, location.origin);
+      const source =
+        (rawSource && generatedImageSource(rawSource, location.origin)) ||
+        generatedPreviewBlob(image, message);
       if (!source) {
         continue;
       }
@@ -95,7 +130,9 @@ export async function downloadGeneratedImage(
   };
   if (source.origin === pageOrigin) {
     options.mode = 'same-origin';
-    options.credentials = 'same-origin';
+    if (source.protocol === 'https:') {
+      options.credentials = 'same-origin';
+    }
   }
   let response: Response;
   try {

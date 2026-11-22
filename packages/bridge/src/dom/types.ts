@@ -16,10 +16,11 @@ import {
 import { exceedsHandoffBytes } from '../../../protocol/src/reply-json.js';
 import { outboundReceiptSchema } from '../message-wire.js';
 import { identifierSchema, nonNegativeIntegerSchema } from '../schemas/primitives.js';
+import type { ImageModeSelection } from './composer-image-mode.js';
 
 export const USER_READER_VERSION = 'user-turn/8';
 // Increment when packaged DOM behavior changes without changing the compatible reader protocol.
-export const PAGE_READER_REVISION = 12;
+export const PAGE_READER_REVISION = 13;
 // Build verification checks this exact marker in the packaged page script.
 export const ASSISTANT_READER_VERSION = 'logical-pre/5-user-turn/8-discovery/8-code-reply/6-send/4-control/2';
 
@@ -56,6 +57,7 @@ export const domRequestSchema = z
     text: z.string().optional().describe('Outgoing composer text, unchanged by the bridge.'),
     messageId: z.string().optional().describe('Send intent ID used to prevent duplicate clicks.'),
     composerSession: identifierSchema.optional().describe('Document that prepared this send intent.'),
+    imageMode: z.literal(true).optional().describe('Send through the dedicated Create image tool.'),
     imageAttachments: chatImageAttachmentsSchema
       .optional()
       .describe('Exact images authorized for this send intent.'),
@@ -485,6 +487,7 @@ export const preparedMessageSchema = z
     userCount: nonNegativeIntegerSchema.describe('User-turn count before insertion.'),
     lastUserText: z.string().describe('Latest user text before insertion.'),
     lastUserId: z.string().optional().describe('Latest user identity before insertion.'),
+    imageMode: z.literal(true).optional().describe('The prepared send requires the Create image tool.'),
     imageAttachments: chatImageAttachmentsSchema
       .optional()
       .describe('Image references bound to this exact draft.'),
@@ -492,12 +495,14 @@ export const preparedMessageSchema = z
   .describe('Document-local prepared send intent.');
 export type PreparedMessage = z.infer<typeof preparedMessageSchema> & {
   imageUploads?: Map<string, { startedAt: number; confirmed: boolean }>;
+  imageModeSelection?: ImageModeSelection;
 };
 
 export const committedMessageSchema = z
   .object({
     text: z.string().describe('Exact outgoing text associated with this send intent.'),
     time: z.number().describe('Time recorded before the Send click in milliseconds since the Unix epoch.'),
+    imageMode: z.literal(true).optional().describe('The Create image tool was selected before Send.'),
     imageAttachments: chatImageAttachmentsSchema
       .optional()
       .describe('Image references verified before this send.'),

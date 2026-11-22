@@ -30,6 +30,10 @@ export const outboundReceiptSchema = z
       .optional()
       .describe('The reviewed exchange replaced by an explicit resend.'),
     expectsReplyTo: z.literal(true).optional().describe('The reply must name the saved exchange ID.'),
+    imageMode: z
+      .literal(true)
+      .optional()
+      .describe('This message requests a generated image through ChatGPT’s Create image mode.'),
     payloadHash: sha256Schema.optional().describe('A fingerprint of the message body without its wrapper.'),
     messageId: identifierSchema.optional().describe('The send intent ID used to prevent duplicate sends.'),
     imageAttachments: chatImageAttachmentsSchema
@@ -101,6 +105,9 @@ export function parseReceipt(raw: unknown): OutboundReceipt | undefined {
 
   if (saved.exchangeId !== undefined) {
     receipt.exchangeId = saved.exchangeId;
+    if (saved.imageMode === true) {
+      receipt.imageMode = true;
+    }
     if (saved.replacesExchangeId !== undefined) {
       receipt.replacesExchangeId = saved.replacesExchangeId;
     }

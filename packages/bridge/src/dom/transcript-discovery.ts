@@ -17,10 +17,14 @@ const turnSelector =
   'article[data-testid^="conversation-turn"],article[data-turn],article[data-turn-id],[data-message-id],[data-turn-id],[data-testid^="conversation-turn-"],' +
   '[data-content-search-unit-key],[data-chatgpt-search-unit-key],[data-chatgpt-selection-message-id],[data-dil-message-id]';
 
+const generatedResponseSelector = '[data-response-body][data-chatgpt-search-message-ids]';
+const messageUuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+
 export const roleSelector =
   roleAttributes.map((attribute) => '[' + attribute + ']').join(',') +
   ',[data-testid="user-message"],[data-testid="assistant-message"],[data-testid="user-message-content"],[data-testid="assistant-message-content"],' +
-  '[data-user-message-bubble="true"],[data-markdown-text-style="assistant-message"]';
+  '[data-user-message-bubble="true"],[data-markdown-text-style="assistant-message"],' +
+  generatedResponseSelector;
 
 export function transcriptExcluded(element: HTMLElement): boolean {
   for (let ancestor: Element | null = element; ancestor; ancestor = parentAcrossShadow(ancestor)) {
@@ -33,6 +37,29 @@ export function transcriptExcluded(element: HTMLElement): boolean {
     }
   }
   return contentHidden(element);
+}
+
+function isGeneratedImageResponse(element: HTMLElement): boolean {
+  if (
+    !element.matches(generatedResponseSelector) ||
+    element.closest('blockquote,[data-user-message-bubble="true"]')
+  ) {
+    return false;
+  }
+  const identity = element.getAttribute('data-response-body') || '';
+  const heading = element.parentElement?.querySelector(':scope > h4');
+  const activity = element.parentElement?.parentElement;
+  // Image-only replies have no markdown role marker. The provider's response
+  // body, heading and gallery identify an assistant without reading its reply.
+  return (
+    messageUuid.test(identity) &&
+    identity === element.getAttribute('data-chatgpt-search-message-ids') &&
+    !!heading &&
+    /^ChatGPT said:\s*(?:ChatGPT)?$/.test((heading.textContent || '').trim()) &&
+    !!activity?.matches('[data-spacing="activity"]') &&
+    !!activity.closest('[data-talvt-turn-state="complete"]')?.closest('[data-rail-chat-transcript="true"]') &&
+    !!element.querySelector('[data-testid="generated-image-gallery"] [data-testid="generated-image-preview"]')
+  );
 }
 
 export function explicitRole(element: HTMLElement): MessageRole {
@@ -53,7 +80,10 @@ export function explicitRole(element: HTMLElement): MessageRole {
   if (element.getAttribute('data-user-message-bubble') === 'true') {
     roles.add('user');
   }
-  if (element.getAttribute('data-markdown-text-style') === 'assistant-message') {
+  if (
+    element.getAttribute('data-markdown-text-style') === 'assistant-message' ||
+    isGeneratedImageResponse(element)
+  ) {
     roles.add('assistant');
   }
   if (roles.size === 1) {
@@ -115,10 +145,7 @@ export function messageIdentity(message: HTMLElement | undefined): string {
     // Search wrappers may describe multiple messages. Only one literal UUID
     // identifies a turn; positional fallback-turn keys are not stable IDs.
     const searchIdentity = node.getAttribute('data-chatgpt-search-message-ids');
-    if (
-      searchIdentity &&
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(searchIdentity)
-    ) {
+    if (searchIdentity && messageUuid.test(searchIdentity)) {
       return searchIdentity;
     }
     if (node.matches('main,body,html,[role="main"]')) {

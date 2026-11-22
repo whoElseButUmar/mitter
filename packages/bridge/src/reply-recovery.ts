@@ -100,6 +100,8 @@ export function actionSummary(envelope: ProposalEnvelope): string[] {
         return 'Edit ' + action.path;
       case 'saveImage':
         return 'Save image to ' + action.path;
+      case 'generateImage':
+        return 'Generate an image in ChatGPT';
       case 'read':
         return 'Read ' + action.path;
       case 'skill':

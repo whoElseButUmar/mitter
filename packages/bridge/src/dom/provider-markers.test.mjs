@@ -98,6 +98,142 @@ test(
         await fs.rm(directory, { recursive: true, force: true });
       }
     });
+    await context.test(
+      'selects Create image before one owned Send and preserves the rendered receipt',
+      async () => {
+        const page = await browser.newPage();
+        try {
+          await page.setRequestInterception(true);
+          page.on('request', (request) => {
+            if (request.url() === url) {
+              void request.respond({
+                status: 200,
+                contentType: 'text/html',
+                body: '<!doctype html><main></main>',
+              });
+            } else {
+              void request.abort();
+            }
+          });
+          await page.goto(url);
+          await page.addScriptTag({ content: bundle.output[0].code });
+          const text = 'Create a photo of a crater. Keep  two spaces. Reference 314.';
+          const result = await page.evaluate(async (text) => {
+            const main = document.querySelector('main');
+            main.innerHTML = `
+            <form>
+              <div contenteditable="true" role="textbox" id="prompt-textarea"></div>
+              <button type="button" data-composer-navigation-target="add-context"
+                aria-label="Add files and more" aria-expanded="false">Tools</button>
+              <button data-testid="send-button" type="submit">Send</button>
+            </form>
+            <div data-mention-section-id="chatgpt-primary" hidden>
+              <button type="button" data-list-navigation-item>
+                <span data-menu-row-content><span>Create image</span><span>Visualize anything</span></span>
+              </button>
+            </div>
+          `;
+            const composer = main.querySelector('#prompt-textarea');
+            const picker = main.querySelector('[data-composer-navigation-target]');
+            const menu = main.querySelector('[data-mention-section-id]');
+            const option = menu.querySelector('button');
+            const clicks = [];
+            const pill = document.createElement('span');
+            pill.dataset.inlineSelectionPill = '';
+            pill.dataset.systemHintType = 'picture_v2';
+            pill.dataset.promptLinkHref = 'chatgpt-system-hint://picture_v2';
+            pill.dataset.promptLinkLabel = 'Create image';
+            pill.contentEditable = 'false';
+            pill.textContent = 'Create image';
+            picker.addEventListener('click', () => {
+              clicks.push('picker');
+              picker.setAttribute('aria-expanded', 'true');
+              menu.hidden = false;
+            });
+            option.addEventListener('click', () => {
+              clicks.push('option');
+              menu.hidden = true;
+              picker.setAttribute('aria-expanded', 'false');
+              composer.append(' ', pill);
+            });
+            main.querySelector('form').addEventListener('submit', (event) => {
+              event.preventDefault();
+              clicks.push('send');
+              composer.replaceChildren();
+              const sent = document.createElement('div');
+              sent.dataset.userMessageBubble = 'true';
+              const label = pill.cloneNode(true);
+              delete label.dataset.inlineSelectionPill;
+              delete label.dataset.systemHintType;
+              label.dataset.layout = 'selection-pill';
+              sent.append(text, ' ', label, ' ');
+              main.append(sent);
+            });
+
+            const request = {
+              token: 'image-mode',
+              url: location.href,
+              expiresAt: Date.now() + 60000,
+              text,
+              messageId: 'image-mode-send',
+              imageMode: true,
+            };
+            const prepare = () => miterProviderReader.chatDom({ ...request, op: 'prepare' });
+            const first = await prepare();
+            const second = await prepare();
+            const prepared = await prepare();
+            const commit = (overrides) =>
+              miterProviderReader.chatDom({
+                ...request,
+                op: 'commit',
+                composerSession: prepared.composerSession,
+                ...overrides,
+              });
+            const rejected = async (call) => {
+              try {
+                await call();
+              } catch (error) {
+                return error.code;
+              }
+            };
+            const wrongMode = await rejected(() => commit({ imageMode: undefined }));
+            const plain = await rejected(() =>
+              miterProviderReader.chatDom({
+                ...request,
+                op: 'prepare',
+                imageMode: undefined,
+                messageId: 'wrong-mode-send',
+              }),
+            );
+            pill.remove();
+            const missingPill = await rejected(() => commit({}));
+            composer.append(pill);
+            const sent = await commit({});
+            const duplicate = await commit({});
+            const transcript = main.querySelector('[data-user-message-bubble]');
+            const read = miterProviderReader.readUserMessageVariants(transcript);
+            return {
+              outcomes: [first.outcome, second.outcome, prepared.outcome, sent.outcome, duplicate.outcome],
+              wrongMode,
+              plain,
+              missingPill,
+              clicks,
+              sentText: read.texts[0].trim(),
+            };
+          }, text);
+          assert.deepEqual(result, {
+            outcomes: ['pending', 'pending', 'prepared', 'clicked', 'already_clicked'],
+            wrongMode: 'NOT_PREPARED',
+            plain: 'IMAGE_MODE_CONFLICT',
+            missingPill: 'IMAGE_MODE_CHANGED',
+            clicks: ['picker', 'option', 'send'],
+            sentText: text,
+          });
+        } finally {
+          await page.close();
+        }
+      },
+    );
     for (const scenario of [
       'exact',
       'later-human',

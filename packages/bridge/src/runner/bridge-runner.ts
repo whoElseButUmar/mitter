@@ -991,6 +991,7 @@ export class BridgeRunner {
       | 'adoptBootstrapDraft'
       | 'image'
       | 'imageAttachments'
+      | 'imageMode'
       | 'generatedImageIndex'
     > & { sourceReceipt?: OutboundReceipt } = {},
   ): Promise<ChatView> {
@@ -1005,7 +1006,10 @@ export class BridgeRunner {
       inspectionReceipt = parseReceipt(this.options.lastReceipt);
     }
     let expectedReplyTo: string | undefined;
-    if (!this.progress?.approvedReply && this.options.lastReceipt?.expectsReplyTo) {
+    if (
+      !this.progress?.approvedReply &&
+      (this.options.lastReceipt?.expectsReplyTo || this.options.lastReceipt?.imageMode)
+    ) {
       expectedReplyTo = this.options.lastReceipt.exchangeId;
     }
     const { sourceReceipt, ...operationDetails } = details;
@@ -1653,6 +1657,30 @@ export class BridgeRunner {
       await this.send(messagePayload(page.draftText), page, mode);
       return;
     }
+    if (this.progress?.stage === 'prepared' && receiptBound && receipt?.imageMode && !page.draft) {
+      if (page.busy) {
+        this.update('connecting', 'Waiting for ChatGPT before restoring the unsent image request…');
+        return;
+      }
+      if (
+        page.lastUserTruncated ||
+        !page.lastUserText ||
+        (receipt.priorUserId && page.lastUserId !== receipt.priorUserId) ||
+        (await messageDigest(page.lastUserText)) !== receipt.priorUserHash ||
+        (await messageDigest(replyFingerprint(page))) !== receipt.priorAssistantHash
+      ) {
+        throw new PageBridgeError(
+          'PREPARED_MESSAGE_CHANGED',
+          'The saved image request could not be verified in this chat. No image was requested again.',
+        );
+      }
+      const [action] = this.parseObservedReply(page).actions;
+      if (action?.type !== 'generateImage') {
+        throw new PageBridgeError('PREPARED_MESSAGE_CHANGED', 'The original image request is unavailable.');
+      }
+      await this.send(action.prompt, page, 'generate-image');
+      return;
+    }
     if (
       this.progress?.stage === 'prepared' &&
       receiptBound &&
@@ -1949,7 +1977,11 @@ export class BridgeRunner {
     return buildReportPrompt(this.nextStepPrompt, report);
   }
 
-  private async send(text: string, page: ChatView, mode?: 'resend' | 'adopt-bootstrap'): Promise<void> {
+  private async send(
+    text: string,
+    page: ChatView,
+    mode?: 'resend' | 'adopt-bootstrap' | 'generate-image',
+  ): Promise<void> {
     this.assertCanContinue();
     if (this.status.turns >= this.status.maxTurns) {
       throw new PageBridgeError(
@@ -1971,7 +2003,17 @@ export class BridgeRunner {
     }
     let expectsReplyTo = false;
     let replacesExchangeId = savedPrepared?.replacesExchangeId;
-    if (page.draft) {
+    const imageMode = mode === 'generate-image' || savedPrepared?.imageMode === true;
+    let imageExchange: string | undefined;
+    if (imageMode) {
+      imageExchange = savedPrepared?.exchangeId || crypto.randomUUID();
+      if (page.draft) {
+        text = page.draftText;
+      } else {
+        const description = text.replace(/\s+/g, ' ').trim();
+        text = `Create one image. ${description} Request reference ${imageExchange} (leave this reference out of the image).`;
+      }
+    } else if (page.draft) {
       text = page.draftText;
       const saved = parseReceipt(this.options.lastReceipt);
       const frame = unwrapMessage(text);
@@ -1989,6 +2031,12 @@ export class BridgeRunner {
             saved.goalHash === (await messageDigest(worker.goal)) &&
             (await matchesReceipt(text, saved))));
     } else if (mode === 'resend') {
+      if (this.options.lastReceipt?.imageMode) {
+        throw new PageBridgeError(
+          'IMAGE_SEND_UNCONFIRMED',
+          'The image request was not resent. Check the linked chat for its result.',
+        );
+      }
       if (!(await this.matchesSavedReceipt(text))) {
         throw new PageBridgeError(
           'RESEND_MISMATCH',
@@ -2062,7 +2110,10 @@ export class BridgeRunner {
     }
     this.update('sending', preparationReason);
     const worker = this.boundWorker();
-    const images = this.imagesForSend(worker, savedPrepared, mode === 'resend');
+    let images: ImageAttachment[] | undefined;
+    if (!imageMode) {
+      images = this.imagesForSend(worker, savedPrepared, mode === 'resend');
+    }
     const frame = unwrapMessage(text);
     const goalHash = await messageDigest(worker.goal);
     const textHash = await messageDigest(text);
@@ -2075,8 +2126,11 @@ export class BridgeRunner {
       at: this.now(),
       messageId,
       priorReplyIds: page.codeReplyIds?.slice(-64),
-      exchangeId: frame?.exchangeId,
+      exchangeId: imageExchange || frame?.exchangeId,
     };
+    if (imageMode) {
+      receipt.imageMode = true;
+    }
     if (replacesExchangeId) {
       receipt.replacesExchangeId = replacesExchangeId;
     }
@@ -2207,7 +2261,10 @@ export class BridgeRunner {
     }
     let prepared: ChatView | undefined;
     const attachments = pending.imageAttachments;
-    const imageMetadata = { ...(attachments?.length && { imageAttachments: attachments }) };
+    const imageMetadata = {
+      ...(attachments?.length && { imageAttachments: attachments }),
+      ...(this.options.lastReceipt?.imageMode && { imageMode: true as const }),
+    };
     try {
       if (!pending.commitIntent) {
         prepared = await this.requestPage('prepare', {
@@ -2478,6 +2535,11 @@ export class BridgeRunner {
       }
     }
     this.finalizeConversationBinding();
+    const firstAction = envelope.actions[0];
+    if (firstAction?.type === 'generateImage') {
+      await this.send(firstAction.prompt, page, 'generate-image');
+      return;
+    }
     try {
       await this.stageReplyImages(envelope, worker);
     } catch (error) {
@@ -2587,9 +2649,8 @@ export class BridgeRunner {
       !this.progress ||
       page.busy ||
       page.draft ||
-      page.codeReply ||
-      page.unlinkedReply ||
-      isIncompleteReplyJSON(page.assistantText)
+      (!receipt.imageMode &&
+        (page.codeReply || page.unlinkedReply || isIncompleteReplyJSON(page.assistantText)))
     ) {
       this.generatedImageWait = undefined;
       return false;
@@ -3865,6 +3926,22 @@ export class BridgeRunner {
         return;
       }
       if (phase === 'waiting_reply' && (await this.continueImageReply(page, worker))) {
+        return;
+      }
+      if (phase === 'waiting_reply' && this.options.lastReceipt?.imageMode) {
+        const ownedImageTurn = await this.confirmUserTurn(page);
+        if (page.busy || !page.complete || page.lastRole !== 'assistant' || !ownedImageTurn) {
+          this.unreadableSince = undefined;
+        } else {
+          this.unreadableSince ??= this.now();
+          if (this.now() - this.unreadableSince > 30000) {
+            throw new PageBridgeError(
+              'GENERATED_IMAGE_UNAVAILABLE',
+              'ChatGPT finished without an image Miter could save. Open the linked chat to check the result.',
+            );
+          }
+        }
+        this.update('waiting_reply', 'Waiting for ChatGPT’s generated image…');
         return;
       }
       if (phase === 'waiting_reply' && (await this.recoverUnreadableReply(page, worker))) {

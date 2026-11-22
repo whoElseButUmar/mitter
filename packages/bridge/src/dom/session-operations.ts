@@ -248,14 +248,15 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
       const previous = existingSession.prepared;
       if (
         request.op === 'prepare' &&
-        request.imageAttachments?.length &&
+        (request.imageAttachments?.length || request.imageMode) &&
         previous &&
         previous.id === request.messageId &&
         previous.text === request.text &&
+        previous.imageMode === request.imageMode &&
         sameImageAttachments(previous.imageAttachments, request.imageAttachments)
       ) {
-        // A reconnect can reclaim only the exact pending image draft. Preserve its
-        // document-local upload attempts so a lost acknowledgement cannot resend.
+        // Preserve only the exact pending image draft and its document-local
+        // progress so reconnecting cannot repeat its uploads or tool selection.
         prepared = previous;
       }
     }
@@ -467,9 +468,10 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
     const userAlternatives = userRead?.texts.slice(1).filter((candidate) => candidate.length <= 160000);
     const generating = generationActive();
     const composer = findComposer();
+    const imageMode = request.imageMode === true || receivedReceipt?.imageMode === true;
     let draftText = '';
     if (composer) {
-      draftText = composerText(composer).slice(0, 160001);
+      draftText = composerText(composer, imageMode).slice(0, 160001);
     }
     let disclosureState: DisclosureObservation['state'] = 'none';
     if (disclosure.collapsed) {
@@ -485,7 +487,9 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
       observedTaskTurns = countTaskTurns(users);
     }
     let renderedDraftText = '';
-    if (composer instanceof HTMLTextAreaElement) {
+    if (imageMode) {
+      renderedDraftText = draftText;
+    } else if (composer instanceof HTMLTextAreaElement) {
       renderedDraftText = composer.value.slice(0, 160001);
     } else if (composer) {
       renderedDraftText = composer.innerText.slice(0, 160001);

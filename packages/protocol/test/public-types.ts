@@ -28,7 +28,12 @@ import type {
   FileText,
 } from '../src/index.js';
 import { parseEnvelopeWith } from '../src/index.js';
-import type { ReferencedEdit, ProposalAction, ProposalEnvelope } from '../src/proposal.js';
+import type {
+  GenerateImageAction,
+  ReferencedEdit,
+  ProposalAction,
+  ProposalEnvelope,
+} from '../src/proposal.js';
 import type { CodeSelection, Followup, FollowupState, FollowupSummary } from '../src/requests.js';
 import type { RewriteMode, RewriteProvider, RewriteRequest } from '../src/rewrite.js';
 import type { TaskBrief } from '../src/task-brief.js';
@@ -159,7 +164,7 @@ export type PublicTypeChecks = [
   Assert<
     Equal<Response, { id: string; ok: true; result: unknown } | { id: string; ok: false; error: string }>
   >,
-  Assert<Equal<ProposalAction, Action | ReferencedEdit>>,
+  Assert<Equal<ProposalAction, Action | ReferencedEdit | GenerateImageAction>>,
   Assert<
     Equal<
       ReferencedEdit,

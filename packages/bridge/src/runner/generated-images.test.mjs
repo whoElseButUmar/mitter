@@ -2,6 +2,55 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createHarness } from './fixtures.mjs';
 
+test('a dedicated image request selects image mode once, then continues with an ordinary project reply', async () => {
+  const harness = createHarness({ worker: { goal: 'Generate an illustration of a crater.' } });
+  const page = harness.dependencies.page;
+  const sends = [];
+  harness.dependencies.page = async (tabId, request) => {
+    if (request.op === 'commit') {
+      sends.push(request);
+    }
+    return page(tabId, request);
+  };
+  await harness.runner.start();
+  harness.showReply({
+    actions: [{ type: 'generateImage', prompt: 'A cream and blue lunar crater, no lettering.' }],
+  });
+  await harness.runner.tick();
+  harness.advance(1800);
+  await harness.runner.tick();
+  assert.equal(sends.length, 2);
+  assert.equal(sends[0].imageMode, undefined);
+  assert.equal(sends[1].imageMode, true);
+  const receipt = harness.progress().lastReceipt;
+  assert.equal(receipt.imageMode, true);
+  assert.equal(receipt.expectsReplyTo, undefined);
+  assert.match(sends[1].text, /^Create one image\. A cream and blue lunar crater/);
+  assert.ok(sends[1].text.includes(receipt.exchangeId));
+  assert.equal(harness.imports.length, 0);
+
+  harness.setView({
+    assistantId: 'generated-art',
+    assistantText: '',
+    lastRole: 'assistant',
+    busy: true,
+    complete: false,
+  });
+  await harness.runner.tick();
+  assert.equal(sends.length, 2);
+  harness.setView({ busy: false, complete: true, generatedImageCount: 1 });
+  await harness.runner.tick();
+  harness.advance(3600);
+  await harness.runner.tick();
+  assert.equal(sends.length, 3);
+  assert.equal(sends[2].imageMode, undefined);
+  assert.match(sends[2].text, /preceding response are ready/);
+  assert.equal(harness.progress().imageSourceReceipt.exchangeId, receipt.exchangeId);
+  assert.equal(harness.imports.length, 0);
+  await harness.runner.stop();
+  await harness.runner.settled();
+});
+
 test('one task continues an image-only reply and stages the exact earlier image before importing both assets', async () => {
   const harness = createHarness({ worker: { goal: 'Find a photo and generate a small illustration.' } });
   const page = harness.dependencies.page;

@@ -37,6 +37,13 @@ export const proposalEnvelopeSchema = envelopeSchema
       .max(16)
       .superRefine((actions, context) => {
         for (const [index, action] of actions.entries()) {
+          if (action.type === 'generateImage' && actions.length !== 1) {
+            context.addIssue({
+              code: 'custom',
+              path: [index, 'type'],
+              message: 'Return generateImage on its own, then wait for the generated image before saving it.',
+            });
+          }
           if (action.type === 'finish' && index < actions.length - 1) {
             context.addIssue({
               code: 'custom',

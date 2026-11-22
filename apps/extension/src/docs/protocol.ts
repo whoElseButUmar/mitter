@@ -250,6 +250,11 @@ export const protocolTopics: DocsTopic[] = [
               'Supply path, before, after, and base or expectedHash. The before text must match exactly once in that file at this point in the batch.',
           },
           {
+            name: 'generateImage',
+            description:
+              'Ask Miter to generate one original image in ChatGPT’s Create image mode. Send this action by itself with a short visual prompt, then wait for Miter to report that the image is ready.',
+          },
+          {
             name: 'saveImage',
             description:
               'Save a PNG, JPEG, WebP or GIF up to 5 MiB at a new project path. Use source.type web with a direct public HTTPS url, or source.type generated with the one-based index of a generated image in the linked chat. Use the saved path from the result when editing the app.',

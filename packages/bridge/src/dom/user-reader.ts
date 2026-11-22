@@ -7,6 +7,7 @@ import {
 import { contentHidden, createVisibilityReader, htmlElements } from './page-elements.js';
 import { verifiedSentSource } from './session-state.js';
 import { headingRole, messageRole, roleSelector } from './transcript-discovery.js';
+import { sentImageModePill } from './composer-image-mode.js';
 import {
   USER_READER_VERSION,
   type MessageDisclosure,
@@ -17,7 +18,7 @@ import {
 /** innerText is a layout API: Chromium adds an extra newline around an empty
  * block after insertText. Serialize the editor's logical lines instead. This
  * does not collapse spaces or blank lines in the actual task/code. */
-export function editableText(root: HTMLElement): string {
+export function editableText(root: HTMLElement, omittedElement?: Element): string {
   const blockTags = new Set(['DIV', 'P', 'LI', 'PRE', 'BLOCKQUOTE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
   const readNode = (node: Node): string => {
     if (node.nodeType === Node.TEXT_NODE) {
@@ -33,7 +34,9 @@ export function editableText(root: HTMLElement): string {
       return '\n';
     }
     const childNodes = Array.from(node.childNodes).filter(
-      (child) => !(child instanceof HTMLElement && child.classList.contains('ProseMirror-trailingBreak')),
+      (child) =>
+        child !== omittedElement &&
+        !(child instanceof HTMLElement && child.classList.contains('ProseMirror-trailingBreak')),
     );
     const onlyChild = childNodes[0];
     if (childNodes.length === 1 && onlyChild instanceof HTMLElement && onlyChild.tagName === 'BR') {
@@ -370,6 +373,7 @@ function userContentClone(message: HTMLElement): HTMLElement {
       element.matches(
         'button,[role="button"],summary,svg,script,style,template,[data-message-toolbar],[data-mitter-ui]',
       ) ||
+      (element.matches(sentImageModePill) && !element.closest('pre,code')) ||
       (!!headingRole(element) && !element.closest('pre,code,.markdown,[data-message-content]'))
     ) {
       clonedElements[index]?.remove();

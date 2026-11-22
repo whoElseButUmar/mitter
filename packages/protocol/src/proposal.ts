@@ -7,6 +7,7 @@ import { exceedsHandoffBytes } from './reply-json.js';
 import {
   bundledWriteSchema,
   expectedHashSchema,
+  generateImageActionSchema,
   readReferenceSchema,
   referencedWriteSchema,
   referencedReplaceSchema,
@@ -20,6 +21,7 @@ export {
   referencedEditSchema,
   proposalActionSchema,
   type ReferencedEdit,
+  type GenerateImageAction,
   type ProposalAction,
 } from './schemas/actions.js';
 export { proposalEnvelopeSchema, type ProposalEnvelope } from './schemas/envelopes.js';
@@ -30,6 +32,10 @@ export function isReadReference(value: unknown): value is string {
 
 export function parseProposalAction(value: unknown): ProposalAction {
   const action = object(value, 'action');
+
+  if (action.type === 'generateImage') {
+    return parseSchema(generateImageActionSchema, action);
+  }
 
   if (action.type !== 'write' && action.type !== 'replace') {
     return parseAction(action);
@@ -100,6 +106,15 @@ export function parseProposalEnvelope(input: string): ProposalEnvelope {
   const envelope = parseEnvelopeWith(input, parseProposalAction);
 
   for (const [index, action] of envelope.actions.entries()) {
+    if (action.type === 'generateImage' && envelope.actions.length !== 1) {
+      throw new ReplyValidationError({
+        stage: 'schema',
+        code: 'IMAGE_GENERATION_BATCH',
+        actionIndex: index,
+        field: 'type',
+        message: 'Return generateImage on its own, then wait for the generated image before saving it.',
+      });
+    }
     if (action.type === 'finish' && index < envelope.actions.length - 1) {
       throw new ReplyValidationError({
         stage: 'schema',

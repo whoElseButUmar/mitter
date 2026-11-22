@@ -309,6 +309,9 @@ export class ReadSnapshots {
   resolve(worker: Worker, project: Project, proposal: ProposalEnvelope): Envelope {
     const ledger = this.ledger(worker, project);
     const actions: Action[] = proposal.actions.map((action, index) => {
+      if (action.type === 'generateImage') {
+        throw new Error('Image generation runs in an active ChatGPT task.');
+      }
       if (!('base' in action)) {
         return action;
       }

@@ -161,6 +161,24 @@ test('finish ordering applies to proposals, not legacy executable queues', () =>
   });
 });
 
+test('image generation is a standalone chat proposal and never an executable host action', () => {
+  const action = { type: 'generateImage', prompt: 'An ink illustration of a cloud.' };
+  assert.deepEqual(parseProposalEnvelope(JSON.stringify({ ...envelope, actions: [action] })).actions, [
+    action,
+  ]);
+  assert.equal(actionSchema.safeParse(action).success, false);
+  assertIssue(
+    () => parseProposalEnvelope(JSON.stringify({ ...envelope, actions: [action, { type: 'diff' }] })),
+    {
+      stage: 'schema',
+      code: 'IMAGE_GENERATION_BATCH',
+      actionIndex: 0,
+      field: 'type',
+      message: 'Return generateImage on its own, then wait for the generated image before saving it.',
+    },
+  );
+});
+
 test('exact-hash errors keep action indexes and never echo a rejected hash', () => {
   const source = JSON.stringify({
     ...envelope,
