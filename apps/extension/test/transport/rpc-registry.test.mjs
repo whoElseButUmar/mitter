@@ -131,6 +131,7 @@ const nativeOnly = [
   'worker.followup',
   'worker.followupActivate',
   'worker.validateReply',
+  'worker.stageImage',
 ];
 const progress = ['worker.bridgeLoad', 'worker.bridgeSave', 'worker.bridgeExtend'];
 const terminal = [

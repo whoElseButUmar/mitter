@@ -250,6 +250,11 @@ export const protocolTopics: DocsTopic[] = [
               'Supply path, before, after, and base or expectedHash. The before text must match exactly once in that file at this point in the batch.',
           },
           {
+            name: 'saveImage',
+            description:
+              'Save a PNG, JPEG, WebP or GIF up to 5 MiB at a new project path. Use source.type web with a direct public HTTPS url, or source.type generated with the one-based index of a generated image in the linked chat. Use the saved path from the result when editing the app.',
+          },
+          {
             name: 'base',
             description:
               'Use the exact read reference issued by the helper for that file version. It starts with r_ followed by 16 lowercase hex digits. Use the literal missing only when writing a genuinely new file.',

@@ -13,7 +13,13 @@ export type PageAPI = {
 };
 
 function isReadOperation(operation: DomRequest['op']): boolean {
-  return operation === 'control' || operation === 'inspect' || operation === 'probe' || operation === 'reply';
+  return (
+    operation === 'control' ||
+    operation === 'inspect' ||
+    operation === 'probe' ||
+    operation === 'reply' ||
+    operation === 'read_generated_image'
+  );
 }
 
 /** Injection installs a packaged file. Only an authenticated request response
@@ -55,6 +61,8 @@ export class PageTransport {
     // A read may reconnect. A timed-out composer mutation remains ambiguous.
     if (kind === 'hello') {
       timeoutMs = Math.min(this.timeoutMs, 3000);
+    } else if (action?.op === 'read_generated_image') {
+      timeoutMs = Math.min(this.timeoutMs, 15000);
     } else if (action && isReadOperation(action.op)) {
       timeoutMs = Math.min(this.timeoutMs, 6000);
     }
@@ -237,7 +245,12 @@ export class PageTransport {
         }
 
         let minimumRevision = 0;
-        if (action.op === 'attach_image' || action.imageAttachments?.length) {
+        if (
+          action.op === 'attach_image' ||
+          action.op === 'read_generated_image' ||
+          (action.op === 'inspect' && action.receipt && action.replyTo) ||
+          action.imageAttachments?.length
+        ) {
           minimumRevision = PAGE_READER_REVISION;
         }
         await this.ensure(tabId, minimumRevision);

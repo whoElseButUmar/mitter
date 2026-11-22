@@ -132,5 +132,14 @@ export function readPageState(value: unknown, operation: DomRequest['op']): Chat
     );
   }
 
+  const hasGeneratedImage = view.generatedImage !== undefined;
+  const hasImageIssue = view.generatedImageIssue !== undefined;
+  if (
+    (operation === 'read_generated_image' && hasGeneratedImage === hasImageIssue) ||
+    (operation !== 'read_generated_image' && (hasGeneratedImage || hasImageIssue))
+  ) {
+    throw new PageBridgeError('INVALID_PAGE_STATE', 'The page adapter returned an invalid image result.');
+  }
+
   return view;
 }

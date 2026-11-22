@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { MAX_TEXT } from '../../../../../packages/protocol/src/index.js';
+import { MAX_IMAGE_BYTES } from '../../../../../packages/protocol/src/schemas/image-attachments.js';
 import { hasErrorCode, isRecord } from '../types.js';
 import { digest, staleEdit } from '../edit-plan.js';
 import type { FileVersion } from '../edit-plan.js';
@@ -246,6 +247,41 @@ export async function existing(root: string, relative: string): Promise<FileVers
   }
 }
 
+/** Read only the digest for a binary file; model text reads remain unchanged. */
+export async function imageFileHash(root: string, relative: string): Promise<string> {
+  const target = await safePath(root, relative);
+  try {
+    const handle = await fs.open(target, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_IMAGE_BYTES) {
+        throw new Error('Image checks require an ordinary, unlinked file up to 5 MiB.');
+      }
+      const bytes = Buffer.alloc(stat.size + 1);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+        if (bytesRead === 0) {
+          break;
+        }
+        offset += bytesRead;
+      }
+      const after = await handle.stat();
+      if (offset !== stat.size || after.size !== stat.size || after.ctimeMs !== stat.ctimeMs) {
+        throw new Error('The image changed during the file check. Try again.');
+      }
+      return digest(bytes.subarray(0, offset));
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    if (hasErrorCode(error, 'ENOENT')) {
+      return 'missing';
+    }
+    throw error;
+  }
+}
+
 export async function listFiles(
   root: string,
   relative = '.',
@@ -351,10 +387,22 @@ export async function searchFiles(root: string, query: string): Promise<SearchMa
 export async function atomicWrite(
   root: string,
   relative: string,
-  content: string,
+  content: string | Uint8Array,
   expectedHash?: string,
+  signal?: AbortSignal,
 ): Promise<void> {
+  if (typeof content !== 'string' && expectedHash !== 'missing') {
+    throw new Error('Images can only be written to new files.');
+  }
+  const currentHash = async () => {
+    if (typeof content === 'string') {
+      return (await existing(root, relative)).hash;
+    }
+    return imageFileHash(root, relative);
+  };
+
   const target = await safePath(root, relative);
+  signal?.throwIfAborted();
   await fs.mkdir(path.dirname(target), {
     recursive: true,
   });
@@ -384,13 +432,14 @@ export async function atomicWrite(
     await safePath(root, relative);
 
     if (expectedHash !== undefined) {
-      const current = await existing(root, relative);
+      const hash = await currentHash();
 
-      if (current.hash !== expectedHash) {
-        throw staleEdit(relative, expectedHash, current.hash);
+      if (hash !== expectedHash) {
+        throw staleEdit(relative, expectedHash, hash);
       }
     }
 
+    signal?.throwIfAborted();
     if (expectedHash === 'missing') {
       // Exclusive publication: a concurrently created target must not be replaced.
 
@@ -398,7 +447,7 @@ export async function atomicWrite(
         await fs.link(temporary, target);
       } catch (error) {
         if (hasErrorCode(error, 'EEXIST')) {
-          throw staleEdit(relative, 'missing', (await existing(root, relative)).hash);
+          throw staleEdit(relative, 'missing', await currentHash());
         }
 
         throw error;

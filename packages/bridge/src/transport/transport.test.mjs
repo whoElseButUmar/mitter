@@ -360,7 +360,7 @@ test('forget releases transport bookkeeping for closed tabs', async () => {
   assert.equal(fixture.transport.documentGenerations.size, 0);
 });
 
-test('image-bearing composer operations upgrade an otherwise compatible stale reader', async () => {
+test('outgoing attachments and incoming images upgrade an otherwise compatible stale reader', async () => {
   const image = { id: '6cbada8b-171b-4ca8-847d-a7ca2f271be6', name: 'test.png', type: 'image/png', size: 3 };
   let revision = PAGE_READER_REVISION - 1;
   const fixture = transportFixture((message) => {
@@ -393,6 +393,25 @@ test('image-bearing composer operations upgrade an otherwise compatible stale re
   };
   assert.equal((await fixture.transport.request(7, attach)).outcome, 'prepared');
   assert.deepEqual(fixture.injections, [7]);
+
+  fixture.transport.forget(7);
+  revision = PAGE_READER_REVISION - 1;
+  const replyTo = '33333333-3333-4333-8333-333333333333';
+  const hash = 'a'.repeat(64);
+  await fixture.transport.request(7, {
+    ...action,
+    replyTo,
+    receipt: {
+      workerId: 'worker',
+      projectId: 'project',
+      goalHash: hash,
+      textHash: hash,
+      renderedHash: hash,
+      at: 0,
+      exchangeId: replyTo,
+    },
+  });
+  assert.deepEqual(fixture.injections, [7, 7]);
 });
 
 test('a forgotten pending connection cannot attach over a replacement connection', async () => {

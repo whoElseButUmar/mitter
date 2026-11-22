@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { identifierSchema } from '../../../../packages/protocol/src/schemas/primitives.js';
+import { MAX_IMAGE_BYTES } from '../../../../packages/protocol/src/schemas/image-attachments.js';
 export {
   workerStateSchema,
   profileSchema,
@@ -12,6 +13,13 @@ export {
 import { sha256Schema, fileHashSchema } from '../../../../packages/protocol/src/rpc.js';
 export { sha256Schema, fileHashSchema, changedFileSchema } from '../../../../packages/protocol/src/rpc.js';
 
+const journalContentSchema = z
+  .union([
+    z.string(),
+    z.instanceof(Uint8Array).refine((bytes) => bytes.length > 0 && bytes.length <= MAX_IMAGE_BYTES),
+  ])
+  .describe('Exact prepared text or raster image bytes.');
+
 export const journalSchema = z
   .object({
     id: z.string().describe('Exact action identifier.'),
@@ -19,7 +27,7 @@ export const journalSchema = z
     runId: z.string().describe('The run that prepared this edit.'),
     path: z.string().describe('Project-relative path checked before filesystem access.'),
     before: z.string().nullable().describe('Original source, or null for a newly created file.'),
-    after: z.string().describe('Prepared replacement source.'),
+    after: journalContentSchema,
     beforeHash: fileHashSchema,
     afterHash: sha256Schema,
     status: z.string().describe('Journal lifecycle status; replay checks eligible states explicitly.'),
@@ -35,7 +43,11 @@ export const journalSchema = z
 
       const afterHash = createHash('sha256').update(journal.after).digest('hex');
 
-      return journal.beforeHash === beforeHash && journal.afterHash === afterHash;
+      return (
+        (typeof journal.after === 'string' || journal.before === null) &&
+        journal.beforeHash === beforeHash &&
+        journal.afterHash === afterHash
+      );
     },
     {
       message: 'Journal content does not match its recorded file hashes. Files were ' + 'preserved.',
@@ -67,7 +79,7 @@ export const firstFileChangeSchema = z
 
 export const lastFileChangeSchema = z
   .object({
-    after: z.string().describe('The exact latest replacement source retained for this run.'),
+    after: journalContentSchema,
     afterHash: sha256Schema.describe('The SHA-256 of the latest replacement source.'),
     status: z.string().describe('The lifecycle status of the latest retained edit.'),
   })

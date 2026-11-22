@@ -1,10 +1,11 @@
 import { promises as fs } from 'node:fs';
 import type { Action, Project, Envelope } from '../../../../../packages/protocol/src/index.js';
 import { Store } from '../database.js';
-import { editContent, planEdits, staleEdit } from '../edit-plan.js';
+import { digest, editContent, planEdits, staleEdit } from '../edit-plan.js';
 import type { EditStep } from '../edit-plan.js';
 import { hasErrorCode } from '../types.js';
-import { safePath, existing, atomicWrite, validateRelative } from './files.js';
+import { safePath, existing, atomicWrite, imageFileHash, validateRelative } from './files.js';
+import { validateProjectImage } from './image-source.js';
 import { z } from 'zod';
 import { fileHashSchema } from '../storage-schemas.js';
 
@@ -19,12 +20,7 @@ export const workspaceWriteSchema = z
       .boolean()
       .optional()
       .describe('Whether an immutable prepared edit was recovered without blind replay.'),
-    bytes: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .describe('Published source size in UTF-8 bytes, when a write occurred.'),
+    bytes: z.number().int().nonnegative().optional().describe('Number of bytes published to the file.'),
   })
   .describe('A journaled edit result, including exact-file recovery without replay.');
 
@@ -210,6 +206,84 @@ export class Workspace {
     };
   }
 
+  async writeImage(
+    project: Project,
+    workerId: string,
+    runId: string,
+    actionId: string,
+    relative: string,
+    loadBytes: () => Promise<Buffer>,
+    signal: AbortSignal,
+  ): Promise<WorkspaceWrite> {
+    signal.throwIfAborted();
+    const prior = this.store.journal(actionId);
+    const currentHash = await imageFileHash(project.root, relative);
+    signal.throwIfAborted();
+    let image: Uint8Array<ArrayBuffer>;
+    let hash: string;
+
+    if (prior) {
+      if (
+        prior.workerId !== workerId ||
+        prior.runId !== runId ||
+        prior.path !== relative ||
+        typeof prior.after === 'string' ||
+        prior.beforeHash !== 'missing' ||
+        !['prepared', 'applied'].includes(prior.status)
+      ) {
+        throw new Error('The image journal belongs to a different edit. The file was preserved.');
+      }
+      if (currentHash === prior.afterHash) {
+        if (prior.status === 'prepared') {
+          this.markApplied(project, actionId);
+        }
+        return {
+          path: relative,
+          hash: prior.afterHash,
+          alreadyApplied: true,
+          recovered: prior.status === 'prepared',
+        };
+      }
+      if (prior.status !== 'prepared' || currentHash !== 'missing') {
+        throw new Error('The image changed after an earlier execution. The file was preserved.');
+      }
+      // Recover the exact prepared image without fetching a mutable source again.
+      image = prior.after;
+      validateProjectImage(Buffer.from(image.buffer, image.byteOffset, image.byteLength), relative);
+      hash = prior.afterHash;
+    } else {
+      if (currentHash !== 'missing') {
+        throw new Error(`Image destination already exists: ${relative}. Choose a new filename.`);
+      }
+      const bytes = await loadBytes();
+      signal.throwIfAborted();
+      validateProjectImage(bytes, relative);
+      const liveHash = await imageFileHash(project.root, relative);
+      signal.throwIfAborted();
+      if (liveHash !== 'missing') {
+        throw new Error(`Image destination already exists: ${relative}. Choose a new filename.`);
+      }
+      image = new Uint8Array(bytes);
+      hash = digest(image);
+      this.store.prepareWrite({
+        id: actionId,
+        workerId,
+        runId,
+        path: relative,
+        before: null,
+        after: image,
+        beforeHash: 'missing',
+        afterHash: hash,
+        status: 'prepared',
+        time: Date.now(),
+      });
+    }
+
+    await atomicWrite(project.root, relative, image, 'missing', signal);
+    this.markApplied(project, actionId);
+    return { path: relative, hash, bytes: image.length, recovered: prior !== undefined };
+  }
+
   async rollback(
     project: Project,
     runId: string,
@@ -218,12 +292,6 @@ export class Workspace {
   ): Promise<WorkspaceRollback> {
     if (relative !== undefined) {
       validateRelative(relative);
-
-      if (expectedHash !== undefined && (await existing(project.root, relative)).hash !== expectedHash) {
-        throw new Error(
-          'The file changed after you opened the change review. Reload it before ' + 'restoring.',
-        );
-      }
     }
 
     const writes = this.store
@@ -233,11 +301,23 @@ export class Workspace {
           (journal.status === 'applied' || journal.status === 'prepared') &&
           (relative === undefined || journal.path === relative),
       );
+    const imagePaths = new Set(
+      writes.filter((write) => typeof write.after !== 'string').map((write) => write.path),
+    );
+    const readHash = async (relative: string) => {
+      if (imagePaths.has(relative)) {
+        return imageFileHash(project.root, relative);
+      }
+      return (await existing(project.root, relative)).hash;
+    };
+    if (relative !== undefined && expectedHash !== undefined && (await readHash(relative)) !== expectedHash) {
+      throw new Error('The file changed after you opened the change review. Reload it before restoring.');
+    }
     const simulated = new Map<string, string>();
     // Preflight all paths first. Do not clobber edits made after this run.
 
     for (const journal of writes) {
-      const current = simulated.get(journal.path) ?? (await existing(project.root, journal.path)).hash;
+      const current = simulated.get(journal.path) ?? (await readHash(journal.path));
 
       if (
         current !== journal.afterHash &&
@@ -250,16 +330,16 @@ export class Workspace {
 
     for (const journal of writes) {
       if (journal.before === null) {
-        const actual = await existing(project.root, journal.path);
+        const actualHash = await readHash(journal.path);
 
         if (
-          actual.hash !== journal.afterHash &&
-          !(journal.status === 'prepared' && actual.hash === 'missing')
+          actualHash !== journal.afterHash &&
+          !(journal.status === 'prepared' && actualHash === 'missing')
         ) {
           throw new Error(`Rollback conflict: ${journal.path} changed during restoration.`);
         }
 
-        if (actual.hash !== 'missing') {
+        if (actualHash !== 'missing') {
           const target = await safePath(project.root, journal.path);
           await fs.unlink(target);
         }

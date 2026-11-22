@@ -37,7 +37,7 @@ export type EditPlan = {
   steps: EditStep[];
 };
 
-export const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+export const digest = (content: string | Uint8Array) => createHash('sha256').update(content).digest('hex');
 
 export const isFileEdit = (action: Action): action is FileEdit =>
   action.type === 'write' || action.type === 'replace';

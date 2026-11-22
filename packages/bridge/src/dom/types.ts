@@ -9,6 +9,8 @@ import { proposalEnvelopeSchema } from '../../../protocol/src/proposal.js';
 import {
   imageAttachmentSchema,
   chatImageAttachmentsSchema,
+  IMAGE_MIME_TYPES,
+  MAX_IMAGE_ATTACHMENTS,
   MAX_IMAGE_BYTES,
 } from '../../../protocol/src/schemas/image-attachments.js';
 import { exceedsHandoffBytes } from '../../../protocol/src/reply-json.js';
@@ -17,7 +19,7 @@ import { identifierSchema, nonNegativeIntegerSchema } from '../schemas/primitive
 
 export const USER_READER_VERSION = 'user-turn/8';
 // Increment when packaged DOM behavior changes without changing the compatible reader protocol.
-export const PAGE_READER_REVISION = 10;
+export const PAGE_READER_REVISION = 11;
 // Build verification checks this exact marker in the packaged page script.
 export const ASSISTANT_READER_VERSION = 'logical-pre/5-user-turn/8-discovery/8-code-reply/6-send/4-control/2';
 
@@ -29,6 +31,7 @@ export const domRequestSchema = z
         'probe',
         'reply',
         'inspect',
+        'read_generated_image',
         'prepare',
         'attach_image',
         'commit',
@@ -44,6 +47,12 @@ export const domRequestSchema = z
     projectId: identifierSchema.optional().describe('Project whose reply is being observed.'),
     replyId: identifierSchema.optional().describe('Specific reply to look for.'),
     replyTo: identifierSchema.optional().describe('Pending exchange that the reply must answer.'),
+    generatedImageIndex: z
+      .int()
+      .min(1)
+      .max(MAX_IMAGE_ATTACHMENTS)
+      .optional()
+      .describe('One-based position of a generated image in the verified assistant response.'),
     text: z.string().optional().describe('Outgoing composer text, unchanged by the bridge.'),
     messageId: z.string().optional().describe('Send intent ID used to prevent duplicate clicks.'),
     composerSession: identifierSchema.optional().describe('Document that prepared this send intent.'),
@@ -328,6 +337,18 @@ export const observedTaskTurnSchema = z
   .describe('Bounded historical task-turn count, not an execution receipt.');
 export type ObservedTaskTurn = z.infer<typeof observedTaskTurnSchema>;
 
+const generatedImageSchema = z
+  .strictObject({
+    base64: z
+      .string()
+      .min(4)
+      .max(4 * Math.ceil(MAX_IMAGE_BYTES / 3))
+      .describe('Original raster bytes, up to 5 MiB, encoded as Base64.'),
+    contentType: z.enum(IMAGE_MIME_TYPES).describe('The image media type observed at the source.'),
+  })
+  .describe('A raster image read from the assistant’s response to a verified task message.');
+export type GeneratedImage = z.infer<typeof generatedImageSchema>;
+
 export const chatViewSchema = z
   .object({
     readerRevision: readerRevisionSchema.optional(),
@@ -345,6 +366,17 @@ export const chatViewSchema = z
     draft: z.boolean().describe('The composer contains nonempty draft text.'),
     draftText: z.string().describe('Logical composer text without layout newline substitution.'),
     stopped: z.boolean().describe('This runner has been stopped in the page.'),
+    generatedImage: generatedImageSchema.optional().describe('The requested generated image, when found.'),
+    generatedImageCount: z
+      .int()
+      .min(1)
+      .max(MAX_IMAGE_ATTACHMENTS)
+      .optional()
+      .describe('Generated images visible after the verified task message, up to four.'),
+    generatedImageIssue: z
+      .enum(['missing', 'unavailable'])
+      .optional()
+      .describe('Whether the image was absent from the reply or could not be read.'),
     renderedDraftText: z
       .string()
       .optional()

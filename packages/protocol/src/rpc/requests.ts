@@ -3,7 +3,7 @@ import { checkSchema, teamMessageActionSchema } from '../schemas/actions.js';
 import { profileSchema, projectSchema, taskBoundarySchema } from '../schemas/domain.js';
 import { settingsSchema } from '../schemas/model-settings.js';
 import { followupRequestSchema } from '../schemas/requests.js';
-import { imageAttachmentsSchema } from '../schemas/image-attachments.js';
+import { IMAGE_MIME_TYPES, MAX_IMAGE_BYTES, imageAttachmentsSchema } from '../schemas/image-attachments.js';
 import { identifierSchema, integerSchema, textSchema } from '../schemas/primitives.js';
 import { DEFAULT_SETTINGS } from '../model-settings.js';
 import { MAX_HANDOFF_BYTES, exceedsHandoffBytes } from '../reply-json.js';
@@ -418,6 +418,26 @@ export const workerImportParamsSchema = epochParamsSchema
   .describe(
     'An exact handoff admission or acknowledgement-recovery request, still subject to run/epoch gates.',
   );
+
+export const IMAGE_UPLOAD_CHARS = 400_000;
+export const MAX_IMAGE_BASE64_CHARS = 4 * Math.ceil(MAX_IMAGE_BYTES / 3);
+
+export const workerStageImageParamsSchema = epochParamsSchema
+  .extend({
+    envelopeId: identifierSchema('envelope ID').describe('The reply that will use these image bytes.'),
+    exchangeId: identifierSchema('exchange ID').describe('The exact pending exchange answered by the reply.'),
+    index: z.int().min(1).max(4).describe('One-based index of the generated image.'),
+    contentType: z.enum(IMAGE_MIME_TYPES).describe('The raster media type reported by the browser.'),
+    offset: z.int().min(0).max(MAX_IMAGE_BASE64_CHARS).describe('Expected starting Base64 character offset.'),
+    total: z.int().min(4).max(MAX_IMAGE_BASE64_CHARS).describe('Total Base64 characters in the image.'),
+    data: z
+      .string()
+      .min(4)
+      .max(IMAGE_UPLOAD_CHARS)
+      .regex(/^[A-Za-z0-9+/]+={0,2}$/)
+      .describe('A bounded, Base64-encoded chunk of original image bytes.'),
+  })
+  .describe('Stage bytes read by the chat bridge for one image in its exact reply.');
 
 export const workerRunParamsSchema = epochParamsSchema
   .extend({

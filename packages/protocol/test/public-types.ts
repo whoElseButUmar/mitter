@@ -120,7 +120,12 @@ type CurrentActions =
   | Exclude<LegacyAction, { type: 'finish' }>
   | { [Key in keyof PreviewFinish]: PreviewFinish[Key] }
   | SkillAction
-  | { type: 'setupCommand'; command: string[]; purpose: string; effects: string };
+  | { type: 'setupCommand'; command: string[]; purpose: string; effects: string }
+  | {
+      type: 'saveImage';
+      path: string;
+      source: { type: 'web'; url: string } | { type: 'generated'; index: number };
+    };
 
 /** Compile-only assertions cover the read-only skill action and the optional framework launch. */
 export type PublicTypeChecks = [

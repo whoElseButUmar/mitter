@@ -5,6 +5,7 @@ import { createTaskController } from '../../src/background/task-controller.ts';
 import { parseLocalResult } from '../../src/schemas/local-results.ts';
 import { progressSummary } from '../../../../packages/bridge/src/progress.ts';
 import { messageDigest } from '../../../../packages/bridge/src/message-wire.ts';
+import { PAGE_READER_REVISION } from '../../../../packages/bridge/src/dom/types.ts';
 import { APP_VERSION } from '../../../../packages/protocol/src/index.ts';
 import {
   PAGE_CHANNEL,
@@ -209,6 +210,7 @@ function setup(context, timerAPIs = ['setTimeout']) {
           value = pageHelloSchema.parse({
             version: PAGE_CHANNEL,
             reader: PAGE_READER,
+            readerRevision: PAGE_READER_REVISION,
             instanceId: 'document',
             url: tabs.get(tabId)?.url ?? 'https://chatgpt.com',
             readyState: 'complete',

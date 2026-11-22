@@ -34,7 +34,7 @@ export async function newViteInstallIssue(
     return;
   }
   const change = store.fileChange(runId, 'package.json');
-  if (!change || change.before !== null || change.status !== 'applied') {
+  if (!change || change.before !== null || change.status !== 'applied' || typeof change.after !== 'string') {
     return;
   }
   let manifest: unknown;

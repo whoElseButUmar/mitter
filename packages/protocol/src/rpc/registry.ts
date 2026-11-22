@@ -91,6 +91,7 @@ import {
   workerHandoffSeenParamsSchema,
   workerHistoryParamsSchema,
   workerImportParamsSchema,
+  workerStageImageParamsSchema,
   workerOpenFileParamsSchema,
   workerParamsSchema,
   workerPromptParamsSchema,
@@ -192,6 +193,13 @@ export const coreRpcRegistry = Object.freeze({
   'worker.files': contract(workerParamsSchema, changedFilesSchema),
   'worker.validateReply': contract(workerReplyParamsSchema, replyValidationResultSchema),
   'worker.import': contract(workerImportParamsSchema, importResultSchema, true),
+  'worker.stageImage': contract(
+    workerStageImageParamsSchema,
+    z
+      .strictObject({ received: z.int().nonnegative().describe('Base64 characters received so far.') })
+      .describe('The acknowledged image upload position.'),
+    true,
+  ),
   'worker.run': contract(workerRunParamsSchema, runResultSchema, true),
   'worker.resume': contract(epochParamsSchema, resumeResultSchema, true),
   'worker.pause': contract(epochParamsSchema, pauseResultSchema, true),

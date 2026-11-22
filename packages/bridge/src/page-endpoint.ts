@@ -243,8 +243,10 @@ export function installPageEndpoint(runtime: PageRuntime): void {
       void reply
         .finally(() => {
           inFlightRequests.delete(reply);
-          if (action.op === 'attach_image' && action.image?.base64) {
-            // The document-local upload ledger handles retries after this response.
+          if (
+            (action.op === 'attach_image' && action.image?.base64) ||
+            action.op === 'read_generated_image'
+          ) {
             // Keep large image bodies only while they are in flight.
             pendingRequests.delete(header.id);
           }

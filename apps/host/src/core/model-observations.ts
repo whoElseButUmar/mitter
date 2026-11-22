@@ -66,6 +66,10 @@ export function actionRecord(action: Action): unknown {
     };
   }
 
+  if (action.type === 'saveImage') {
+    return { type: action.type, path: action.path, source: action.source.type };
+  }
+
   return action;
 }
 

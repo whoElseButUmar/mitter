@@ -5,6 +5,7 @@ export { fileReviewSchema } from '../../../../packages/protocol/src/rpc.js';
 export type { FileReview } from '../../../../packages/protocol/src/rpc.js';
 import type { Store } from './database.js';
 import { fileText, validateRelative } from './workspace.js';
+import { imageFileHash } from './workspace/files.js';
 
 export async function reviewFile(
   store: Store,
@@ -20,9 +21,15 @@ export async function reviewFile(
   }
 
   let currentHash = 'missing';
+  let content = '';
 
   try {
-    currentHash = (await fileText(root, relative)).hash;
+    if (typeof change.after === 'string') {
+      content = change.after;
+      currentHash = (await fileText(root, relative)).hash;
+    } else {
+      currentHash = await imageFileHash(root, relative);
+    }
   } catch (e) {
     if (!hasErrorCode(e, 'ENOENT')) {
       throw e;
@@ -40,6 +47,8 @@ export async function reviewFile(
 
   if (conflict) {
     warning = 'The file changed after this recorded edit. Restore is disabled.';
+  } else if (typeof change.after !== 'string') {
+    warning = 'Image added. There is no text comparison.';
   }
 
   return {
@@ -50,7 +59,7 @@ export async function reviewFile(
     conflict,
     status: change.status,
     kind,
-    diff: lineDiff(change.before ?? '', change.after),
+    diff: lineDiff(change.before ?? '', content),
     canRestore: !conflict && change.status === 'applied',
     warning,
   };

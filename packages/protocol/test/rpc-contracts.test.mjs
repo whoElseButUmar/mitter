@@ -282,6 +282,19 @@ const fixtures = {
     { ...task, text: ' {"literal":"\\r\\n界"} ', reconcile: true },
     { queued: true, acknowledged: true },
   ],
+  'worker.stageImage': [
+    {
+      ...task,
+      envelopeId: 'envelope_1',
+      exchangeId: 'exchange_1',
+      index: 1,
+      contentType: 'image/png',
+      offset: 0,
+      total: 4,
+      data: 'AAAA',
+    },
+    { received: 4 },
+  ],
   'worker.run': [
     { ...task, envelopeId: 'envelope_1', envelopeHash: hash },
     { started: true, acknowledged: true, state: 'paused' },

@@ -5,6 +5,7 @@ import { chatgptAddress } from '../connections/chatgpt.js';
 import { isProviderOrigin } from '../connections/providers.js';
 import { readAssistantMessage } from './assistant-reader.js';
 import { readCodeReply } from './code-replies.js';
+import { captureGeneratedImage, observeGeneratedImageCount } from './generated-images.js';
 import { findComposer, composerText, sendComposerMessage } from './composer-operations.js';
 import { sameImageAttachments } from './composer-images.js';
 import { contentHidden, pageElements, generationActive, generationStopControls } from './page-elements.js';
@@ -186,6 +187,38 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
   if (request.preservePause && existingSession?.stopped) {
     failOperation('STOPPED', 'Paused from the chat page.');
   }
+  if (request.op === 'read_generated_image') {
+    const receipt = parseReceipt(request.receipt);
+    const index = request.generatedImageIndex;
+    const checkImageSession = () => {
+      if (
+        !existingSession ||
+        existingSession.stopped ||
+        existingSession.token !== request.token ||
+        getChatDomSession() !== existingSession
+      ) {
+        failOperation('STOPPED', 'The chat session changed while reading a generated image.');
+      }
+      if (Date.now() > request.expiresAt) {
+        failOperation('SESSION_EXPIRED', 'The automatic session expired.');
+      }
+      if (canonicalURL(location.href) !== expectedURL || !isConversationURL(expectedURL)) {
+        failOperation('NAVIGATED', 'The chat changed while reading a generated image.');
+      }
+    };
+    checkImageSession();
+    if (
+      !receipt?.exchangeId ||
+      receipt.exchangeId !== request.replyTo ||
+      receipt.workerId !== request.workerId ||
+      receipt.projectId !== request.projectId ||
+      index === undefined
+    ) {
+      failOperation('BAD_REQUEST', 'A generated image needs the exact task message that requested it.');
+    }
+    const image = await captureGeneratedImage(receipt, index, checkImageSession);
+    return { ...emptyView(), stopped: false, ...image };
+  }
   if (
     request.op === 'attach_image' &&
     (!existingSession ||
@@ -293,7 +326,8 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
   }
   let lastDiscovery: MessageDiscovery | undefined;
   const collectView = async (): Promise<ChatView> => {
-    let discovery: MessageDiscovery = discoverMessages();
+    const nativeDiscovery = discoverMessages();
+    let discovery: MessageDiscovery = nativeDiscovery;
     const receipt = receivedReceipt || parseReceipt(session?.discoveryReceipt);
     let codeReplies: CodeReplyScan | undefined;
     if (request.workerId && request.projectId) {
@@ -462,6 +496,17 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
     } else if (document.readyState === 'loading') {
       readiness = 'loading';
     }
+    let generatedImageCount: number | undefined;
+    if (
+      request.op === 'inspect' &&
+      !generating &&
+      receipt?.exchangeId &&
+      request.replyTo === receipt.exchangeId &&
+      request.workerId === receipt.workerId &&
+      request.projectId === receipt.projectId
+    ) {
+      generatedImageCount = await observeGeneratedImageCount(receipt, nativeDiscovery, checkSession);
+    }
     return {
       composerSession: session?.composerSession,
       visibility: document.visibilityState,
@@ -479,6 +524,7 @@ export async function chatDom(request: DomRequest): Promise<ChatView> {
       lastRole: messageRole(lastMessage),
       assistantId: messageIdentity(lastAssistant) || String(messages.length),
       assistantText: text.slice(0, 400001),
+      generatedImageCount,
       assistantFormat: assistantRead.format,
       assistantReadIssue: assistantRead.issue,
       assistantReadStats: assistantRead.stats,

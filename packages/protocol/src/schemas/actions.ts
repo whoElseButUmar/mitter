@@ -125,6 +125,32 @@ export const diffActionSchema = z
   })
   .describe('Executable diff-inspection action.');
 
+export const saveImageActionSchema = z
+  .strictObject({
+    type: z.literal('saveImage').describe('Save a raster image as a new project file.'),
+    path: pathSchema.describe('New project-relative image filename, such as public/images/cover.png.'),
+    source: z
+      .discriminatedUnion('type', [
+        z
+          .strictObject({
+            type: z.literal('web').describe('Import a public web image.'),
+            url: z
+              .url({ protocol: /^https$/ })
+              .max(4096)
+              .describe('Direct public HTTPS raster image URL.'),
+          })
+          .describe('An image available at a direct public URL.'),
+        z
+          .strictObject({
+            type: z.literal('generated').describe('Import a rendered ChatGPT image.'),
+            index: z.int().min(1).max(4).describe('One-based index of the image rendered by ChatGPT.'),
+          })
+          .describe('An image generated in the linked chat.'),
+      ])
+      .describe('Public image URL or an image produced in this task’s linked ChatGPT conversation.'),
+  })
+  .describe('Import a supported PNG, JPEG, WebP or GIF asset without replacing any existing file.');
+
 export const teamMessageActionSchema = z
   .strictObject({
     type: z.literal('team_message').describe('Send a team message.'),
@@ -183,6 +209,7 @@ export const actionSchema = z
     replaceActionSchema,
     commandActionSchema,
     setupCommandActionSchema,
+    saveImageActionSchema,
     diffActionSchema,
     teamMessageActionSchema,
     teamPauseActionSchema,

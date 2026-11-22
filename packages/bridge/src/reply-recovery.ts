@@ -98,6 +98,8 @@ export function actionSummary(envelope: ProposalEnvelope): string[] {
         return 'Write ' + action.path + ' (' + new TextEncoder().encode(action.content).length + ' bytes)';
       case 'replace':
         return 'Edit ' + action.path;
+      case 'saveImage':
+        return 'Save image to ' + action.path;
       case 'read':
         return 'Read ' + action.path;
       case 'skill':

@@ -14,7 +14,7 @@ import type { ProposalEnvelope } from '../../../protocol/src/proposal.js';
 import type { ImageAttachment } from '../../../protocol/src/schemas/image-attachments.js';
 import { ReplyValidationError, correctionAdvice, type ReplyIssue } from '../../../protocol/src/validation.js';
 import type { ReaderDiagnostic, TaskBoundary, Worker } from '../../../protocol/src/index.js';
-import { parseRpcParams, RpcResultValidationError } from '../../../protocol/src/rpc.js';
+import { IMAGE_UPLOAD_CHARS, parseRpcParams, RpcResultValidationError } from '../../../protocol/src/rpc.js';
 import type { ChatView, DomRequest } from '../chat-dom.js';
 import { isEmptyChat } from '../dom/types.js';
 import { PageBridgeError } from '../page-transport.js';
@@ -118,6 +118,7 @@ function waitingWorkerBinding(worker: Worker): string {
 /** Coordinates page ownership, durable sending and host execution. Mutations
  * stay in this guarded lifecycle; extracted helpers never receive the runner. */
 export class BridgeRunner {
+  private generatedImageWait: TimedObservation | undefined;
   readonly status: BridgeStatus;
   private operationRunning = false;
   private expectedUserText = '';
@@ -990,7 +991,8 @@ export class BridgeRunner {
       | 'adoptBootstrapDraft'
       | 'image'
       | 'imageAttachments'
-    > = {},
+      | 'generatedImageIndex'
+    > & { sourceReceipt?: OutboundReceipt } = {},
   ): Promise<ChatView> {
     // The new-chat route can be provisional. Only inspections may look across
     // that transition; writes remain pinned to the last proven exact URL.
@@ -1006,11 +1008,16 @@ export class BridgeRunner {
     if (!this.progress?.approvedReply && this.options.lastReceipt?.expectsReplyTo) {
       expectedReplyTo = this.options.lastReceipt.exchangeId;
     }
+    const { sourceReceipt, ...operationDetails } = details;
+    if (op === 'read_generated_image') {
+      inspectionReceipt = sourceReceipt;
+      expectedReplyTo = sourceReceipt?.exchangeId;
+    }
     const observation = await this.dependencies.page(this.options.tabId, {
       op,
       token: this.options.token,
       url: expected,
-      ...details,
+      ...operationDetails,
       expiresAt: this.activeTimeDeadline,
       allowConversationBind: this.pendingConversationBind,
       preservePause: this.options.reattachRevision !== undefined || undefined,
@@ -2470,14 +2477,16 @@ export class BridgeRunner {
         return;
       }
     }
-    if (this.pendingConversationBind) {
-      // Wait for a final conversation URL, not just a completed reply rendered
-      // on the transient root. The next report must not go into an unbound chat.
-      conversationURL(this.status.url);
-      this.pendingConversationBind = false;
-      this.status.bindingPending = false;
-      this.dependencies.publish({ ...this.status });
-      this.dependencies.log('bridge.bind', 'Conversation binding finalized after an owned, complete reply.');
+    this.finalizeConversationBinding();
+    try {
+      await this.stageReplyImages(envelope, worker);
+    } catch (error) {
+      this.assertCanContinue();
+      if (page.replyEvidence === 'user' || error instanceof NativeRequestTimeout) {
+        throw error;
+      }
+      await this.repairReply(worker, page, error);
+      return;
     }
     const content = await messageDigest(JSON.stringify(envelope.actions));
     if (content === this.lastAcceptedActionsHash) {
@@ -2501,6 +2510,130 @@ export class BridgeRunner {
       retryAt: 0,
     };
     await this.advanceDelivery();
+  }
+
+  private async stageReplyImages(envelope: ProposalEnvelope, worker: Worker): Promise<void> {
+    const indices = new Set<number>();
+    for (const action of envelope.actions) {
+      if (action.type === 'saveImage' && action.source.type === 'generated') {
+        indices.add(action.source.index);
+      }
+    }
+    if (!indices.size) {
+      return;
+    }
+
+    const receipt = parseReceipt(this.options.lastReceipt);
+    if (!envelope.replyTo || receipt?.exchangeId !== envelope.replyTo) {
+      throw new Error('Generated images must be imported from the reply to this task’s current message.');
+    }
+
+    this.update('running', 'Saving the generated images to your project…');
+    for (const index of indices) {
+      const readImage = async (sourceReceipt: OutboundReceipt) => {
+        const view = await this.requestPage('read_generated_image', {
+          generatedImageIndex: index,
+          sourceReceipt,
+        });
+        this.assertCanContinue();
+        return view.generatedImage;
+      };
+      let image = await readImage(receipt);
+      const previous = this.progress?.imageSourceReceipt;
+      if (!image && previous && previous.exchangeId !== receipt.exchangeId) {
+        image = await readImage(previous);
+      }
+      if (!image) {
+        throw new Error(
+          `Generated image ${index} could not be read from this task’s chat. Use an available image or generate one before requesting saveImage. Do not use a guessed URL or Base64.`,
+        );
+      }
+      for (let offset = 0; offset < image.base64.length; offset += IMAGE_UPLOAD_CHARS) {
+        const data = image.base64.slice(offset, offset + IMAGE_UPLOAD_CHARS);
+        const params = {
+          workerId: worker.id,
+          epoch: this.executionEpoch,
+          envelopeId: envelope.id,
+          exchangeId: envelope.replyTo,
+          index,
+          contentType: image.contentType,
+          offset,
+          total: image.base64.length,
+          data,
+        };
+        let result;
+        try {
+          result = await this.queryRpc('worker.stageImage', params);
+        } catch (error) {
+          this.assertCanContinue();
+          if (!(error instanceof NativeRequestTimeout)) {
+            throw error;
+          }
+          result = await this.queryRpc('worker.stageImage', params);
+        }
+        this.assertCanContinue();
+        if (result.received !== offset + data.length) {
+          throw new Error('The local helper did not acknowledge the exact image chunk.');
+        }
+      }
+    }
+  }
+
+  private async continueImageReply(page: ChatView, worker: Worker): Promise<boolean> {
+    const receipt = parseReceipt(this.options.lastReceipt);
+    if (
+      !page.generatedImageCount ||
+      !receipt?.exchangeId ||
+      !this.progress ||
+      page.busy ||
+      page.draft ||
+      page.codeReply ||
+      page.unlinkedReply ||
+      isIncompleteReplyJSON(page.assistantText)
+    ) {
+      this.generatedImageWait = undefined;
+      return false;
+    }
+    const fingerprint = receipt.exchangeId + ':' + page.generatedImageCount;
+    if (this.generatedImageWait?.fingerprint !== fingerprint) {
+      this.generatedImageWait = { fingerprint, since: this.now() };
+      return true;
+    }
+    if (this.now() - this.generatedImageWait.since < 3500) {
+      return true;
+    }
+    if (
+      this.pendingConversationBind &&
+      (!this.pinnedConversation ||
+        this.pinnedConversation !== this.status.url ||
+        this.pinnedConversation !== page.url)
+    ) {
+      return true;
+    }
+    // The reader verified the exact receipt and that no later user turn
+    // replaced it. That proof also lets an image-only first reply bind the tab.
+    this.finalizeConversationBinding();
+    this.progress.imageSourceReceipt = receipt;
+    const report = await this.loadReportPrompt(worker);
+    this.assertCanContinue();
+    await this.send(
+      report +
+        '\n\nThe images from your immediately preceding response are ready. Return only the JSON actions now. Use saveImage with source.type "generated" and the one-based image index, with a new project-relative filename. Keep any public web image requested in the task. Do not generate the same image again or paste a URL for the generated image. Wait for the successful file paths in the next report before using them.',
+      page,
+    );
+    this.generatedImageWait = undefined;
+    return true;
+  }
+
+  private finalizeConversationBinding(): void {
+    if (!this.pendingConversationBind) {
+      return;
+    }
+    conversationURL(this.status.url);
+    this.pendingConversationBind = false;
+    this.status.bindingPending = false;
+    this.dependencies.publish({ ...this.status });
+    this.dependencies.log('bridge.bind', 'Conversation binding finalized after an owned, complete reply.');
   }
   /** Only retry a missing native acknowledgement, using the SAME canonical
    * envelope and host receipt. Never resend a prompt, re-import a different
@@ -3695,6 +3828,9 @@ export class BridgeRunner {
           'waiting_reply',
           'Waiting for ChatGPT to clear the submitted prompt… Nothing is being sent twice.',
         );
+        return;
+      }
+      if (phase === 'waiting_reply' && (await this.continueImageReply(page, worker))) {
         return;
       }
       if (phase === 'waiting_reply' && (await this.recoverUnreadableReply(page, worker))) {

@@ -63,6 +63,12 @@ import { chatPrompt, localPrompt } from './prompts.js';
 import { ReadSnapshots } from './read-snapshots.js';
 import { parseModelOutput } from '../../../inference/src/protocol.js';
 import { reviewFile } from './review.js';
+import { downloadPublicImage } from './workspace/image-source.js';
+import {
+  clearGeneratedImages,
+  stagedGeneratedImage,
+  stageGeneratedImage,
+} from './service/generated-images.js';
 import { checkJavaScript } from './syntax-check.js';
 import { canEditTaskDetails, isProjectLaunchRequest } from '../../../../packages/protocol/src/task-brief.js';
 import { devProjectFingerprint } from './dev-server/index.js';
@@ -165,6 +171,7 @@ type ServiceModels = Models & { settled?: () => Promise<void> };
 
 const gatedMethods = new Set([
   'worker.validateReply',
+  'worker.stageImage',
   'worker.import',
   'worker.run',
   'worker.resume',
@@ -175,6 +182,7 @@ const gatedMethods = new Set([
 ]);
 const epochMethods = new Set([
   'worker.validateReply',
+  'worker.stageImage',
   'worker.import',
   'worker.run',
   'worker.resume',
@@ -931,6 +939,11 @@ export class Service {
       case 'worker.import': {
         return this.importHandoff(task, project, params);
       }
+      case 'worker.stageImage': {
+        const input = parseRpcParams(serviceRpcRegistry, method, params);
+        task.assertIdle();
+        return stageGeneratedImage(this.store, worker, input);
+      }
       case 'worker.run': {
         if (params.envelopeId !== undefined) {
           return this.startDelivery(task, params);
@@ -1320,6 +1333,12 @@ export class Service {
     }
 
     const executable = this.validateProposal(worker, project, envelope);
+    for (const action of executable.actions) {
+      if (action.type === 'saveImage' && action.source.type === 'generated') {
+        const image = stagedGeneratedImage(this.store, worker, executable, action);
+        validateRelative(image.path);
+      }
+    }
     task.newRunIfNeeded();
     worker.humanAcceptanceReady = false;
     worker.completion = undefined;
@@ -1865,6 +1884,10 @@ export class Service {
         setupProfile(action);
       }
 
+      if (action.type === 'saveImage' && worker.mode !== 'handoff') {
+        throw new Error('Choose ChatGPT to import project images.');
+      }
+
       if (action.type === 'command' && !project.profiles.some((profile) => profile.id === action.profileId)) {
         throw new Error(`Register the command profile ${action.profileId} yourself before importing it.`);
       }
@@ -2069,6 +2092,7 @@ export class Service {
       }
       if (worker.cursor >= batch.actions.length) {
         task.discardCompletedBatch(batch);
+        clearGeneratedImages(this.store, worker, batch);
         task.save();
         continue;
       }
@@ -2189,6 +2213,26 @@ export class Service {
             if (commandResult.code !== 0) {
               failedCommand = commandResult;
             }
+          } else if (action.type === 'saveImage') {
+            let location = action.path;
+            let loadBytes: () => Promise<Buffer>;
+            if (action.source.type === 'generated') {
+              const image = stagedGeneratedImage(this.store, worker, executingBatch, action);
+              location = image.path;
+              loadBytes = async () => image.bytes;
+            } else {
+              const url = action.source.url;
+              loadBytes = () => downloadPublicImage(url, signal);
+            }
+            result = await this.workspace.writeImage(
+              project,
+              worker.id,
+              worker.runId,
+              actionId,
+              location,
+              loadBytes,
+              signal,
+            );
           } else {
             result = await this.execute(task, project, action, actionId, signal);
           }
@@ -2235,6 +2279,14 @@ export class Service {
           }),
         );
 
+        if (action.type === 'saveImage' && worker.mode === 'handoff') {
+          this.prepareExecutionRepair(task, executingBatch, errorMessage(error));
+          clearGeneratedImages(this.store, worker, executingBatch);
+          task.move('review');
+          task.save();
+          return;
+        }
+
         if (
           worker.mode === 'local' &&
           !(
@@ -2260,6 +2312,7 @@ export class Service {
         // The interruption owns the queue until it has finished archiving it.
         signal.throwIfAborted();
         this.prepareExecutionRepair(task, executingBatch, repairReason);
+        clearGeneratedImages(this.store, worker, executingBatch);
         task.move('review');
         task.save();
         return;
@@ -2267,6 +2320,7 @@ export class Service {
 
       if (finished) {
         task.save();
+        clearGeneratedImages(this.store, worker, executingBatch);
         return;
       }
 
@@ -2571,7 +2625,10 @@ export class Service {
   private async execute(
     task: TaskRuntime,
     project: Project,
-    action: Exclude<Action, { type: 'command' | 'setupCommand' | 'write' | 'replace' | 'ask' | 'finish' }>,
+    action: Exclude<
+      Action,
+      { type: 'command' | 'setupCommand' | 'write' | 'replace' | 'saveImage' | 'ask' | 'finish' }
+    >,
     actionId: string,
     signal: AbortSignal,
   ): Promise<unknown> {

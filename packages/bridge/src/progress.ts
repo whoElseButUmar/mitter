@@ -54,6 +54,9 @@ const taskProgressFieldsSchema = z.object({
     .optional()
     .describe('The pinned conversation, once its route is known.'),
   lastReceipt: outboundReceiptSchema.optional().describe('The exact outgoing message waiting for its reply.'),
+  imageSourceReceipt: outboundReceiptSchema
+    .optional()
+    .describe('The exact task turn whose generated image awaits a JSON continuation.'),
   imageFollowupId: identifierSchema
     .optional()
     .describe('The follow-up whose image attachments reached a recorded Send intent.'),
@@ -78,21 +81,20 @@ function checkReceiptBinding(
   progress: z.infer<typeof taskProgressFieldsSchema>,
   context: z.RefinementCtx,
 ): void {
-  const receipt = progress.lastReceipt;
-
-  if (!receipt) {
-    return;
-  }
-
-  const sameTask = receipt.workerId === progress.workerId && receipt.projectId === progress.projectId;
-  const sameGoal = receipt.goalHash === progress.goalHash;
-
-  if (!sameTask || !sameGoal) {
-    context.addIssue({
-      code: 'custom',
-      path: ['lastReceipt'],
-      message: 'The saved message belongs to a different task, project, or goal.',
-    });
+  for (const field of ['lastReceipt', 'imageSourceReceipt'] as const) {
+    const receipt = progress[field];
+    if (
+      receipt &&
+      (receipt.workerId !== progress.workerId ||
+        receipt.projectId !== progress.projectId ||
+        receipt.goalHash !== progress.goalHash)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: [field],
+        message: 'The saved message belongs to a different task, project, or goal.',
+      });
+    }
   }
 }
 

@@ -11,6 +11,7 @@ import {
   existing,
 } from '../src/core/workspace.js';
 import { digest, editContent } from '../src/core/edit-plan.js';
+import { reviewFile } from '../src/core/review.js';
 import { temporaryDirectory, memoryStore, projectFixture, envelopeFixture } from './fixtures.mjs';
 test('workspace rejects sensitive/traversal paths, symlinks and hardlinks', async (t) => {
   const root = await temporaryDirectory(t);
@@ -122,6 +123,136 @@ test('prepared journals recover only the exact before/after, preserving ' + 'ext
   await assert.rejects(workspace.write(project, 'worker', 'run', 'edit', action), /ambiguous/);
   await assert.rejects(workspace.rollback(project, 'run'), /Rollback conflict/);
   assert.equal((await fileText(root, 'new.txt')).content, 'user edit');
+});
+
+const testImage = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==',
+  'base64',
+);
+
+test('new images are journaled byte-for-byte, reviewed without text, and removed by rollback', async (t) => {
+  const root = await temporaryDirectory(t);
+  const store = memoryStore(t);
+  const workspace = new Workspace(store);
+  const project = projectFixture(root);
+  const relative = 'images/one.png';
+  const signal = new AbortController().signal;
+  const write = await workspace.writeImage(
+    project,
+    'worker',
+    'run',
+    'asset',
+    relative,
+    async () => {
+      return testImage;
+    },
+    signal,
+  );
+  assert.deepEqual(await fs.readFile(path.join(root, relative)), testImage);
+  await assert.rejects(fileText(root, relative), /Binary files/);
+  assert.equal(write.hash, digest(testImage));
+  assert.equal(project.revision, 1);
+  assert.deepEqual(store.changedFiles('run'), [
+    { path: relative, status: 'applied', bytes: testImage.length },
+  ]);
+  const review = await reviewFile(store, 'run', root, relative);
+  assert.equal(review.canRestore, true);
+  assert.deepEqual(review.diff.lines, []);
+
+  await assert.rejects(
+    workspace.writeImage(
+      project,
+      'worker',
+      'run',
+      'second',
+      relative,
+      async () => {
+        assert.fail('A preexisting destination must be rejected before fetching.');
+      },
+      signal,
+    ),
+    /already exists/,
+  );
+  await assert.rejects(
+    workspace.rollback(project, 'run', relative, digest('stale')),
+    /changed after you opened/,
+  );
+  await workspace.rollback(project, 'run', relative, review.currentHash);
+  await assert.rejects(fs.stat(path.join(root, relative)), { code: 'ENOENT' });
+});
+
+test('recovery publishes the prepared image without fetching again and preserves external replacements', async (t) => {
+  const root = await temporaryDirectory(t);
+  const store = memoryStore(t);
+  const workspace = new Workspace(store);
+  const project = projectFixture(root);
+  const relative = 'prepared.png';
+  const signal = new AbortController().signal;
+  store.prepareWrite({
+    id: 'asset',
+    workerId: 'worker',
+    runId: 'run',
+    path: relative,
+    before: null,
+    after: testImage,
+    beforeHash: 'missing',
+    afterHash: digest(testImage),
+    status: 'prepared',
+    time: Date.now(),
+  });
+  const replay = () =>
+    workspace.writeImage(
+      project,
+      'worker',
+      'run',
+      'asset',
+      relative,
+      async () => {
+        assert.fail('The exact prepared bytes must be reused.');
+      },
+      signal,
+    );
+  assert.equal((await replay()).recovered, true);
+  assert.equal((await replay()).alreadyApplied, true);
+  assert.equal(project.revision, 1);
+  await fs.writeFile(path.join(root, relative), 'external file');
+  await assert.rejects(replay(), /image changed/);
+  await assert.rejects(workspace.rollback(project, 'run'), /Rollback conflict/);
+  assert.equal(await fs.readFile(path.join(root, relative), 'utf8'), 'external file');
+});
+
+test('image publication rechecks the path and cancellation after fetching', async (t) => {
+  const root = await temporaryDirectory(t);
+  const store = memoryStore(t);
+  const workspace = new Workspace(store);
+  const project = projectFixture(root);
+  const controller = new AbortController();
+  const write = (relative, loadBytes) =>
+    workspace.writeImage(project, 'worker', 'run', 'asset', relative, loadBytes, controller.signal);
+  await assert.rejects(
+    write('../outside.png', async () => {
+      assert.fail('An unsafe project path must be rejected before fetching.');
+    }),
+    /Unsafe path/,
+  );
+  await assert.rejects(
+    write('occupied.png', async () => {
+      await fs.writeFile(path.join(root, 'occupied.png'), 'external file');
+      return testImage;
+    }),
+    /already exists/,
+  );
+  const cancelled = new Error('task stopped');
+  await assert.rejects(
+    write('stopped.png', async () => {
+      controller.abort(cancelled);
+      return testImage;
+    }),
+    cancelled,
+  );
+  assert.equal(store.journal('asset'), undefined);
+  assert.equal(await fs.readFile(path.join(root, 'occupied.png'), 'utf8'), 'external file');
+  await assert.rejects(fs.stat(path.join(root, 'stopped.png')), { code: 'ENOENT' });
 });
 test(
   'replacement uniqueness counts overlapping matches and preserves ' + 'literal replacement syntax',
