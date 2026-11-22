@@ -140,7 +140,20 @@ const followup = {
 const rollback = { restored: 1, warning: 'Command side effects were not reversed.' };
 const control = { stopped: true, ready: false, epoch: 1, operationId: 'stop_1' };
 const readPath = { ...task, path: 'file.txt' };
+const workflow = { id: 'flow_1', name: 'Create a card', verifyAfterRestart: true };
+const workflowTarget = { ...projectRequest, id: workflow.id };
+const workflowState = { recording: false, workflows: [workflow] };
 const fixtures = {
+  'workflow.list': [projectRequest, workflowState],
+  'workflow.record': [projectRequest, { ...workflowState, recording: true }],
+  'workflow.expect': [projectRequest, { ...workflowState, recording: true }],
+  'workflow.save': [{ ...projectRequest, name: workflow.name, verifyAfterRestart: true }, workflowState],
+  'workflow.cancel': [projectRequest, workflowState],
+  'workflow.replay': [
+    workflowTarget,
+    { recording: false, workflows: [{ ...workflow, lastResult: { ok: true, detail: 'Passed.' } }] },
+  ],
+  'workflow.delete': [workflowTarget, { recording: false, workflows: [] }],
   state: [
     {},
     {

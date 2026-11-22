@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 const selector = z.string().min(1).max(300).describe('A literal CSS selector identifying rendered controls.');
-const step = z
+export const browserStepSchema = z
   .discriminatedUnion('type', [
     z.strictObject({ type: z.literal('click'), selector }),
     z.strictObject({ type: z.literal('fill'), selector, value: z.string().max(2000) }),
@@ -31,6 +31,7 @@ const step = z
         value: z.string().max(2000).optional(),
         count: z.number().int().min(0).max(1000).optional(),
         focused: z.boolean().optional(),
+        checked: z.boolean().optional(),
       })
       .refine(
         (value) => Object.keys(value).some((key) => key !== 'type' && key !== 'selector'),
@@ -42,6 +43,7 @@ const step = z
           (value.text === undefined &&
             value.value === undefined &&
             value.focused === undefined &&
+            value.checked === undefined &&
             value.visible !== true),
         'An absent element cannot have text, value, focus or visible:true expectations.',
       ),
@@ -52,7 +54,7 @@ export const browserJourneySchema = z
   .strictObject({
     name: z.string().trim().min(1).max(100).describe('The user outcome or failure recovery exercised.'),
     steps: z
-      .array(step)
+      .array(browserStepSchema)
       .min(2)
       .max(32)
       .describe('Ordered actions and assertions; repeated at desktop and mobile sizes.'),

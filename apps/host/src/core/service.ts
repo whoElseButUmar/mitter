@@ -115,6 +115,7 @@ import {
 } from './service/setup-commands.js';
 import { buildEditRepair, encodeRepairObservation } from './service/edit-repair.js';
 import { TaskRuntime } from './service/task-runtime.js';
+import { ProjectWorkflows } from './workflows/service.js';
 import { ProjectCatalog } from './service/project-catalog.js';
 import { TaskProgressStore, parseProgressUpdate, prepareFollowupProgress } from './service/progress.js';
 import { advanceCounter } from './service/counters.js';
@@ -188,6 +189,7 @@ export class Service {
   private readonly locks = new Locks();
   private readonly workspace: Workspace;
   private readonly previews: PreviewSessions;
+  private readonly projectWorkflows: ProjectWorkflows;
   private readonly reads: ReadSnapshots;
   private readonly progress: TaskProgressStore;
   private readonly commands: CommandJournalStore;
@@ -208,6 +210,7 @@ export class Service {
     readonly workflowName = 'xstate',
   ) {
     this.previews = new PreviewSessions(dataDir);
+    this.projectWorkflows = new ProjectWorkflows(store);
     this.workspace = new Workspace(store);
     this.reads = new ReadSnapshots(store);
     this.progress = new TaskProgressStore(store);
@@ -435,6 +438,37 @@ export class Service {
       case 'project.pickFolder': {
         const input = parseRpcParams(serviceRpcRegistry, method, params);
         return pickFolder(undefined, undefined, input.purpose);
+      }
+      case 'workflow.list':
+      case 'workflow.record':
+      case 'workflow.expect':
+      case 'workflow.cancel': {
+        const input = parseRpcParams(serviceRpcRegistry, method, params);
+        const project = this.catalog.get(input.projectId);
+        if (method === 'workflow.record') {
+          return this.projectWorkflows.record(project);
+        }
+        if (method === 'workflow.expect') {
+          return this.projectWorkflows.expect(project.id);
+        }
+        if (method === 'workflow.cancel') {
+          return this.projectWorkflows.cancel(project.id);
+        }
+        return this.projectWorkflows.list(project.id);
+      }
+      case 'workflow.save': {
+        const input = parseRpcParams(serviceRpcRegistry, method, params);
+        const project = this.catalog.get(input.projectId);
+        return this.projectWorkflows.save(project.id, input.name, input.verifyAfterRestart);
+      }
+      case 'workflow.replay':
+      case 'workflow.delete': {
+        const input = parseRpcParams(serviceRpcRegistry, method, params);
+        const project = this.catalog.get(input.projectId);
+        if (method === 'workflow.delete') {
+          return this.projectWorkflows.remove(project.id, input.id);
+        }
+        return this.projectWorkflows.replay(project, input.id);
       }
       case 'project.appRuns': {
         const input = parseRpcParams(serviceRpcRegistry, method, params);
@@ -2641,6 +2675,26 @@ export class Service {
       });
       signal.throwIfAborted();
       results.push(...qualityResults);
+      const verifiedWebApp = qualityResults.some(
+        ({ check }) => check.type === 'quality' && check.name === 'browser',
+      );
+      if (verifiedWebApp && qualityResults.every(({ ok }) => ok)) {
+        for (const workflow of this.projectWorkflows.list(project.id).workflows) {
+          signal.throwIfAborted();
+          task.event('quality', 'Checking saved workflow: ' + workflow.name);
+          const check = { type: 'quality', name: 'workflow' } as const;
+          try {
+            const state = await this.projectWorkflows.replay(project, workflow.id, signal);
+            signal.throwIfAborted();
+            const result = state.workflows.find(({ id }) => id === workflow.id)?.lastResult;
+            const detail = workflow.name + ': ' + (result?.detail ?? 'No replay result was recorded.');
+            results.push({ check, ok: result?.ok === true, detail });
+          } catch (error) {
+            signal.throwIfAborted();
+            results.push({ check, ok: false, detail: workflow.name + ': ' + errorMessage(error) });
+          }
+        }
+      }
       if (action.openPreview && changedPaths.length === 0 && qualityResults.length === 0) {
         const check = { type: 'quality', name: 'dev-server' } as const;
         try {
@@ -2733,6 +2787,7 @@ export class Service {
     this.models.close();
     const drained = await Promise.allSettled([
       this.previews.close(),
+      this.projectWorkflows.close(),
       ...activeTasks.map((task) => task.wait()),
     ]);
 

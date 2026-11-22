@@ -4,7 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import lighthouse, { generateReport } from 'lighthouse';
 import desktopConfig from 'lighthouse/core/config/desktop-config.js';
-import puppeteer, { type Browser } from 'puppeteer-core';
+import type { Browser } from 'puppeteer-core';
+import { closeBrowser, killBrowser, launchPreviewBrowser } from './browser-launch.js';
+export { browserNetworkArguments } from './browser-launch.js';
 import { z } from 'zod';
 import { isRecord } from '../types.js';
 import { serveSnapshot, type PreviewServer } from '../preview/server.js';
@@ -245,72 +247,6 @@ export function assessLighthouseResult(value: unknown) {
   };
 }
 
-export function browserNetworkArguments(origin: string): string[] {
-  const url = new URL(origin);
-  if (
-    url.origin !== origin ||
-    url.protocol !== 'http:' ||
-    !/^miter-[a-f0-9]{32}\.localhost$/.test(url.hostname) ||
-    !url.port
-  ) {
-    throw new Error('Browser checks require one exact owned preview origin.');
-  }
-  return [
-    '--proxy-server=http://127.0.0.1:9',
-    '--proxy-bypass-list=<-loopback>;' + url.host,
-    '--host-resolver-rules=MAP ' + url.hostname + ' 127.0.0.1, MAP * ~NOTFOUND',
-    '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
-    '--disable-quic',
-  ];
-}
-
-function browserEnvironment(directory: string): Record<string, string> {
-  const environment: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && /^(PATH|LANG|LC_[A-Z_]+|TZ)$/i.test(key)) {
-      environment[key] = value;
-    }
-  }
-  const home = path.join(directory, 'home');
-  const temporary = path.join(directory, 'tmp');
-  return {
-    ...environment,
-    HOME: home,
-    USERPROFILE: home,
-    XDG_CONFIG_HOME: path.join(home, '.config'),
-    XDG_CACHE_HOME: path.join(home, '.cache'),
-    XDG_DATA_HOME: path.join(home, '.local/share'),
-    TMPDIR: temporary,
-    TMP: temporary,
-    TEMP: temporary,
-  };
-}
-
-function killBrowser(browser: Browser | undefined): void {
-  const child = browser?.process();
-  if (!child?.pid) {
-    return;
-  }
-  try {
-    process.kill(-child.pid, 'SIGKILL');
-  } catch {
-    child.kill('SIGKILL');
-  }
-}
-
-async function closeBrowser(browser: Browser | undefined): Promise<void> {
-  if (!browser) {
-    return;
-  }
-  const timer = setTimeout(() => killBrowser(browser), 1500);
-  try {
-    await browser.close();
-  } finally {
-    clearTimeout(timer);
-    killBrowser(browser);
-  }
-}
-
 async function createReportDirectory(dataDir: string): Promise<string> {
   const root = path.join(dataDir, 'quality-reports');
   await fs.mkdir(root, { recursive: true, mode: 0o700 });
@@ -468,34 +404,6 @@ async function startFrameworkAudit(
   );
 }
 
-function launchAuditBrowser(executablePath: string, temporary: string, url: string) {
-  return puppeteer.launch({
-    executablePath,
-    headless: true,
-    ignoreDefaultArgs: ['--disable-popup-blocking'],
-    pipe: true,
-    userDataDir: path.join(temporary, 'profile'),
-    env: browserEnvironment(temporary),
-    timeout: 20_000,
-    protocolTimeout: 30_000,
-    handleSIGINT: false,
-    handleSIGTERM: false,
-    handleSIGHUP: false,
-    args: [
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-background-networking',
-      '--disable-component-update',
-      '--disable-default-apps',
-      '--disable-sync',
-      '--disable-breakpad',
-      '--use-mock-keychain',
-      '--password-store=basic',
-      ...browserNetworkArguments(new URL(url).origin),
-    ],
-  });
-}
-
 export async function runBrowserQuality(request: BrowserQualityRequest): Promise<BrowserQualityResult> {
   request.signal.throwIfAborted();
   const result: BrowserQualityResult = {
@@ -560,7 +468,7 @@ export async function runBrowserQuality(request: BrowserQualityRequest): Promise
       }
       url = new URL(request.entry, server.url).href;
     }
-    browser = await launchAuditBrowser(executablePath, temporary, url);
+    browser = await launchPreviewBrowser(executablePath, temporary, url);
     signal.throwIfAborted();
     const journeys = await runBrowserJourneys({
       browser,
@@ -592,7 +500,7 @@ export async function runBrowserQuality(request: BrowserQualityRequest): Promise
         signal.throwIfAborted();
         server = await startFrameworkAudit(request.devProject, 'production', signal, activity);
         url = server.url;
-        browser = await launchAuditBrowser(executablePath, temporary, url);
+        browser = await launchPreviewBrowser(executablePath, temporary, url);
       }
       const auditBrowser = browser;
       const reset = server.resetBackend;

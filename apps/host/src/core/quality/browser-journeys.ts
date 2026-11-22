@@ -332,7 +332,12 @@ function visibleControl(selector: string, value?: string) {
   }
   if (
     value !== undefined &&
-    !((target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) && target.value === value)
+    !(
+      (target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement) &&
+      target.value === value
+    )
   ) {
     return null;
   }
@@ -378,6 +383,14 @@ export function matchesJourneyExpectation(
     ) {
       return false;
     }
+    if (
+      expected.checked !== undefined &&
+      (!(element instanceof HTMLInputElement) ||
+        !element.matches('[type=checkbox],[type=radio]') ||
+        element.checked !== expected.checked)
+    ) {
+      return false;
+    }
     return expected.focused === undefined || (document.activeElement === element) === expected.focused;
   });
   // A text or value assertion identifies one record among siblings. An explicit
@@ -388,7 +401,7 @@ export function matchesJourneyExpectation(
   return matches.length === elements.length && elements.length === (expected.count ?? 1);
 }
 
-async function executeStep(page: Page, step: BrowserJourney['steps'][number]): Promise<void> {
+export async function executeStep(page: Page, step: BrowserJourney['steps'][number]): Promise<void> {
   if (step.type === 'reload') {
     await page.reload({ waitUntil: 'networkidle0', timeout: operationTimeout });
     return;
@@ -418,6 +431,16 @@ async function executeStep(page: Page, step: BrowserJourney['steps'][number]): P
     }
     if (step.type === 'click') {
       await control.click();
+      return;
+    }
+    const select = await control.evaluate(
+      (element) => element instanceof HTMLSelectElement && !element.disabled && !element.multiple,
+    );
+    if (select) {
+      const chosen = await control.select(step.value);
+      if (chosen.length !== 1 || chosen[0] !== step.value) {
+        throw new Error('The recorded option is unavailable: ' + step.selector);
+      }
       return;
     }
     const editable = await control.evaluate(
@@ -452,7 +475,7 @@ async function executeStep(page: Page, step: BrowserJourney['steps'][number]): P
 }
 
 /** Input can return while the replacement document is still fetching its entry module. */
-async function dispatchPageAction(page: Page, step: BrowserJourney['steps'][number]) {
+export async function dispatchPageAction(page: Page, step: BrowserJourney['steps'][number]) {
   let navigated = false;
   const observe = (request: HTTPRequest) => {
     if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {

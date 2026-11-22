@@ -184,6 +184,7 @@ function failedCheckFinding(result: CheckResult): string {
   const labels = {
     skills: 'Skills',
     components: 'UI components',
+    workflow: 'Saved workflow',
     syntax: 'JavaScript',
     tests: 'Domain tests',
     browser: 'Chrome',

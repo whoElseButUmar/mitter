@@ -3778,3 +3778,19 @@ details[open] > .disclosure-summary > .miter-icon,
   justify-content: flex-end;
   gap: var(--space-sm);
 }
+
+.workflow-notice:empty {
+  margin: 0;
+}
+
+.workflow-list > li {
+  display: grid;
+  gap: var(--space-sm);
+  padding-block: var(--space-md);
+  border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.workflow-list p {
+  margin-block: var(--space-xs);
+}

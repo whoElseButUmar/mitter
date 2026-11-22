@@ -70,6 +70,11 @@ export function ProjectToolbar(props: { controller: WorkspaceController; project
         run: () => setModal('context'),
       },
       {
+        id: 'workflows',
+        label: 'Workflows…',
+        run: () => setModal('workflows'),
+      },
+      {
         id: 'profiles',
         label: 'Test commands…',
         run: () => setModal('profile'),

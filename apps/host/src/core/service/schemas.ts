@@ -123,6 +123,7 @@ export const checkResultSchema = z
                 'syntax',
                 'tests',
                 'browser',
+                'workflow',
                 'lighthouse',
                 'snapshot',
                 'dev-server',

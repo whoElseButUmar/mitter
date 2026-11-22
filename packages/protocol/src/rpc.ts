@@ -18,6 +18,7 @@ export * from './rpc/system.js';
 export * from './rpc/readiness.js';
 export * from './rpc/preview.js';
 export * from './rpc/team.js';
+export * from './rpc/workflows.js';
 export * from './rpc/receipts.js';
 export * from './rpc/requests.js';
 export { sha256Schema, fileHashSchema, rpcCounterSchema, rpcTimestampSchema } from './rpc/primitives.js';

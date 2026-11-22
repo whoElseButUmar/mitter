@@ -27,6 +27,8 @@ When a coding task builds or changes a static HTML, Vite, or Next.js app, Miter 
 
 Choose **Run** on a completed app to start it in the project’s **Terminal**. Its header shows the selected app with **Open app**, **Restart**, and **Stop** controls; hover or focus an icon for its label. Server status stays visible, and **Logs** opens startup output when needed. Use the session picker to switch apps and shells, and **Settings → Terminal appearance** to change fonts and colors. Choosing **Run** again selects the existing session. Apps with a Node backend can serve an API and keep data across preview sessions. **Setup & connection** shows how to recover a disconnected host or chat. For scripting, the [terminal command](apps/host/src/cli/README.md) starts and monitors tasks through the same running extension.
 
+To keep a regression test for a project, open **Actions → Workflows** and start a recording. Exercise the app in the recording window using test data. Choose the element you expect to see at the end, name the workflow, and save it. Enable the restart check to verify that the result survives a fresh browser and server. Miter replays saved workflows on disposable data during web app verification. You can also replay or remove a workflow from the same menu.
+
 ## Where to find the code
 
 | Location                                                                        | Responsibility                                                                                                   |

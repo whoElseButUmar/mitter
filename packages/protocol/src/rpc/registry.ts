@@ -25,6 +25,12 @@ import {
   previewStopParamsSchema,
   previewStopResultSchema,
 } from './preview.js';
+import {
+  workflowProjectParamsSchema,
+  workflowSaveParamsSchema,
+  workflowStateSchema,
+  workflowTargetParamsSchema,
+} from './workflows.js';
 import { teamResultSchema, teamSchema } from './team.js';
 import {
   acceptResultSchema,
@@ -107,6 +113,13 @@ function contract<Params extends z.ZodType, Result extends z.ZodType>(
 
 export const coreRpcRegistry = Object.freeze({
   state: contract(emptyRpcParamsSchema, snapshotSchema),
+  'workflow.list': contract(workflowProjectParamsSchema, workflowStateSchema),
+  'workflow.record': contract(workflowProjectParamsSchema, workflowStateSchema, true),
+  'workflow.expect': contract(workflowProjectParamsSchema, workflowStateSchema, true),
+  'workflow.save': contract(workflowSaveParamsSchema, workflowStateSchema, true),
+  'workflow.cancel': contract(workflowProjectParamsSchema, workflowStateSchema, true),
+  'workflow.replay': contract(workflowTargetParamsSchema, workflowStateSchema, true),
+  'workflow.delete': contract(workflowTargetParamsSchema, workflowStateSchema, true),
   'system.health': contract(emptyRpcParamsSchema, healthSchema),
   'system.readiness': contract(readinessParamsSchema, readinessSchema),
   'project.appRuns': contract(appRunListParamsSchema, appRunListResultSchema),

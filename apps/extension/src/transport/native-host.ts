@@ -170,9 +170,11 @@ export class NativeHost {
     const quiet = method.startsWith('terminal.') || quietMethods.has(method);
     let timeoutMs = 30000;
 
-    if (method === 'worker.previewStart') {
+    if (method === 'worker.previewStart' || method === 'workflow.replay') {
       timeoutMs = 360000;
     } else if (method.startsWith('system.reset')) {
+      timeoutMs = 180000;
+    } else if (method === 'workflow.record') {
       timeoutMs = 180000;
     } else if (method === 'project.pickFolder') {
       timeoutMs = 130000;

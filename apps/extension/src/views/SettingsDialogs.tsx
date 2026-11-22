@@ -1,5 +1,6 @@
 import type { WorkspaceController } from '../ui/workspace-controller';
 import { Show } from 'solid-js';
+import { WorkflowForm } from '../forms/WorkflowForm';
 import { ProfileForm, SettingsForm } from '../forms';
 import { ContextForm } from '../forms/ContextForm';
 import { NotificationsForm, NotificationsSettings } from '../forms/NotificationsForm';
@@ -27,6 +28,9 @@ export function SettingsDialogs(props: { controller: WorkspaceController }) {
           success={success}
           playSound={playDing}
         />
+      </Show>
+      <Show when={modal() === 'workflows' && project()?.id} keyed>
+        {(projectId) => <WorkflowForm projectId={projectId} rpc={rpc} close={close} />}
       </Show>
       <Show when={modal() === 'profile' && project()}>
         {(capturedProject) => (

@@ -377,8 +377,10 @@ export class HostClient {
     let timeoutMs = 45000;
     let timeoutDetail = 'The local host did not respond.';
 
-    if (method === 'worker.previewStart') {
+    if (method === 'worker.previewStart' || method === 'workflow.replay') {
       timeoutMs = 370000;
+    } else if (method === 'workflow.record') {
+      timeoutMs = 190000;
     } else if (method === 'project.pickFolder') {
       timeoutMs = 135000;
     }

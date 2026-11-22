@@ -135,7 +135,18 @@ test(
     skip: process.platform !== 'darwin' || Number(process.versions.node.split('.')[0]) < 26,
   },
   async (context) => {
-    const { service, worker, store } = await fixture(context);
+    const { service, worker, store, project } = await fixture(context);
+    store.set('workflows:' + project.id, [
+      {
+        id: 'open-editor',
+        name: 'Open editor',
+        verifyAfterRestart: false,
+        steps: [
+          { type: 'click', selector: '#open' },
+          { type: 'expect', selector: 'dialog', visible: true },
+        ],
+      },
+    ]);
     worker.checks = [{ type: 'exists', path: 'index.html' }];
     await importBatch(service, worker, [
       write('index.html', markup.replace('id="name" class=', 'id="name" type="date" class=')),
@@ -195,7 +206,10 @@ test(
     assert.equal(worker.pending, undefined);
     assert.equal(worker.autoCommands, false);
     assert.equal(store.events().filter((event) => event.kind === 'approval').length, 0);
-    assert.equal(store.events().filter((event) => event.kind === 'quality').length, 2);
+    assert.equal(store.events().filter((event) => event.kind === 'quality').length, 3);
+    const replay = evidence(worker).results.find((result) => result.check.name === 'workflow');
+    assert.equal(replay?.ok, true);
+    assert.match(replay.detail, /Open editor/);
   },
 );
 

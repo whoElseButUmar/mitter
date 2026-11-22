@@ -23,6 +23,7 @@ try {
     'ownership',
     'appearance',
     'terminal-runs',
+    'project-workflows',
     'shipping',
     'start-cleanup',
     'setup',
@@ -34,6 +35,7 @@ try {
       name === 'ownership' ||
       name === 'appearance' ||
       name === 'terminal-runs' ||
+      name === 'project-workflows' ||
       name === 'shipping' ||
       name === 'setup' ||
       name === 'start-cleanup';
