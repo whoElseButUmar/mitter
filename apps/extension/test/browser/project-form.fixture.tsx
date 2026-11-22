@@ -34,6 +34,9 @@ export function createProjectFormFixture(mount: (component: () => JSX.Element) =
             cancelled = false;
             return { cancelled: true };
           }
+          if (purpose === 'project') {
+            return { cancelled: false, root: '/controlled/existing' };
+          }
           return { cancelled: false, root: '/controlled/projects' };
         }}
         create={(fields) => {

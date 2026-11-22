@@ -13,6 +13,7 @@ import { checkSetup } from './chrome-setup.mjs';
 import { checkProjectHome } from './chrome-project-home.mjs';
 import { checkProjectForm } from './chrome-project-form.mjs';
 import { checkWorkspaceJourney } from './chrome-workspace-journey.mjs';
+import { preparePickerHost } from './chrome-picker-host.mjs';
 import { checkTaskRecovery } from './chrome-task-recovery.mjs';
 import { checkStaticPreview } from './chrome-static-preview.mjs';
 import { checkAppRun } from './chrome-app-run.mjs';
@@ -106,7 +107,8 @@ async function main() {
       'Chrome did not return a valid unpacked extension ID.',
     );
     console.log('Loaded packaged extension:', id);
-    const native = await installNativeHost(directory, id);
+    const { hostScript, modelPath } = await preparePickerHost(directory);
+    const native = await installNativeHost(directory, id, { hostScript });
     signal.throwIfAborted();
 
     const app = await page(chrome, `chrome-extension://${id}/workspace.html`);
@@ -163,7 +165,7 @@ async function main() {
     assert.ok((await lstat(path.join(native.state, 'mitter.sqlite'))).isFile());
     console.log('PASS: production client/background/native host save and read back a temporary project.');
     await appendFile(logPath, '\nNative round trip: ' + JSON.stringify(nativeResult) + '\n');
-    await checkWorkspaceJourney(chrome, app.session, native.project);
+    await checkWorkspaceJourney(chrome, app.session, native.project, modelPath);
     parseContract(
       targetCloseSchema,
       await chrome.request('Target.closeTarget', { targetId: app.targetId }),

@@ -46,7 +46,7 @@ import { createStateBackup, listStateBackups, verifyStateBackup } from './backup
 import { Collaboration } from './collaboration.js';
 import { parseProfile, redact, gitDiff, type CommandResult } from './commands.js';
 import { Store } from './database.js';
-import { pickFolder, revealProject } from './desktop.js';
+import { checkModelFile, pickFolder, pickModelFile, revealProject } from './desktop.js';
 import { EditConflict, isFileEdit } from './edit-plan.js';
 import { Followups } from './followups.js';
 import {
@@ -537,6 +537,9 @@ export class Service {
       }
       case 'worker.create': {
         return this.createWorker(params);
+      }
+      case 'settings.pickModel': {
+        return pickModelFile();
       }
       case 'settings.update': {
         return this.updateSettings(params.settings);
@@ -1124,13 +1127,7 @@ export class Service {
     parseRpcParams(serviceRpcRegistry, 'settings.update', { settings: value });
 
     if (next.coderModelPath) {
-      if (!path.isAbsolute(next.coderModelPath) || !next.coderModelPath.toLowerCase().endsWith('.gguf')) {
-        throw new Error('Select an absolute local .gguf file path. URLs are not accepted.');
-      }
-
-      if (!(await fs.stat(next.coderModelPath)).isFile()) {
-        throw new Error('Select a local .gguf file, not a directory.');
-      }
+      await checkModelFile(next.coderModelPath);
     }
 
     // Filesystem checks yield; a worker may have started in the meantime.

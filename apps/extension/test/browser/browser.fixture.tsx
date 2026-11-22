@@ -97,7 +97,7 @@ function mountProject() {
   mount(() => (
     <ProjectForm
       close={closeDialog}
-      pick={async () => ({ cancelled: true })}
+      pick={async () => ({ cancelled: false, root: '/controlled/project' })}
       save={(fields) => {
         const completion = deferred<Project>();
         saves.set(++nextSave, { fields, completion });

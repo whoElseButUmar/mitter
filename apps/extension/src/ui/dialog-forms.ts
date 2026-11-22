@@ -166,18 +166,7 @@ export function createProjectDraft(options: ProjectDraftOptions) {
     }
 
     return run(
-      async () => {
-        try {
-          return folderPickSchema.parse(await options.pick(purpose));
-        } catch (event) {
-          throw new Error(
-            'The folder picker could not finish. Enter a folder path or choose again. ' + errorMessage(event),
-            {
-              cause: event,
-            },
-          );
-        }
-      },
+      async () => folderPickSchema.parse(await options.pick(purpose)),
       (result) => {
         if (result.cancelled || !result.root || choosingRootRevision !== rootRevision) {
           return;
@@ -198,7 +187,7 @@ export function createProjectDraft(options: ProjectDraftOptions) {
         const location = root();
         let displayName = name().trim();
         if (!location.trim()) {
-          throw new Error('Choose a folder first, or enter its path in Advanced options.');
+          throw new Error('Choose a folder first.');
         }
         if (!displayName) {
           let source = location;

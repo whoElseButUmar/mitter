@@ -70,7 +70,7 @@ async function checkModelDisclosure(chrome, session) {
       chrome,
       session,
       `!document.querySelector('${advanced}').open && !document.querySelector('.settings-data').open &&
-        !document.querySelector('input[name=coderModelPath]').checkVisibility() &&
+        !document.querySelector('[data-pick-model]').checkVisibility() &&
         !document.querySelector('[data-reset]').checkVisibility() &&
         document.querySelector('.settings-appearance').checkVisibility()`,
     ),
@@ -79,13 +79,16 @@ async function checkModelDisclosure(chrome, session) {
   );
   await checkDialogWidth(chrome, session);
   await toggleDetails(chrome, session, advanced, true);
-  await evaluate(
-    chrome,
-    session,
-    `const draft = document.querySelector('input[name=coderModelPath]');
-      draft.value = '/controlled/unsaved-model.gguf'; draft.dispatchEvent(new Event('input', {bubbles:true}));
-      const tokens = document.querySelector('input[name=contextSize]'); tokens.value = '';`,
+  assert.equal(
+    await evaluate(
+      chrome,
+      session,
+      `document.querySelector('[data-pick-model]').checkVisibility() &&
+      !document.querySelector('input[name=coderModelPath]')`,
+    ),
+    true,
   );
+  await evaluate(chrome, session, `document.querySelector('input[name=contextSize]').value = '';`);
   await toggleDetails(chrome, session, advanced, false);
   await evaluate(chrome, session, `document.querySelector('${model}').requestSubmit()`);
   await waitFor(
@@ -98,7 +101,7 @@ async function checkModelDisclosure(chrome, session) {
     await evaluate(chrome, session, `document.querySelector('${model}').getAttribute('aria-busy')`),
     'true',
   );
-  await evaluate(chrome, session, `document.querySelector('input[name=contextSize]').value = '8192'`);
+  await evaluate(chrome, session, `document.querySelector('input[name=contextSize]').value = '7168'`);
   await toggleDetails(chrome, session, '.settings-data', true);
   assert.equal(
     await evaluate(
@@ -212,7 +215,7 @@ async function checkTerminalAppearance(chrome, session) {
     await evaluate(
       chrome,
       session,
-      `document.querySelector('input[name=coderModelPath]').value === '/controlled/unsaved-model.gguf' &&
+      `document.querySelector('input[name=contextSize]').value === '7168' &&
         !document.querySelector('${advanced}').open`,
     ),
     true,
@@ -251,7 +254,7 @@ async function checkNotificationSettings(chrome, session) {
     await evaluate(
       chrome,
       session,
-      `document.querySelector('input[name=coderModelPath]').value === '/controlled/unsaved-model.gguf' &&
+      `document.querySelector('input[name=contextSize]').value === '7168' &&
         !document.querySelector('${advanced}').open`,
     ),
     true,
@@ -262,7 +265,7 @@ async function checkNotificationSettings(chrome, session) {
 export async function checkAppearanceSettings(chrome, session, native) {
   const initial = await storedModelAndTasks(native);
   await click(chrome, session, '[aria-label=Settings]');
-  await waitFor(chrome, session, '!!document.querySelector("input[name=coderModelPath]")', 'model settings');
+  await waitFor(chrome, session, '!!document.querySelector("[data-pick-model]")', 'model settings');
   await checkModelDisclosure(chrome, session);
   await checkTerminalAppearance(chrome, session);
   await checkNotificationSettings(chrome, session);

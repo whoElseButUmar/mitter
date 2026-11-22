@@ -406,6 +406,7 @@ test('model settings validate tokens and ignore post-disposal saves', async () =
       contextSize: 8192,
       maxTokens: 2048,
     },
+    pick: async () => ({ cancelled: true }),
     save: (value) => {
       saved = value;
       return pending.promise;
@@ -441,6 +442,7 @@ test('native model validation reveals its collapsed ancestors before focusing th
   let saves = 0;
   const mounted = mountModelSettingsForm(root, {
     settings: { coderModelPath: '/draft/model.gguf', gpu: 'auto', contextSize: 8192, maxTokens: 2048 },
+    pick: async () => ({ cancelled: true }),
     save: async () => {
       saves += 1;
     },
@@ -463,7 +465,7 @@ test('native model validation reveals its collapsed ancestors before focusing th
   assert.equal(document.activeElement, input);
   assert.equal(saves, 0);
   assert.equal(input.value, '');
-  assert.equal(root.querySelector('[name="coderModelPath"]').value, '/draft/model.gguf');
+  assert.equal(root.querySelector('[data-model-selection]').textContent, '/draft/model.gguf');
   assert.equal(
     data.hasAttribute('open'),
     false,
@@ -480,7 +482,8 @@ test('a failed model save reopens collapsed fields and preserves the draft and r
   let resets = 0;
   let saves = 0;
   const mounted = mountModelSettingsForm(root, {
-    settings: { coderModelPath: '', gpu: 'cpu', contextSize: 8192, maxTokens: 2048 },
+    settings: { coderModelPath: '/edited/model.gguf', gpu: 'cpu', contextSize: 8192, maxTokens: 2048 },
+    pick: async () => ({ cancelled: true }),
     save: () => {
       saves += 1;
       return pending.promise;
@@ -493,9 +496,7 @@ test('a failed model save reopens collapsed fields and preserves the draft and r
   });
   const advanced = root.querySelector('[data-model-advanced]');
   const form = root.querySelector('form');
-  const path = root.querySelector('[name="coderModelPath"]');
   const reset = root.querySelector('[data-reset]');
-  path.value = '/edited/model.gguf';
   advanced.setAttribute('open', '');
   const saving = form.emit('submit');
   advanced.removeAttribute('open');
@@ -506,13 +507,58 @@ test('a failed model save reopens collapsed fields and preserves the draft and r
   pending.reject(new Error('The model file cannot be read. Choose another file.'));
   await saving;
   assert.equal(advanced.hasAttribute('open'), true);
-  assert.equal(path.value, '/edited/model.gguf');
+  assert.equal(root.querySelector('[data-model-selection]').textContent, '/edited/model.gguf');
   assert.equal(root.querySelector('.error').hidden, false);
   assert.match(root.querySelector('.error').textContent, /Choose another file/);
   assert.deepEqual(busy, [true, false]);
   assert.equal(reset.disabled, false);
   await reset.emit('click');
   assert.equal(resets, 1);
+  mounted.dispose();
+});
+
+test('model chooser keeps the selected file on cancel and saves changes only on submit', async () => {
+  const { root } = domFixture();
+  const pending = Promise.withResolvers();
+  const saved = [];
+  let picks = 0;
+  const mounted = mountModelSettingsForm(root, {
+    settings: { coderModelPath: '/original.gguf', gpu: 'auto', contextSize: 8192, maxTokens: 2048 },
+    pick: async () => {
+      picks++;
+      if (picks === 1) {
+        return pending.promise;
+      }
+      return { cancelled: true };
+    },
+    save: async ({ settings }) => saved.push(settings.coderModelPath),
+    close() {},
+    reset() {},
+  });
+  const choose = root.querySelector('[data-pick-model]');
+  const clear = root.querySelector('[data-clear-model]');
+  const selection = root.querySelector('[data-model-selection]');
+  const form = root.querySelector('form');
+
+  assert.equal(root.querySelector('[name="coderModelPath"]'), null);
+  assert.equal(selection.textContent, '/original.gguf');
+  const choosing = choose.emit('click');
+  await choose.emit('click');
+  await form.emit('submit');
+  assert.deepEqual(saved, []);
+  assert.equal(picks, 1);
+  pending.resolve({ path: '/models/My model.gguf', cancelled: false });
+  await choosing;
+  await choose.emit('click');
+  assert.equal(selection.textContent, '/models/My model.gguf');
+  assert.deepEqual(saved, []);
+  await form.emit('submit');
+  assert.deepEqual(saved, ['/models/My model.gguf']);
+  await clear.emit('click');
+  assert.equal(selection.textContent, 'No model selected.');
+  assert.equal(clear.hidden, true);
+  await form.emit('submit');
+  assert.deepEqual(saved, ['/models/My model.gguf', '']);
   mounted.dispose();
 });
 
@@ -523,6 +569,7 @@ for (const dispose of [false, true]) {
     const busy = [];
     const mounted = mountModelSettingsForm(root, {
       settings: { coderModelPath: '', gpu: 'auto', contextSize: 8192, maxTokens: 2048 },
+      pick: async () => ({ cancelled: true }),
       save: () => pending.promise,
       close() {},
       reset() {},

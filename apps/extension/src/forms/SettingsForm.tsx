@@ -1,4 +1,5 @@
 import type { Settings } from '../../../../packages/protocol/src/index';
+import type { ModelPickerResult } from '../../../../packages/protocol/src/rpc';
 import { requireElement } from '../ui/dom';
 import {
   mountModelSettingsForm,
@@ -12,6 +13,7 @@ import { Icon } from '../icons';
 export function SettingsForm(props: {
   settings: Settings;
   close: () => void;
+  pickModel: () => Promise<ModelPickerResult>;
   save: (request: ModelSettingsSave) => Promise<void>;
   notifications: (close: () => void) => JSX.Element;
 }) {
@@ -26,6 +28,7 @@ export function SettingsForm(props: {
   onMount(() => {
     editor = mountModelSettingsForm(requireElement(root, 'forms root'), {
       settings: props.settings,
+      pick: props.pickModel,
       save: props.save,
       close: props.close,
       busyChanged: setBusy,

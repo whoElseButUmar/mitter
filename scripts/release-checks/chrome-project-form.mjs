@@ -56,7 +56,6 @@ export async function checkProjectForm(chrome, session) {
     );
     assert.deepEqual((await state(chrome, session)).requests, []);
     await enter(chrome, session, 'folderName', 'Café project');
-    await enter(chrome, session, 'root', '   ');
     await evaluate(chrome, session, 'document.querySelector(".project-options").open = false');
     await click(chrome, session, 'button[type=submit]');
     await waitFor(
@@ -90,7 +89,7 @@ export async function checkProjectForm(chrome, session) {
     await waitFor(
       chrome,
       session,
-      'document.querySelector(".project-folder-selection") !== null',
+      'document.querySelector(".path-selection").textContent === "/controlled/projects"',
       'chosen parent is visible',
     );
     assert.equal(
@@ -145,11 +144,12 @@ export async function checkProjectForm(chrome, session) {
     await waitFor(
       chrome,
       session,
-      'document.querySelector(".project-options").open && document.querySelector(".error").textContent.includes("Controlled picker failure")',
-      'picker failure reveals the manual path fallback',
+      '!document.querySelector(".project-options").open && document.querySelector(".error").textContent.includes("Controlled picker failure")',
+      'picker failure explains the error and leaves the picker available',
     );
     await enter(chrome, session, 'folderName', 'Saved create draft');
-    await enter(chrome, session, 'root', '/manual/create');
+    await click(chrome, session, '.folder-picker');
+    await evaluate(chrome, session, 'document.querySelector(".project-options").open = true');
     await enter(chrome, session, 'name', 'Create display name');
     await click(chrome, session, '[role=combobox]');
     await click(chrome, session, '[role=option][data-value="vite-ts-sqlite"]');
@@ -162,17 +162,17 @@ export async function checkProjectForm(chrome, session) {
       await evaluate(chrome, session, "document.querySelector('select[name=starter]') === null"),
       true,
     );
-    assert.equal(await evaluate(chrome, session, 'document.querySelector("input[name=root]").value'), '');
-    await enter(chrome, session, 'root', '/manual/open');
+    assert.equal(await evaluate(chrome, session, 'document.querySelector(".path-selection").hidden'), true);
+    await click(chrome, session, '.folder-picker');
     await enter(chrome, session, 'name', 'Open display name');
     await click(chrome, session, '.project-mode-switch button[aria-pressed=false]');
     assert.deepEqual(
       await evaluate(
         chrome,
         session,
-        '["folderName","root","name"].map(name => document.querySelector("input[name=" + name + "]").value)',
+        '[document.querySelector("input[name=folderName]").value, document.querySelector(".path-selection").textContent, document.querySelector("input[name=name]").value]',
       ),
-      ['Saved create draft', '/manual/create', 'Create display name'],
+      ['Saved create draft', '/controlled/projects', 'Create display name'],
       'Switching project actions preserves the independently edited create draft.',
     );
     await click(chrome, session, '.project-mode-switch button[aria-pressed=false]');
@@ -180,9 +180,9 @@ export async function checkProjectForm(chrome, session) {
       await evaluate(
         chrome,
         session,
-        '["root","name"].map(name => document.querySelector("input[name=" + name + "]").value)',
+        '[document.querySelector(".path-selection").textContent, document.querySelector("input[name=name]").value]',
       ),
-      ['/manual/open', 'Open display name'],
+      ['/controlled/existing', 'Open display name'],
     );
     await click(chrome, session, '.project-mode-switch button[aria-pressed=false]');
     await click(chrome, session, 'button[type=submit]');

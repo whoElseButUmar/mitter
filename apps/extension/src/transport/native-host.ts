@@ -180,7 +180,7 @@ export class NativeHost {
       timeoutMs = 180000;
     } else if (method === 'workflow.record' || method === 'worker.pickElement') {
       timeoutMs = 180000;
-    } else if (method === 'project.pickFolder') {
+    } else if (method === 'project.pickFolder' || method === 'settings.pickModel') {
       timeoutMs = 130000;
     }
 

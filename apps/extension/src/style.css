@@ -3437,7 +3437,7 @@ button.miter-toast-close:hover {
   color: var(--text);
 }
 
-.creation-form .project-folder-selection {
+.path-selection {
   margin: var(--space-sm) 0 0;
   overflow-wrap: anywhere;
   color: var(--muted);

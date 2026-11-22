@@ -10,7 +10,7 @@ export function ProjectForm(props: ProjectDraftOptions) {
   const draft = createProjectDraft(props);
   let picker: HTMLButtonElement | undefined;
   let advanced: HTMLDetailsElement | undefined;
-  const { busy, error, root, setRoot, name, setName, choose } = draft;
+  const { busy, error, root, name, setName, choose } = draft;
   const creating = () => draft.mode() === 'create';
   const title = () => {
     if (creating()) {
@@ -32,12 +32,6 @@ export function ProjectForm(props: ProjectDraftOptions) {
       return 'Change folder…';
     }
     return 'Choose folder…';
-  };
-  const pathLabel = () => {
-    if (creating()) {
-      return 'Parent folder path';
-    }
-    return 'Folder path';
   };
   const submitLabel = () => {
     if (draft.saving()) {
@@ -62,8 +56,8 @@ export function ProjectForm(props: ProjectDraftOptions) {
 
   const chooseFolder = async () => {
     await choose();
-    if (error() && advanced?.isConnected) {
-      advanced.open = true;
+    if (picker?.isConnected && picker.ownerDocument.activeElement === picker.ownerDocument.body) {
+      picker.focus();
     }
   };
 
@@ -151,27 +145,14 @@ export function ProjectForm(props: ProjectDraftOptions) {
           <Icon name="folder" />
           {pickerLabel()}
         </button>
-        <Show when={root()}>
-          <p class="project-folder-selection">{root()}</p>
-        </Show>
+        <p class="path-selection" role="status" hidden={!root()}>
+          {root()}
+        </p>
         <details ref={advanced} class="form-advanced project-options">
           <summary class="disclosure-summary">
             <Icon name="down" />
             Advanced options
           </summary>
-          <Field label={pathLabel()}>
-            <input
-              name="root"
-              disabled={busy()}
-              value={root()}
-              onInput={(event) => setRoot(event.currentTarget.value)}
-              maxLength={2000}
-              placeholder="Absolute folder path"
-              spellcheck={false}
-              autocapitalize="none"
-              autocomplete="off"
-            />
-          </Field>
           <Field label="Display name (optional)">
             <input
               name="name"

@@ -580,7 +580,8 @@ test('pristine project and team forms keep submission available without prematur
   assert.match(advanced[1], /project-options/);
   assert.doesNotMatch(advanced[1], /\bopen(?:\s|=|$)/);
   assert.match(advanced[2], /Advanced options/);
-  assert.match(advanced[2], /name="root"/);
+  assert.doesNotMatch(projectHTML, /name="root"/);
+  assert.match(projectHTML, /Choose folder…/);
   assert.match(advanced[2], /Display name \(optional\)/);
   assert.match(advanced[2], /name="name"/);
   assert.match(teamHTML, /<textarea\b[^>]*\brequired\b[^>]*maxlength="3000"/);

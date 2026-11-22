@@ -86,6 +86,7 @@ const forwarded = [
   'worker.import',
   'worker.files',
   'worker.handoffSeen',
+  'settings.pickModel',
   'settings.update',
 ];
 const local = [

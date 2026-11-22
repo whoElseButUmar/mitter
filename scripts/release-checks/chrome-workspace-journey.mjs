@@ -1,11 +1,19 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { ownedTemporaryDirectory } from './chrome-native.mjs';
+import { journeyFolderName } from './chrome-picker-host.mjs';
 import { click, evaluate, press, waitFor } from './chrome-ui.mjs';
 
 const selectedProject = 'document.querySelector(".project-tab[aria-selected=true]")?.textContent.trim()';
 
-async function enterProject(chrome, session, fields) {
+async function enterProject(chrome, session, root, fields) {
+  await click(chrome, session, '.folder-picker');
+  await waitFor(
+    chrome,
+    session,
+    `document.querySelector('.path-selection').textContent === ${JSON.stringify(root)}`,
+    'folder selection from the native helper',
+  );
   await evaluate(
     chrome,
     session,
@@ -26,9 +34,9 @@ async function enterProject(chrome, session, fields) {
 /** Real workspace, controller and native host; folders stay inside the owned
  * release profile. Does not open a provider tab, OS picker or permission prompt.
  */
-export async function checkWorkspaceJourney(chrome, session, projectRoot) {
+export async function checkWorkspaceJourney(chrome, session, projectRoot, modelPath) {
   const parentRoot = await ownedTemporaryDirectory(path.dirname(projectRoot));
-  const folderName = 'Journey project';
+  const folderName = journeyFolderName;
   await waitFor(
     chrome,
     session,
@@ -47,7 +55,7 @@ export async function checkWorkspaceJourney(chrome, session, projectRoot) {
     'document.querySelector("input[name=folderName]") !== null',
     'create project dialog',
   );
-  await enterProject(chrome, session, { folderName, root: parentRoot });
+  await enterProject(chrome, session, parentRoot, { folderName });
   await waitFor(chrome, session, `${selectedProject} === "Journey project"`, 'new project selected');
   assert.equal(await evaluate(chrome, session, 'document.querySelectorAll(".task-tab").length'), 0);
   await click(chrome, session, '.project-home .primary');
@@ -61,8 +69,7 @@ export async function checkWorkspaceJourney(chrome, session, projectRoot) {
 
   await click(chrome, session, '.health-button');
   await click(chrome, session, '.setup-panel .home-actions button:not(.primary)');
-  await enterProject(chrome, session, {
-    root: path.join(parentRoot, folderName),
+  await enterProject(chrome, session, path.join(parentRoot, folderName), {
     name: 'Do not rename on reopen',
   });
   assert.equal(await evaluate(chrome, session, 'document.querySelectorAll(".project-tab").length'), 2);
@@ -81,4 +88,17 @@ export async function checkWorkspaceJourney(chrome, session, projectRoot) {
   assert.equal(await evaluate(chrome, session, 'document.querySelectorAll(".saved-entry").length'), 2);
   await click(chrome, session, '.saved-entry');
   await waitFor(chrome, session, `${selectedProject} === "Journey project"`, 'new saved project reopens');
+
+  await click(chrome, session, '[aria-label="Settings"]');
+  await click(chrome, session, '[data-model-advanced] > summary');
+  await click(chrome, session, '[data-pick-model]');
+  await waitFor(
+    chrome,
+    session,
+    `document.querySelector('[data-model-selection]').textContent === ${JSON.stringify(modelPath)}`,
+    'model selection from the native helper',
+  );
+  await click(chrome, session, '[data-clear-model]');
+  assert.equal(await evaluate(chrome, session, 'document.querySelector("[data-clear-model]").hidden'), true);
+  await press(chrome, session, 'Escape', 27);
 }

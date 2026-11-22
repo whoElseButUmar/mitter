@@ -67,6 +67,7 @@ export const forwardedRpcRegistry = Object.freeze({
   'worker.import': coreRpcRegistry['worker.import'],
   'worker.files': coreRpcRegistry['worker.files'],
   'worker.handoffSeen': coreRpcRegistry['worker.handoffSeen'],
+  'settings.pickModel': coreRpcRegistry['settings.pickModel'],
   'settings.update': coreRpcRegistry['settings.update'],
 });
 

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { buildIdSchema } from '../schemas/primitives.js';
+import { buildIdSchema, textSchema } from '../schemas/primitives.js';
 import { VERSION } from '../constants.js';
 import { workerStateSchema } from '../schemas/domain.js';
 import { rpcCounterSchema, rpcTimestampSchema, sha256Schema } from './primitives.js';
@@ -104,6 +104,23 @@ export const folderPickerResultSchema = z
   ])
   .describe('The project.pickFolder result; cancellation cannot fabricate a project root.');
 
+export const modelPickerResultSchema = z
+  .discriminatedUnion('cancelled', [
+    z
+      .strictObject({ cancelled: z.literal(true).describe('The user dismissed the file picker.') })
+      .describe('A cancelled model selection.'),
+    z
+      .strictObject({
+        cancelled: z.literal(false).describe('The user selected a model file.'),
+        path: textSchema('model path', 2000)
+          .refine((value) => value.toLowerCase().endsWith('.gguf'))
+          .describe('The absolute path to the local .gguf file selected and checked by the helper.'),
+      })
+      .describe('A selected local model file.'),
+  ])
+  .describe('The model file picker result; no settings have been saved.');
+
 export type StateBackup = z.infer<typeof stateBackupSchema>;
 export type Health = z.infer<typeof healthSchema>;
 export type FolderPickerResult = z.infer<typeof folderPickerResultSchema>;
+export type ModelPickerResult = z.infer<typeof modelPickerResultSchema>;

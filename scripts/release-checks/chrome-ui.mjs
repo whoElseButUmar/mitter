@@ -127,28 +127,28 @@ async function inspect(chrome, session) {
 }
 
 async function submitProject(chrome, session, name) {
+  await click(chrome, session, '.folder-picker');
+  await waitFor(
+    chrome,
+    session,
+    'document.querySelector(".path-selection").textContent === "/controlled/project"',
+    'project folder selection',
+  );
   await evaluate(
     chrome,
     session,
     `(() => {
       const details = document.querySelector('.project-options');
       if (!(details instanceof HTMLDetailsElement)) {
-        throw new Error('Expected the manual folder-path disclosure.');
+        throw new Error('Expected advanced project options.');
       }
       details.open = true;
-      const inputs = [document.querySelector('input[name=root]'), document.querySelector('input[name=name]')];
-      if (inputs.length !== 2) {
-        throw new Error('Expected two project fields.');
+      const input = document.querySelector('input[name=name]');
+      if (!(input instanceof HTMLInputElement)) {
+        throw new Error('Expected the display name input.');
       }
-      const values = ['/controlled/project', ${JSON.stringify(name)}];
-      for (let index = 0; index < inputs.length; index++) {
-        const input = inputs[index];
-        if (!(input instanceof HTMLInputElement)) {
-          throw new Error('Expected native input.');
-        }
-        input.value = values[index];
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-      }
+      input.value = ${JSON.stringify(name)};
+      input.dispatchEvent(new Event('input', { bubbles: true }));
       const form = document.querySelector('form');
       if (!(form instanceof HTMLFormElement)) {
         throw new Error('Expected project form.');
@@ -172,7 +172,7 @@ export async function checkDialogs(chrome, session) {
   let state = await inspect(chrome, session);
   assert.equal(state.dialogs, 1);
   assert.equal(state.sameTreeLabel, true);
-  assert.equal(state.fields.length, 2);
+  assert.equal(state.fields.length, 1);
   assert.ok(state.fields.every((field) => !field.userInvalid && field.ariaInvalid === null));
 
   await evaluate(chrome, session, 'document.querySelector("button[type=submit]").focus()');

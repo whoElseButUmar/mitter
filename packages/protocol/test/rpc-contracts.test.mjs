@@ -228,6 +228,7 @@ const fixtures = {
   'project.create': [{ parentRoot: '/projects', folderName: 'New project', name: project.name }, project],
   'project.profile': [{ ...projectRequest, profile }, project],
   'worker.create': [{ ...projectRequest, mode: 'handoff', goal: worker.goal }, worker],
+  'settings.pickModel': [{}, { path: '/models/coder.gguf', cancelled: false }],
   'settings.update': [{ settings: {} }, DEFAULT_SETTINGS],
   'worker.steerValidate': [
     { ...task, request: followupRequest },

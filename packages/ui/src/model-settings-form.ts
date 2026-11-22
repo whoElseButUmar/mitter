@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { settingsSchema, type Settings } from '../../protocol/src/index.js';
 import { parseModelSettings } from '../../protocol/src/model-settings.js';
+import type { ModelPickerResult } from '../../protocol/src/rpc.js';
 import { enhanceSelects } from './select.js';
 import { requireElement, requireWindow } from './dom/elements.js';
 import { modelSettingsTemplate } from './forms/templates.js';
@@ -13,6 +14,7 @@ export type ModelSettingsSave = z.infer<typeof ModelSettingsSaveSchema>;
 
 export type ModelSettingsFormOptions = {
   settings: Settings;
+  pick: () => Promise<ModelPickerResult>;
   save: (value: ModelSettingsSave) => Promise<unknown>;
   close: () => void;
   reset: () => void;
@@ -29,18 +31,21 @@ export function mountModelSettingsForm(root: HTMLElement, options: ModelSettings
   const error = requireElement(root, '[role="alert"]', window.HTMLElement);
   const submitButton = requireElement(root, '[type="submit"]', window.HTMLButtonElement);
   const resetButton = requireElement(root, '[data-reset]', window.HTMLButtonElement);
+  const pickButton = requireElement(root, '[data-pick-model]', window.HTMLButtonElement);
+  const clearButton = requireElement(root, '[data-clear-model]', window.HTMLButtonElement);
+  const selection = requireElement(root, '[data-model-selection]', window.HTMLElement);
   const inputs = {
-    coderModelPath: requireElement(form, '[name="coderModelPath"]', window.HTMLInputElement),
     gpu: requireElement(form, '[name="gpu"]', window.HTMLSelectElement),
     contextSize: requireElement(form, '[name="contextSize"]', window.HTMLInputElement),
     maxTokens: requireElement(form, '[name="maxTokens"]', window.HTMLInputElement),
   };
 
-  for (const key of ['coderModelPath', 'gpu', 'contextSize', 'maxTokens'] as const) {
+  for (const key of ['gpu', 'contextSize', 'maxTokens'] as const) {
     inputs[key].value = String(options.settings[key]);
   }
 
   const selects = enhanceSelects(root);
+  let modelPath = options.settings.coderModelPath;
   let busy = false;
   let disposed = false;
   const isCurrent = () => !disposed && root.isConnected;
@@ -62,26 +67,91 @@ export function mountModelSettingsForm(root: HTMLElement, options: ModelSettings
     }
   };
 
-  function setBusy(value: boolean): void {
-    busy = value;
-    fields.disabled = value;
+  function showSelection(): void {
+    if (modelPath) {
+      selection.textContent = modelPath;
+      pickButton.textContent = 'Change model file…';
+    } else {
+      selection.textContent = 'No model selected.';
+      pickButton.textContent = 'Choose model file…';
+    }
+    clearButton.hidden = !modelPath;
+  }
+
+  function clearError(): void {
+    error.hidden = true;
+    error.textContent = '';
+  }
+
+  function showError(reason: unknown): void {
+    reveal(error);
+    error.textContent = String(reason);
+    if (reason instanceof Error) {
+      error.textContent = reason.message;
+    }
+    error.hidden = false;
+  }
+
+  function setBusy(operation?: 'pick' | 'save'): void {
+    busy = operation !== undefined;
+    fields.disabled = busy;
 
     // Custom select controls mirror explicit disabled attributes, not fieldset inheritance.
     for (const input of Object.values(inputs)) {
-      input.disabled = value;
+      input.disabled = busy;
     }
 
-    submitButton.disabled = value;
-    resetButton.disabled = value;
+    pickButton.disabled = busy;
+    clearButton.disabled = busy;
+    submitButton.disabled = busy;
+    resetButton.disabled = busy;
     submitButton.textContent = 'Save model settings';
+    showSelection();
 
-    if (value) {
+    if (operation === 'save') {
       submitButton.textContent = 'Saving…';
+    } else if (operation === 'pick') {
+      pickButton.textContent = 'Choosing file…';
     }
 
-    form.setAttribute('aria-busy', String(value));
-    options.busyChanged?.(value);
+    form.setAttribute('aria-busy', String(busy));
+    options.busyChanged?.(operation === 'save');
   }
+
+  const pick = async () => {
+    if (busy || !isCurrent()) {
+      return;
+    }
+
+    clearError();
+    setBusy('pick');
+    try {
+      const result = await options.pick();
+      if (isCurrent() && !result.cancelled) {
+        modelPath = result.path;
+      }
+    } catch (reason) {
+      if (isCurrent()) {
+        showError(reason);
+      }
+    } finally {
+      if (isCurrent()) {
+        setBusy();
+        if (form.ownerDocument.activeElement === form.ownerDocument.body) {
+          pickButton.focus();
+        }
+      }
+    }
+  };
+
+  const clear = () => {
+    if (!busy && isCurrent()) {
+      modelPath = '';
+      clearError();
+      showSelection();
+      pickButton.focus();
+    }
+  };
 
   const submit = async (event: SubmitEvent) => {
     event.preventDefault();
@@ -90,37 +160,29 @@ export function mountModelSettingsForm(root: HTMLElement, options: ModelSettings
       return;
     }
 
-    error.hidden = true;
-    error.textContent = '';
+    clearError();
 
     try {
       const settings = parseModelSettings({
-        coderModelPath: inputs.coderModelPath.value,
+        coderModelPath: modelPath,
         gpu: inputs.gpu.value,
         contextSize: Number(inputs.contextSize.value),
         maxTokens: Number(inputs.maxTokens.value),
       });
-      setBusy(true);
+      setBusy('save');
       await options.save({ settings });
 
       if (isCurrent()) {
-        setBusy(false);
+        setBusy();
         options.close();
       }
     } catch (reason) {
       if (isCurrent()) {
-        reveal(error);
-        error.textContent = String(reason);
-
-        if (reason instanceof Error) {
-          error.textContent = reason.message;
-        }
-
-        error.hidden = false;
+        showError(reason);
       }
     } finally {
       if (isCurrent() && busy) {
-        setBusy(false);
+        setBusy();
       }
     }
   };
@@ -130,6 +192,9 @@ export function mountModelSettingsForm(root: HTMLElement, options: ModelSettings
       options.reset();
     }
   };
+  showSelection();
+  pickButton.addEventListener('click', pick);
+  clearButton.addEventListener('click', clear);
   // Native invalid events do not bubble; open the disclosure before the browser focuses its input.
   form.addEventListener('invalid', invalid, true);
   form.addEventListener('submit', submit);
@@ -144,6 +209,8 @@ export function mountModelSettingsForm(root: HTMLElement, options: ModelSettings
       disposed = true;
       form.removeEventListener('invalid', invalid, true);
       form.removeEventListener('submit', submit);
+      pickButton.removeEventListener('click', pick);
+      clearButton.removeEventListener('click', clear);
       resetButton.removeEventListener('click', reset);
       selects.dispose();
       root.replaceChildren();

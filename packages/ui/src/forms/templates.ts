@@ -5,10 +5,14 @@ export const modelSettingsTemplate = `<details class="form-advanced settings-adv
       <fieldset class="model-settings-fields">
         <legend>Local coding model</legend>
         <p class="muted small">Optional. ChatGPT tasks work without a local model.</p>
-        <label class="field"><span>Model file (.gguf)</span>
-          <input name="coderModelPath" placeholder="/absolute/path/coder.gguf" spellcheck="false"
-            maxlength="2000" autocomplete="off" autocapitalize="none" autocorrect="off"></label>
-        <p class="muted small">Use a model already on this computer. The local runtime is installed separately.</p>
+        <div class="field" role="group" aria-label="Model file (.gguf)">
+          <div class="button-row">
+            <button type="button" data-pick-model>Choose model file…</button>
+            <button type="button" data-clear-model hidden>Clear model selection</button>
+          </div>
+          <p class="path-selection" data-model-selection role="status"></p>
+        </div>
+        <p class="muted small">Install the local runtime separately to run a model.</p>
         <label class="field"><span>Compute</span><select name="gpu">
           <option value="auto">Auto-detect GPU</option><option value="cpu">CPU only</option></select></label>
         <div class="form-row">

@@ -4,6 +4,8 @@ import { WorkflowForm } from '../forms/WorkflowForm';
 import { ProfileForm, SettingsForm } from '../forms';
 import { ContextForm } from '../forms/ContextForm';
 import { NotificationsForm, NotificationsSettings } from '../forms/NotificationsForm';
+import { modelPickerResultSchema } from '../../../../packages/protocol/src/rpc';
+import { callResult } from '../ui/rpc';
 
 export function SettingsDialogs(props: { controller: WorkspaceController }) {
   const { snapshot, success, modal, setModal, notifications, project, rpc, playDing } = props.controller;
@@ -49,6 +51,7 @@ export function SettingsDialogs(props: { controller: WorkspaceController }) {
         <SettingsForm
           settings={snapshot().settings}
           close={close}
+          pickModel={() => callResult(rpc, modelPickerResultSchema, 'settings.pickModel')}
           notifications={(closeNotifications) => (
             <NotificationsSettings
               rpc={rpc}

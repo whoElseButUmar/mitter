@@ -405,7 +405,7 @@ export class HostClient {
       timeoutMs = 370000;
     } else if (method === 'workflow.record' || method === 'worker.pickElement') {
       timeoutMs = 190000;
-    } else if (method === 'project.pickFolder') {
+    } else if (method === 'project.pickFolder' || method === 'settings.pickModel') {
       timeoutMs = 135000;
     }
 

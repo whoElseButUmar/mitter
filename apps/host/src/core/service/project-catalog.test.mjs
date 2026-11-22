@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fixture } from './test-fixture.mjs';
-import { pickFolder } from '../desktop.ts';
+import { pickFolder, pickModelFile } from '../desktop.ts';
 
 test('opening the exact registered folder reuses its identity, settings and revision without a save', async (context) => {
   const owned = await fixture(context);
@@ -179,6 +179,36 @@ test('folder picking preserves literal trailing spaces and distinguishes parent 
     /not your home folder/,
   );
   assert.deepEqual(await pickFolder(async () => '', 'darwin', 'parent'), { cancelled: true });
+});
+
+test('model picking checks the selected file and treats cancel as an empty result', async (context) => {
+  const owned = await fixture(context);
+  const model = path.join(owned.root, 'Local model.GGUF');
+  await fs.writeFile(model, 'picker fixture');
+  const selection = await pickModelFile(async (command) => {
+    assert.equal(command.program, '/usr/bin/osascript');
+    assert.match(command.args[1], /choose file of type \{"gguf"\}/);
+    return model + '\n';
+  }, 'darwin');
+  assert.deepEqual(selection, { path: model, cancelled: false });
+
+  await assert.rejects(
+    pickModelFile(async () => 'remote.gguf\n', 'darwin'),
+    /Choose a local .gguf/,
+  );
+  const directory = path.join(owned.root, 'folder.gguf');
+  await fs.mkdir(directory);
+  await assert.rejects(
+    pickModelFile(async () => directory + '\n', 'darwin'),
+    /selected path is not a file/,
+  );
+  assert.deepEqual(await pickModelFile(async () => '', 'win32'), { cancelled: true });
+  assert.deepEqual(
+    await pickModelFile(async () => {
+      throw Object.assign(new Error('cancelled'), { stderr: 'User canceled. (-128)' });
+    }, 'darwin'),
+    { cancelled: true },
+  );
 });
 
 test('replacing the selected parent during validation prevents creation in the replacement directory', async (context) => {

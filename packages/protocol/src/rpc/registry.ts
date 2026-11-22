@@ -13,7 +13,13 @@ import {
   syntaxCheckSchema,
   workspaceRollbackSchema,
 } from './files.js';
-import { folderPickerResultSchema, healthSchema, stateBackupSchema, stateBackupsSchema } from './system.js';
+import {
+  folderPickerResultSchema,
+  healthSchema,
+  modelPickerResultSchema,
+  stateBackupSchema,
+  stateBackupsSchema,
+} from './system.js';
 import { readinessParamsSchema, readinessSchema } from './readiness.js';
 import {
   appRunListParamsSchema,
@@ -149,6 +155,7 @@ export const coreRpcRegistry = Object.freeze({
   'project.create': contract(projectCreateParamsSchema, projectSchema, true),
   'project.profile': contract(projectProfileParamsSchema, projectSchema, true),
   'worker.create': contract(workerCreateParamsSchema, workerSchema, true),
+  'settings.pickModel': contract(emptyRpcParamsSchema, modelPickerResultSchema),
   'settings.update': contract(settingsUpdateParamsSchema, settingsSchema, true),
   'worker.steerValidate': contract(workerFollowupParamsSchema, steerValidationResultSchema),
   'worker.stop': contract(workerStopParamsSchema, stopResultSchema, true),

@@ -58,9 +58,8 @@ export class RequestQueue {
       }
       this.terminals++;
       void this.run(execute).finally(() => this.terminals--);
-    } else if (method === 'project.pickFolder') {
+    } else if (method === 'project.pickFolder' || method === 'settings.pickModel') {
       // One native chooser at a time; a chooser never consumes the Stop lane.
-
       if (this.dialogs) {
         return false;
       }
