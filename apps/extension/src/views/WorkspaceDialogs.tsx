@@ -162,6 +162,7 @@ export function WorkspaceDialogs(props: { controller: WorkspaceController }) {
           rewrite={rewriteDraft}
           projects={snapshot().projects}
           scopedProjectId={formProjectId()}
+          selection={props.controller.pickedElement()}
           close={() => setModal('')}
           authorize={() =>
             chrome.permissions.request({

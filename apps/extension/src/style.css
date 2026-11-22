@@ -3794,3 +3794,24 @@ details[open] > .disclosure-summary > .miter-icon,
 .workflow-list p {
   margin-block: var(--space-xs);
 }
+
+.element-selection {
+  display: grid;
+  gap: var(--space-sm);
+  margin: 0 0 var(--space-lg);
+  overflow-wrap: anywhere;
+}
+
+.element-selection img {
+  display: block;
+  max-height: 9rem;
+  max-width: 100%;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.element-selection details {
+  font-size: var(--font-small);
+  margin-block-start: var(--space-xs);
+}

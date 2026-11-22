@@ -1,5 +1,6 @@
 import type { JSX } from 'solid-js';
 import { projectSchema, workerSchema } from '../../../../packages/protocol/src/index';
+import { ElementPicker, type PickedElement } from '../../src/components/ElementPicker';
 import { WorkerForm } from '../../src/forms/WorkerForm';
 import { bridgeStartResultSchema } from '../../src/schemas/local-results';
 import { workerCreateParamsSchema } from '../../../../packages/protocol/src/rpc';
@@ -21,7 +22,58 @@ export function createTaskStartFixture(mount: (component: () => JSX.Element) => 
   let authorizations = 0;
   const requests: ReturnType<typeof workerCreateParamsSchema.parse>[] = [];
 
-  function mountTask() {
+  let chooseElement: (() => void) | undefined;
+  const pickCalls: string[] = [];
+
+  function mountPicker() {
+    pickCalls.length = 0;
+    mount(() => (
+      <ElementPicker
+        run={{
+          workerId: 'source_task',
+          projectId: project.id,
+          expectedRun: { runId: 'source_run', epoch: 2 },
+          previewId: 'b'.repeat(32),
+          name: 'Parcel preview',
+          state: 'running',
+          startedAt: 1,
+          output: '',
+        }}
+        rpc={async (method, params) => {
+          pickCalls.push(method);
+          if (
+            params?.workerId !== 'source_task' ||
+            params.previewId !== 'b'.repeat(32) ||
+            JSON.stringify(params.expectedRun) !== JSON.stringify({ runId: 'source_run', epoch: 2 })
+          ) {
+            throw new Error('Picker changed its source session.');
+          }
+          if (method === 'worker.cancelPick') {
+            return { cancelled: true };
+          }
+          if (method !== 'worker.pickElement') {
+            throw new Error('Unexpected picker request.');
+          }
+          return new Promise((resolve) => {
+            chooseElement = () =>
+              resolve({
+                captureId: 'parcel_capture',
+                route: '/parcels',
+                viewport: { width: 390, height: 844 },
+                role: 'button',
+                name: 'Save <parcel>',
+                selector: '#save',
+                screenshot: document.createElement('canvas').toDataURL('image/jpeg'),
+              });
+          });
+        }}
+        picked={mountTask}
+        close={close}
+      />
+    ));
+  }
+
+  function mountTask(selection?: PickedElement) {
     if (resolveStart) {
       throw new Error('Finish the previous controlled admission before mounting another task.');
     }
@@ -34,6 +86,7 @@ export function createTaskStartFixture(mount: (component: () => JSX.Element) => 
     mount(() => (
       <WorkerForm
         projects={[project]}
+        selection={selection}
         scopedProjectId={project.id}
         authorize={async () => {
           authorizations++;
@@ -113,6 +166,9 @@ export function createTaskStartFixture(mount: (component: () => JSX.Element) => 
 
   return {
     mount: mountTask,
+    mountPicker,
+    chooseElement: () => chooseElement?.(),
+    pickCalls: () => [...pickCalls],
     admit,
     inspect: () => ({ created, started, stopped, failed, authorizations, requests }),
   };

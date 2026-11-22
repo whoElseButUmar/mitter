@@ -20,6 +20,8 @@ export type TaskSheetDependencies = {
   selectedProjectId?: string;
   /** Project is captured when opening its task sheet; not a selectable field. */
   scopedProjectId?: string;
+  /** Host-issued selection tied to the source app and its existing execution folder. */
+  captureId?: string;
   authorize(): Promise<boolean>;
   create(params: Record<string, unknown>): Promise<unknown>;
   created(taskId: string): void;
@@ -93,6 +95,16 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
     }
   }
 
+  const captureId = deps.captureId;
+  if (captureId) {
+    if (!scopedProject) {
+      throw new Error('Open the selected app’s project before editing an element.');
+    }
+    workspaceSelect.disabled = true;
+    requiredElement(root, '[data-workspace-field]', HTMLElement).hidden = true;
+    goalInput.placeholder = 'Describe the change to this element.';
+  }
+
   // A disabled, hidden native control retains the form source for compatibility;
   // submission always uses the captured project ID, never a later UI selection.
   const selectedProjectId = () => scopedProject?.id || projectSelect.value;
@@ -126,7 +138,7 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
     }
 
     submitButton.textContent = 'Start task';
-    if (isProjectLaunchRequest(goalInput.value)) {
+    if (!captureId && isProjectLaunchRequest(goalInput.value)) {
       disclosure.textContent =
         'Installs the project dependencies, starts its development server and opens the preview.';
     } else if (modeSelect.value === 'local') {
@@ -265,7 +277,7 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
     }
 
     let selectedMode = modeSelect.value;
-    if (isProjectLaunchRequest(cleanGoal)) {
+    if (!captureId && isProjectLaunchRequest(cleanGoal)) {
       selectedMode = 'local';
     }
     if (selectedMode !== 'handoff' && selectedMode !== 'local') {
@@ -276,8 +288,14 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
     }
 
     const shouldStart = startNowInput.checked;
+    let target: { captureId: string } | { workspaceMode: string };
+    if (captureId) {
+      target = { captureId };
+    } else {
+      target = { workspaceMode: workspaceSelect.value };
+    }
     const params = {
-      workspaceMode: workspaceSelect.value,
+      ...target,
       name: nameInput.value.trim() || suggestedTaskName(cleanGoal),
       goal: cleanGoal,
       projectId: selectedProjectId(),

@@ -1,3 +1,5 @@
+import { PreviewElementFigure } from '../components/PreviewElementFigure';
+import type { PickedElement } from '../components/ElementPicker';
 import { requireElement } from '../ui/dom';
 import { onMount, onCleanup, Show } from 'solid-js';
 import { Modal } from '../components';
@@ -8,7 +10,8 @@ import type { ViewRPC } from '../ui/rpc';
 import { createChatStartCleanup } from '../ui/chat-start-cleanup';
 import { createReadiness } from '../ui/readiness';
 
-type WorkerFormProps = Omit<TaskSheetDependencies, 'create' | 'start'> & {
+type WorkerFormProps = Omit<TaskSheetDependencies, 'create' | 'start' | 'captureId'> & {
+  selection?: PickedElement | undefined;
   rpc: ViewRPC;
   create: (params: Record<string, unknown>) => Promise<Worker>;
   start: (taskId: string, mode: Worker['mode'], expectedRun: TaskBoundary) => Promise<unknown>;
@@ -90,16 +93,26 @@ export function createWorkerFormRequests(
 }
 
 export function WorkerForm(props: WorkerFormProps) {
+  const selection = props.selection;
+  let title = 'New task';
+  if (selection) {
+    title = 'Edit selected element';
+  }
   const requests = createWorkerFormRequests(props);
   const readiness = createReadiness(() => true, props.rpc);
   let root: HTMLDivElement | undefined;
   onMount(() => {
-    const dispose = mountTaskSheet(requireElement(root, 'forms root'), { ...props, ...requests });
+    const dispose = mountTaskSheet(requireElement(root, 'forms root'), {
+      ...props,
+      ...requests,
+      ...(selection && { captureId: selection.captureId }),
+    });
     onCleanup(dispose);
   });
 
   return (
-    <Modal title="New task" close={requests.close}>
+    <Modal title={title} close={requests.close}>
+      <Show when={selection}>{(element) => <PreviewElementFigure element={element()} />}</Show>
       <Show when={readiness.report()?.webChecks.status === 'unavailable'}>
         <div class="setup-attention" role="status">
           <strong>Web-app checks need setup</strong>

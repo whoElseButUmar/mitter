@@ -263,7 +263,7 @@ test('every Service result is validated by handle and dispatch without retries o
   let executions = 0;
   t.mock.method(owned.service, 'receive', async () => {
     executions++;
-    return null;
+    return undefined;
   });
 
   for (const method of Object.keys(serviceRpcRegistry)) {

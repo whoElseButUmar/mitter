@@ -115,6 +115,7 @@ import {
 } from './service/setup-commands.js';
 import { buildEditRepair, encodeRepairObservation } from './service/edit-repair.js';
 import { TaskRuntime } from './service/task-runtime.js';
+import { PreviewEdits } from './preview/edits.js';
 import { ProjectWorkflows } from './workflows/service.js';
 import { ProjectCatalog } from './service/project-catalog.js';
 import { TaskProgressStore, parseProgressUpdate, prepareFollowupProgress } from './service/progress.js';
@@ -189,6 +190,7 @@ export class Service {
   private readonly locks = new Locks();
   private readonly workspace: Workspace;
   private readonly previews: PreviewSessions;
+  private readonly previewEdits: PreviewEdits;
   private readonly projectWorkflows: ProjectWorkflows;
   private readonly reads: ReadSnapshots;
   private readonly progress: TaskProgressStore;
@@ -211,6 +213,7 @@ export class Service {
   ) {
     this.previews = new PreviewSessions(dataDir);
     this.projectWorkflows = new ProjectWorkflows(store);
+    this.previewEdits = new PreviewEdits(store);
     this.workspace = new Workspace(store);
     this.reads = new ReadSnapshots(store);
     this.progress = new TaskProgressStore(store);
@@ -587,6 +590,17 @@ export class Service {
     this.checkRunGate(worker, method, params.epoch);
 
     switch (method) {
+      case 'worker.pickElement': {
+        const input = parseRpcParams(serviceRpcRegistry, method, params);
+        const selection = await this.previews.pickElement(worker.id, input.expectedRun, input.previewId);
+        this.checkExpectedRun(worker, method, params);
+        this.previews.assertRunning(worker.id, input.expectedRun, input.previewId);
+        return this.previewEdits.capture(worker, selection);
+      }
+      case 'worker.cancelPick': {
+        const input = parseRpcParams(serviceRpcRegistry, method, params);
+        return this.previews.cancelPick(worker.id, input.expectedRun, input.previewId);
+      }
       case 'worker.previewStatus': {
         parseRpcParams(serviceRpcRegistry, method, params);
         this.checkExpectedRun(worker, method, params);
@@ -781,6 +795,7 @@ export class Service {
 
         return (
           chatPrompt(worker, project, kind) +
+          this.previewEdits.prompt(worker) +
           this.followups.prompt(worker) +
           controlPrompt +
           (await this.team.context(worker, project))
@@ -805,6 +820,10 @@ export class Service {
           hasMore: rows.length > 100,
           before: events.at(-1)?.id ?? null,
         };
+      }
+      case 'worker.previewSelection': {
+        parseRpcParams(serviceRpcRegistry, method, params);
+        return this.previewEdits.read(worker);
       }
       case 'worker.report': {
         parseRpcParams(serviceRpcRegistry, method, params);
@@ -1035,7 +1054,7 @@ export class Service {
 
     const project = this.catalog.get(params.projectId);
     const creation = parseWorkerCreation(params);
-    parseRpcParams(serviceRpcRegistry, 'worker.create', params);
+    const input = parseRpcParams(serviceRpcRegistry, 'worker.create', params);
     const worker: Worker = {
       id: randomUUID(),
       projectId: project.id,
@@ -1052,7 +1071,12 @@ export class Service {
       createdAt: Date.now(),
     };
 
-    if (params.workspaceMode === 'worktree') {
+    if (input.captureId) {
+      if (input.workspaceMode === 'worktree') {
+        throw new Error('This edit uses the same folder as the selected app.');
+      }
+      this.previewEdits.create(input.captureId, worker, this.workers);
+    } else if (params.workspaceMode === 'worktree') {
       worker.worktree = await createWorktree(project.root, this.dataDir, worker.id);
     } else if (params.workspaceMode !== undefined && params.workspaceMode !== 'shared') {
       throw new Error('Choose shared workspace or worktree.');
@@ -1596,12 +1620,13 @@ export class Service {
 
         this.store.saveWorker({ ...worker, control: nextControl });
       });
+      const previousBoundary = { runId: worker.runId, epoch: worker.control?.epoch ?? 0 };
       worker.control = nextControl;
       stateMayHaveChanged = true;
 
       task.abort(new Error(abortMessage));
       this.changed();
-      await task.wait();
+      await Promise.all([task.wait(), this.previews.stopPicking(worker.id, previousBoundary)]);
       this.archiveQueue(worker, operationId);
       task.discardPlan();
       worker.error = undefined;
@@ -1858,7 +1883,7 @@ export class Service {
       throw new Error('Iteration budget reached. Create a new worker or review the remaining scope.');
     }
 
-    if (!worker.activeFollowupId && isProjectLaunchRequest(worker.goal)) {
+    if (!worker.activeFollowupId && !worker.hasPreviewSelection && isProjectLaunchRequest(worker.goal)) {
       task.move('planning');
       worker.iteration++;
       task.save();
@@ -1886,7 +1911,13 @@ export class Service {
     const context = await this.team.context(worker, project);
     const generated = parseModelOutput(
       await this.locks.using('inference', signal, () =>
-        this.models.propose(localPrompt(worker, project) + this.followups.prompt(worker) + context, signal),
+        this.models.propose(
+          localPrompt(worker, project) +
+            this.previewEdits.prompt(worker) +
+            this.followups.prompt(worker) +
+            context,
+          signal,
+        ),
       ),
     );
     signal.throwIfAborted();
@@ -2066,7 +2097,11 @@ export class Service {
             if (!result.ok) {
               const finding = completionFailureMessage(result.results);
               if (worker.mode === 'local') {
-                if (!worker.activeFollowupId && isProjectLaunchRequest(worker.goal)) {
+                if (
+                  !worker.activeFollowupId &&
+                  !worker.hasPreviewSelection &&
+                  isProjectLaunchRequest(worker.goal)
+                ) {
                   throw new Error(finding);
                 }
                 task.remember(JSON.stringify({ failedChecks: finding }));
@@ -2163,6 +2198,7 @@ export class Service {
             action.type === 'finish' &&
             action.openPreview &&
             !worker.activeFollowupId &&
+            !worker.hasPreviewSelection &&
             isProjectLaunchRequest(worker.goal)
           )
         ) {

@@ -174,7 +174,7 @@ export class NativeHost {
       timeoutMs = 360000;
     } else if (method.startsWith('system.reset')) {
       timeoutMs = 180000;
-    } else if (method === 'workflow.record') {
+    } else if (method === 'workflow.record' || method === 'worker.pickElement') {
       timeoutMs = 180000;
     } else if (method === 'project.pickFolder') {
       timeoutMs = 130000;

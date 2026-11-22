@@ -232,6 +232,7 @@ export async function checkDialogs(chrome, session) {
     `window.mitterReleaseFixture.finishSave(${newer}, 'Finish controlled save.')`,
   );
   await evaluate(chrome, session, 'window.mitterReleaseFixture.dispose()');
+  await checkPointEdit(chrome, session);
   await checkTaskStart(chrome, session);
   await checkSetupApproval(chrome, session);
   await checkAttentionLayout(chrome, session);
@@ -298,6 +299,74 @@ export async function checkSetupApproval(chrome, session) {
       assert.equal(terminal, undefined);
     }
   }
+}
+
+export async function checkPointEdit(chrome, session) {
+  const fixture = 'window.mitterReleaseFixture.taskStart';
+  await evaluate(chrome, session, fixture + '.mountPicker()');
+  await waitFor(chrome, session, fixture + '.pickCalls().length === 1', 'picker requested once');
+  await press(chrome, session, 'Escape', 27);
+  await waitFor(
+    chrome,
+    session,
+    "!document.querySelector('dialog[open]')",
+    'cancelled element picker closes',
+  );
+  await evaluate(chrome, session, fixture + '.chooseElement()');
+  assert.deepEqual(await evaluate(chrome, session, fixture + '.pickCalls()'), [
+    'worker.pickElement',
+    'worker.cancelPick',
+  ]);
+  assert.equal(await evaluate(chrome, session, "!!document.querySelector('[data-task-form]')"), false);
+
+  await evaluate(chrome, session, fixture + '.mountPicker()');
+  await evaluate(chrome, session, fixture + '.chooseElement()');
+  await waitFor(
+    chrome,
+    session,
+    "document.querySelector('.element-selection img')?.naturalWidth > 0",
+    'selected image in draft',
+  );
+  assert.equal(
+    await evaluate(chrome, session, "document.querySelector('[data-workspace-field]').hidden"),
+    true,
+  );
+  assert.equal(
+    await evaluate(chrome, session, "document.querySelector('.element-selection strong').textContent"),
+    'Save <parcel>',
+  );
+  assert.equal(await evaluate(chrome, session, "document.querySelector('[data-goal]').value"), '');
+  const draft = await evaluate(chrome, session, fixture + '.inspect()');
+  assert.deepEqual([draft.created, draft.started, draft.authorizations], [0, 0, 0]);
+  await evaluate(chrome, session, "document.querySelector('[data-goal]').focus()");
+  await chrome.request('Input.insertText', { text: 'Increase the button contrast.' }, session);
+  await click(chrome, session, '[data-create]');
+  await waitFor(chrome, session, fixture + '.inspect().started === 1', 'reviewed edit task started once');
+  const sent = await evaluate(chrome, session, fixture + '.inspect()');
+  assert.deepEqual([sent.created, sent.started, sent.authorizations], [1, 1, 1]);
+  assert.deepEqual(
+    sent.requests,
+    [
+      {
+        projectId: 'task_start_project',
+        captureId: 'parcel_capture',
+        goal: 'Increase the button contrast.',
+        name: 'Increase the button contrast',
+        mode: 'handoff',
+        checks: [],
+        maxIterations: 15,
+        maxMinutes: 30,
+      },
+    ],
+    'Creation sends the reviewed instruction and opaque capture ID. The screenshot and DOM text stay outside the create payload.',
+  );
+  await evaluate(chrome, session, fixture + '.admit()');
+  await waitFor(
+    chrome,
+    session,
+    "!document.querySelector('dialog[open]')",
+    'reviewed task admission completes',
+  );
 }
 
 async function checkTaskStart(chrome, session) {

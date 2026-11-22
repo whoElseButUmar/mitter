@@ -30,6 +30,7 @@ export class RequestQueue {
         'worker.steer',
         'worker.steerValidate',
         'worker.previewStop',
+        'worker.cancelPick',
         'workflow.cancel',
       ].includes(method)
     ) {
@@ -38,7 +39,9 @@ export class RequestQueue {
       }
       this.controls++;
       void this.run(execute).finally(() => this.controls--);
-    } else if (['worker.previewStart', 'workflow.record', 'workflow.replay'].includes(method)) {
+    } else if (
+      ['worker.previewStart', 'worker.pickElement', 'workflow.record', 'workflow.replay'].includes(method)
+    ) {
       // pnpm may take minutes. Keep project operations and its terminal usable during setup.
       if (this.appStarts >= 4) {
         return false;

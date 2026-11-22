@@ -221,6 +221,10 @@ export const workerSchema = z
       .array(followupSummarySchema)
       .optional()
       .describe('Optional display-only follow-up summaries.'),
+    hasPreviewSelection: z
+      .literal(true)
+      .optional()
+      .describe('This task has a locally saved preview element and screenshot.'),
     worktree: worktreeSchema.optional().describe('Optional worker worktree.'),
     teamPaused: z.string().optional().describe('Optional team pause reason.'),
     lastProposal: z.string().optional().describe('Optional last proposal identifier/signature.'),

@@ -237,6 +237,9 @@ export const projectProfileParamsSchema = projectParamsSchema
 
 export const workerCreateParamsSchema = projectParamsSchema
   .extend({
+    captureId: identifierSchema('reviewed preview selection ID')
+      .optional()
+      .describe('The current local selection for a contextual edit task.'),
     checks: workerCreationSchema.shape.checks
       .nullish()
       .transform((value) => value ?? [])

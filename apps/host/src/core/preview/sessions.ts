@@ -4,6 +4,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import {
   previewStartResultSchema,
   type PreviewStartResult,
+  type PreviewElement,
 } from '../../../../../packages/protocol/src/rpc.js';
 import type { TaskBoundary } from '../../../../../packages/protocol/src/index.js';
 import { snapshotApp, staticPreviewFingerprint } from './snapshot.js';
@@ -14,6 +15,7 @@ import { Locks } from '../locks.js';
 import { errorMessage } from '../types.js';
 import { ensurePrivateDirectory } from '../private-directory.js';
 import { AppRuns, type AppRun } from './app-runs.js';
+import { pickPreviewElement } from './element-picker.js';
 
 const IDLE_TIMEOUT_MS = 1_800_000;
 const MAX_SESSIONS = 4;
@@ -36,6 +38,7 @@ type Pending = { run: AppRun; controller: AbortController; result: Promise<Previ
 type Session = {
   run: AppRun;
   closing?: Promise<void>;
+  picker?: { controller: AbortController; done: Promise<PreviewElement> };
   server: PreviewServer;
   result: PreviewStartResult;
   fingerprint?: string;
@@ -50,7 +53,10 @@ export class PreviewSessions {
   private timer: ReturnType<typeof setInterval> | undefined;
   private closing: Promise<void> | undefined;
 
-  constructor(private readonly dataRoot?: string) {}
+  constructor(
+    private readonly dataRoot?: string,
+    private readonly picker = pickPreviewElement,
+  ) {}
 
   get signal(): AbortSignal {
     return this.controller.signal;
@@ -67,6 +73,63 @@ export class PreviewSessions {
 
   status(workerId: string, boundary: TaskBoundary) {
     return { preview: this.current(workerId, boundary)?.result ?? null };
+  }
+
+  assertRunning(workerId: string, boundary: TaskBoundary, previewId: string) {
+    const session = this.sessions.get(previewId);
+    if (
+      !session ||
+      session.closing ||
+      session.run.state !== 'running' ||
+      session.run.workerId !== workerId ||
+      session.run.expectedRun.runId !== boundary.runId ||
+      session.run.expectedRun.epoch !== boundary.epoch
+    ) {
+      throw new Error('That app session has stopped or changed. Open the current running app.');
+    }
+    this.signal.throwIfAborted();
+    return session;
+  }
+
+  pickElement(workerId: string, boundary: TaskBoundary, previewId: string) {
+    const session = this.assertRunning(workerId, boundary, previewId);
+    if (session.picker) {
+      throw new Error('An element picker is already open for this app.');
+    }
+    const controller = new AbortController();
+    const signal = AbortSignal.any([this.signal, controller.signal]);
+    const done = Promise.resolve()
+      .then(() => {
+        signal.throwIfAborted();
+        return this.picker(session.result.url, signal);
+      })
+      .then((element) => {
+        signal.throwIfAborted();
+        return element;
+      })
+      .finally(() => {
+        delete session.picker;
+      });
+    session.picker = { controller, done };
+    return done;
+  }
+
+  cancelPick(workerId: string, boundary: TaskBoundary, previewId: string) {
+    return this.closePicker(this.assertRunning(workerId, boundary, previewId));
+  }
+
+  stopPicking(workerId: string, boundary: TaskBoundary) {
+    return this.closePicker(this.current(workerId, boundary));
+  }
+
+  private async closePicker(session: Session | undefined) {
+    const active = session?.picker;
+    if (!active) {
+      return { cancelled: false };
+    }
+    active.controller.abort(new Error('Element selection cancelled.'));
+    await active.done.catch(() => {});
+    return { cancelled: true };
   }
 
   start(
@@ -374,7 +437,7 @@ export class PreviewSessions {
 
   private terminate(session: Session, state: 'stopped' | 'failed', reason: string): Promise<void> {
     if (!session.closing) {
-      session.closing = Promise.resolve()
+      session.closing = this.closePicker(session)
         .then(() => session.server.close())
         .then(() => {
           this.runs.finish(session.run, state, reason);

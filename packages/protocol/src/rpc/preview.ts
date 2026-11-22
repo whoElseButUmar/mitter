@@ -52,6 +52,45 @@ export const previewStopParamsSchema = previewStatusParamsSchema
   .extend({ previewId: previewIdSchema })
   .describe('Close only the named preview session; a stale request cannot close its replacement.');
 
+export const previewPickParamsSchema = previewStopParamsSchema
+  .extend({ expectedRun: taskBoundarySchema })
+  .describe('Pick an element from the exact running preview and reviewed task epoch.');
+
+export const previewElementSchema = z
+  .strictObject({
+    route: z
+      .string()
+      .min(1)
+      .max(2000)
+      .regex(/^\/(?![\/\\])[^\u0000-\u001f]*$/)
+      .describe('The local app route without the preview capability.'),
+    viewport: z
+      .strictObject({
+        width: z.int().positive().max(16384).describe('Viewport width in CSS pixels.'),
+        height: z.int().positive().max(16384).describe('Viewport height in CSS pixels.'),
+      })
+      .describe('Browser viewport at selection time.'),
+    role: z.string().min(1).max(100).describe('The selected element’s role or tag.'),
+    name: z.string().max(256).describe('The selected element’s accessible name, when present.'),
+    selector: z.string().min(1).max(512).describe('CSS selector for the selected element.'),
+    screenshot: z
+      .string()
+      .max(80000)
+      .regex(/^data:image\/jpeg;base64,\/9j\/[A-Za-z0-9+/]*={0,2}$/)
+      .describe('A bounded JPEG image of the selected element.'),
+  })
+  .describe('A browser selection in a running app preview.');
+
+export type PreviewElement = z.infer<typeof previewElementSchema>;
+
+export const previewPickResultSchema = previewElementSchema
+  .extend({ captureId: identifierSchema('preview capture ID') })
+  .describe('A captured preview element available for a new edit task.');
+
+export const previewCancelPickResultSchema = z
+  .strictObject({ cancelled: z.boolean().describe('Whether the selected session had an active picker.') })
+  .describe('Cancellation status for an element picker on one exact preview.');
+
 export const previewStartResultSchema = z
   .strictObject({
     previewId: previewIdSchema,

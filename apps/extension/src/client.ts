@@ -379,7 +379,7 @@ export class HostClient {
 
     if (method === 'worker.previewStart' || method === 'workflow.replay') {
       timeoutMs = 370000;
-    } else if (method === 'workflow.record') {
+    } else if (method === 'workflow.record' || method === 'worker.pickElement') {
       timeoutMs = 190000;
     } else if (method === 'project.pickFolder') {
       timeoutMs = 135000;

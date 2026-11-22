@@ -8,6 +8,7 @@ import {
   type Worker,
 } from '../../../../packages/protocol/src/index';
 import { reviewedTaskBoundary } from './task-boundary';
+import type { PickedElement } from '../components/ElementPicker';
 import type { TerminalRunFocus, SetupTerminalFocus } from './terminal-runs';
 import { parseProposalEnvelope } from '../../../../packages/protocol/src/proposal';
 import { exceedsHandoffBytes } from '../../../../packages/protocol/src/reply-json';
@@ -73,6 +74,7 @@ export function createWorkspaceController() {
 
   // New-task forms capture their project when opened, never when submitted.
   const [formProjectId, setFormProjectId] = createSignal('');
+  const [pickedElement, setPickedElement] = createSignal<PickedElement>();
   const [modal, setModal] = createSignal('');
   const [textValue, setTextValue] = createSignal('');
   const [handoff, writeHandoff] = createSignal('');
@@ -117,7 +119,9 @@ export function createWorkspaceController() {
   const dialogScope = createMemo(() => navigation().revision + ':' + modal());
 
   createEffect(() => {
-    modal();
+    if (modal() !== 'worker') {
+      setPickedElement(undefined);
+    }
     modalGeneration++;
   });
 
@@ -489,7 +493,7 @@ export function createWorkspaceController() {
   });
   const syntaxSelection = createMemo(() => ({ workerId: selected(), path: output.file() }));
 
-  const newWorker = (projectId = navigation().projectId) => {
+  const newWorker = (projectId = navigation().projectId, element?: PickedElement) => {
     const projectEntry = snapshot().projects.find((entry) => entry.id === projectId);
 
     if (!projectEntry) {
@@ -497,8 +501,11 @@ export function createWorkspaceController() {
       return;
     }
 
-    setFormProjectId(projectEntry.id);
-    setModal('worker');
+    batch(() => {
+      setFormProjectId(projectEntry.id);
+      setPickedElement(element);
+      setModal('worker');
+    });
   };
 
   const tabs = createWorkspaceTabs({
@@ -1062,6 +1069,7 @@ export function createWorkspaceController() {
     connectionError,
     selected,
     formProjectId,
+    pickedElement,
     success,
     setNotice,
     modal,

@@ -167,6 +167,22 @@ const fixtures = {
   ],
   'system.health': [{}, health],
   'project.appRuns': [projectRequest, { runs: [] }],
+  'worker.pickElement': [
+    { ...task, expectedRun: { runId: worker.runId, epoch: 0 }, previewId: 'b'.repeat(32) },
+    {
+      captureId: 'capture_1',
+      route: '/cards',
+      viewport: { width: 1280, height: 800 },
+      role: 'button',
+      name: 'New card',
+      selector: '#new-card',
+      screenshot: 'data:image/jpeg;base64,/9j/2Q==',
+    },
+  ],
+  'worker.cancelPick': [
+    { ...task, expectedRun: { runId: worker.runId, epoch: 0 }, previewId: 'b'.repeat(32) },
+    { cancelled: true },
+  ],
   'worker.previewStatus': [task, { preview: null }],
   'worker.previewStart': [
     task,
@@ -245,6 +261,7 @@ const fixtures = {
   'worker.rename': [{ ...task, name: 'Renamed' }, worker],
   'worker.prompt': [task, '\ufeffliteral prompt\r\n'],
   'worker.history': [{ ...task, before: 3 }, history],
+  'worker.previewSelection': [task, null],
   'worker.report': [task, '\ufeffliteral report\r\n'],
   'worker.handoffSeen': [{ ...task, envelopeId: 'envelope_1' }, { seen: true }],
   'worker.change': [readPath, review],
@@ -349,7 +366,11 @@ test('every registered operation validates a real request and complete result, a
     assert.doesNotThrow(() => parseRpcParams(registry, method, params), method);
     assert.deepEqual(parseRpcResult(registry, method, result), result, method);
     assert.throws(() => parseRpcParams(registry, method, []), /Expected params/, method);
-    assert.throws(() => parseRpcResult(registry, method, null), schemaError, method);
+    let invalidResult = null;
+    if (result === null) {
+      invalidResult = undefined;
+    }
+    assert.throws(() => parseRpcResult(registry, method, invalidResult), schemaError, method);
   }
 
   for (const method of ['__proto__', 'toString', 'worker.futureOperation']) {
@@ -561,5 +582,28 @@ test('literal source, handoff text, selection offsets, receipts and reviewed run
       () => parseRpcParams(registry, 'worker.stop', { ...task, id: 'stop_1', expectedRun: boundary }),
       schemaError,
     );
+  }
+});
+
+test('picker contracts bind the exact session and reject foreign routes, unbounded images and forged captures', () => {
+  const [input, captured] = fixtures['worker.pickElement'];
+  for (const method of ['worker.pickElement', 'worker.cancelPick']) {
+    for (const changed of [
+      { expectedRun: undefined },
+      { previewId: undefined },
+      { url: 'https://example.com/' },
+    ]) {
+      assert.throws(() => parseRpcParams(registry, method, { ...input, ...changed }));
+    }
+  }
+  for (const changed of [
+    { route: 'https://example.com' },
+    { route: '//example.com' },
+    { screenshot: 'data:image/svg+xml,<svg/>' },
+    { screenshot: 'data:image/jpeg;base64,/9j/' + 'a'.repeat(80000) },
+    { viewport: { width: 800, height: 0 } },
+    { captureId: undefined },
+  ]) {
+    assert.throws(() => parseRpcResult(registry, 'worker.pickElement', { ...captured, ...changed }));
   }
 });

@@ -6,7 +6,7 @@ export const taskSheetTemplate = `<form class="creation-form" data-task-form>
     <details class="form-advanced" data-advanced><summary>Advanced options</summary>
       <label class="field"><span>Task name (optional)</span><input data-name maxlength="60" placeholder="Named automatically"/></label>
       <label class="field"><span>Coding source</span><select data-mode><option value="handoff">ChatGPT conversation</option><option value="local">Local coding model</option></select></label>
-      <label class="field"><span>Work in</span><select data-workspace><option value="shared">Current project folder</option><option value="worktree">New isolated Git worktree</option></select><small>Worktrees need a clean, committed Git repository.</small></label>
+      <label class="field" data-workspace-field><span>Work in</span><select data-workspace><option value="shared">Current project folder</option><option value="worktree">New isolated Git worktree</option></select><small>Worktrees need a clean, committed Git repository.</small></label>
       <label class="field"><span>Extra completion checks</span><select data-rule><option value="human">No extra checks</option><option value="exists">A file exists</option><option value="contains">A file contains this text</option><option value="command" data-command-check>A registered test command passes</option></select><small data-command-check-hint hidden>Add a command in Actions → Test commands, then reopen New task.</small></label>
       <label class="field" data-path-field hidden><span>Project-relative file</span><input data-path placeholder="index.html" disabled/></label>
       <label class="field" data-text-field hidden><span>Expected text</span><input data-text disabled/></label>

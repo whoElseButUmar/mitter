@@ -5,6 +5,7 @@ import { disposeTerminalScreen, type TerminalScreen as Screen } from './ui/termi
 import { createTerminalAppearance } from './ui/terminal-appearance';
 import { terminalSettings } from './ui/terminal-settings';
 import { TerminalSessionPicker } from './components/TerminalSessionPicker';
+import { ElementPicker, type PickedElement } from './components/ElementPicker';
 import { TooltipButton } from './components/TooltipButton';
 import { AppRunOutput } from './components/AppRunOutput';
 import {
@@ -42,6 +43,7 @@ export function TerminalDock(props: {
   rpc: ViewRPC;
   runFocus?: TerminalRunFocus | undefined;
   setupFocus?: SetupTerminalFocus | undefined;
+  editElement: (projectId: string, selection: PickedElement) => void;
   close: () => void;
 }) {
   const frames = createAnimationFrames();
@@ -61,6 +63,7 @@ export function TerminalDock(props: {
     visible: () => props.visible,
     rpc: props.rpc,
   });
+  const [pickTarget, setPickTarget] = createSignal<AppRunSession>();
   const selectedRun = () => runs.tabs().get(selected());
   const launchFailure = () => {
     const focus = props.runFocus;
@@ -466,6 +469,7 @@ export function TerminalDock(props: {
     props.workerId;
     props.visible;
     selected();
+    setPickTarget(undefined);
     confirmationScope.abort();
     confirmationScope = new AbortController();
   });
@@ -680,6 +684,12 @@ export function TerminalDock(props: {
                   disabled={runs.busy().has(run().previewId)}
                   onClick={(event) => void controlApp(run(), 'open', event.currentTarget)}
                 />
+                <TooltipButton
+                  label="Point to edit"
+                  icon="pick"
+                  disabled={runs.busy().has(run().previewId)}
+                  onClick={() => setPickTarget(run())}
+                />
               </Show>
               <Show when={run().state !== 'starting'}>
                 <Show
@@ -799,6 +809,19 @@ export function TerminalDock(props: {
           </div>
         </Show>
       </div>
+      <Show when={pickTarget()} keyed>
+        {(target) => (
+          <ElementPicker
+            run={target}
+            rpc={props.rpc}
+            close={() => setPickTarget(undefined)}
+            picked={(selection) => {
+              setPickTarget(undefined);
+              props.editElement(target.projectId, selection);
+            }}
+          />
+        )}
+      </Show>
     </section>
   );
 }

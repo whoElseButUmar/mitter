@@ -35,6 +35,8 @@ const forwarded = [
   'project.appRuns',
   'worker.previewStart',
   'worker.previewStop',
+  'worker.pickElement',
+  'worker.cancelPick',
   'system.backups',
   'system.backup',
   'system.verifyBackup',
@@ -77,6 +79,7 @@ const forwarded = [
   'worker.rollback',
   'worker.accept',
   'worker.prompt',
+  'worker.previewSelection',
   'worker.report',
   'worker.history',
   'worker.import',
@@ -254,7 +257,7 @@ for (const [name, registry, parseResult] of [
       assert.throws(() => parseRpcParams(registry, method, null));
       assert.throws(() => parseResult(method, undefined), invalidResult(method));
 
-      if (method === 'bridge.lastChat') {
+      if (method === 'bridge.lastChat' || method === 'worker.previewSelection') {
         assert.equal(parseResult(method, null), null);
       } else {
         assert.throws(() => parseResult(method, null), invalidResult(method));

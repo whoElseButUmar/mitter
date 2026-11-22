@@ -1,4 +1,5 @@
 import { runningStates as running } from '../ui/task-view';
+import { SelectedPreviewElement } from '../components/SelectedPreviewElement';
 import { TaskEditor } from './TaskEditor';
 import { TaskDiagnostics } from './TaskDiagnostics';
 import { taskStatus } from '../ui/task-status';
@@ -103,6 +104,9 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
               <small class="muted">Isolated worktree · {task().worktree?.branch}</small>
             </Show>
           </details>
+          <Show keyed when={task().hasPreviewSelection && task().id}>
+            {(workerId) => <SelectedPreviewElement workerId={workerId} rpc={props.controller.rpc} />}
+          </Show>
         </section>
       </ContextArea>
       <Show when={task().completion?.evidence}>
