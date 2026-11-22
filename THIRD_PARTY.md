@@ -44,3 +44,7 @@ No GGUF weights are included. Review each model's model card, license, and redis
 ## Browser quality checks
 
 The native host bundles [Lighthouse](https://github.com/GoogleChrome/lighthouse) 13.6.0 and [Puppeteer Core](https://github.com/puppeteer/puppeteer) 25.17.0 under Apache-2.0, plus [axe-core](https://github.com/dequelabs/axe-core) 4.14.0 under MPL-2.0. Their source and license files remain in the runtime dependency bundle. Chrome itself is not redistributed; checks use an installed copy with an isolated temporary profile.
+
+## Image imports
+
+The native host uses [sharp](https://github.com/lovell/sharp) 0.35.5 (Apache-2.0) and its platform-specific [libvips](https://github.com/libvips/libvips) runtime to optimize imported images. The runtime bundle retains the upstream package licenses and notices.

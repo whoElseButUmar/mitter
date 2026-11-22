@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import sharp from 'sharp';
 import {
   Workspace,
   atomicWrite,
@@ -219,6 +220,68 @@ test('recovery publishes the prepared image without fetching again and preserves
   await assert.rejects(replay(), /image changed/);
   await assert.rejects(workspace.rollback(project, 'run'), /Rollback conflict/);
   assert.equal(await fs.readFile(path.join(root, relative), 'utf8'), 'external file');
+});
+
+test('import optimizes a large image once and reuses its journaled WebP on retry', async (t) => {
+  const root = await temporaryDirectory(t);
+  const store = memoryStore(t);
+  const workspace = new Workspace(store);
+  const project = projectFixture(root);
+  const signal = new AbortController().signal;
+  const original = await sharp({
+    create: { width: 1600, height: 900, channels: 4, background: '#12345699' },
+  })
+    .png()
+    .toBuffer();
+  const write = (loadBytes) =>
+    workspace.writeImage(project, 'worker', 'run', 'asset', 'images/art.png', loadBytes, signal);
+  const result = await write(async () => original);
+  assert.equal(result.path, 'images/art.webp');
+  assert.equal(result.originalBytes, original.length);
+  assert.deepEqual([result.width, result.height], [1280, 720]);
+  const saved = await fs.readFile(path.join(root, result.path));
+  assert.ok(saved.length < original.length);
+  const decoded = await sharp(saved).metadata();
+  assert.equal(decoded.format, 'webp');
+  assert.equal(decoded.hasAlpha, true);
+  await assert.rejects(fs.stat(path.join(root, 'images/art.png')), { code: 'ENOENT' });
+  const retry = await write(async () => assert.fail('The optimized bytes are already journaled.'));
+  assert.equal(retry.alreadyApplied, true);
+  assert.equal(retry.path, result.path);
+  assert.equal(retry.hash, result.hash);
+  assert.equal(project.revision, 1);
+  await assert.rejects(
+    workspace.writeImage(project, 'worker', 'run', 'another', 'images/art.png', async () => original, signal),
+    /Image destination already exists: images\/art\.webp/,
+  );
+  assert.deepEqual(await fs.readFile(path.join(root, result.path)), saved);
+});
+
+test('image optimization preserves animated GIF frames', async (t) => {
+  const root = await temporaryDirectory(t);
+  const workspace = new Workspace(memoryStore(t));
+  const project = projectFixture(root);
+  const frameWidth = 384;
+  const frameHeight = 256;
+  const frameSize = frameWidth * frameHeight * 3;
+  const pixels = Buffer.concat([Buffer.alloc(frameSize, 0), Buffer.alloc(frameSize, 255)]);
+  const animated = await sharp(pixels, {
+    raw: { width: frameWidth, height: frameHeight * 2, pageHeight: frameHeight, channels: 3 },
+  })
+    .gif({ delay: [75, 75] })
+    .toBuffer();
+  assert.equal((await sharp(animated).metadata()).pages, 2);
+  const saved = await workspace.writeImage(
+    project,
+    'worker',
+    'run',
+    'animation',
+    'motion.gif',
+    async () => animated,
+    new AbortController().signal,
+  );
+  assert.equal(saved.path, 'motion.gif');
+  assert.deepEqual(await fs.readFile(path.join(root, saved.path)), animated);
 });
 
 test('image publication rechecks the path and cancellation after fetching', async (t) => {

@@ -257,7 +257,7 @@ export const protocolTopics: DocsTopic[] = [
           {
             name: 'saveImage',
             description:
-              'Save a PNG, JPEG, WebP or GIF up to 5 MiB at a new project path. Use source.type web with a direct public HTTPS url, or source.type generated with the one-based index of a generated image in the linked chat. Use the saved path from the result when editing the app.',
+              'Save a PNG, JPEG, WebP or GIF up to 5 MiB. Use source.type web with a direct public HTTPS url, or source.type generated with the one-based index of a generated image in the linked chat. Miter saves a smaller WebP when optimization reduces size and preserves animation. Use the returned path and dimensions when editing the app.',
           },
           {
             name: 'base',

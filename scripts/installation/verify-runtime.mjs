@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import Database from 'better-sqlite3';
 import pty from 'node-pty';
+import sharp from 'sharp';
 import { runQualityTests } from '../../dist/apps/host/src/core/quality/runner.js';
 import { managedPnpmExecutable } from '../../dist/apps/host/src/core/managed-pnpm.js';
 import { installedPackageSchema } from './contracts.mjs';
@@ -30,6 +31,13 @@ try {
     }
   } finally {
     database.close();
+  }
+
+  const pixel = await sharp({ create: { width: 1, height: 1, channels: 3, background: 'white' } })
+    .webp()
+    .toBuffer();
+  if ((await sharp(pixel).metadata()).format !== 'webp') {
+    throw new Error('The bundled image optimizer could not encode WebP.');
   }
 
   await new Promise((resolve, reject) => {
@@ -76,7 +84,7 @@ try {
     throw new Error('Automatic app checks are unavailable: ' + result.detail);
   }
 
-  console.log('Bundled runtime verified: pnpm, SQLite, terminal and isolated app tests.');
+  console.log('Bundled runtime verified: pnpm, SQLite, terminal, image optimization and isolated app tests.');
 } finally {
   await rm(directory, { recursive: true, force: true });
 }

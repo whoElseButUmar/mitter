@@ -6,6 +6,7 @@ import type { EditStep } from '../edit-plan.js';
 import { hasErrorCode } from '../types.js';
 import { safePath, existing, atomicWrite, imageFileHash, validateRelative } from './files.js';
 import { validateProjectImage } from './image-source.js';
+import { optimizeProjectImage, webImagePath } from './image-optimization.js';
 import { z } from 'zod';
 import { fileHashSchema } from '../storage-schemas.js';
 
@@ -21,6 +22,9 @@ export const workspaceWriteSchema = z
       .optional()
       .describe('Whether an immutable prepared edit was recovered without blind replay.'),
     bytes: z.number().int().nonnegative().optional().describe('Number of bytes published to the file.'),
+    originalBytes: z.int().positive().optional().describe('Image size in bytes before optimization.'),
+    width: z.int().positive().optional().describe('Saved image width in pixels.'),
+    height: z.int().positive().optional().describe('Saved image height in pixels.'),
   })
   .describe('A journaled edit result, including exact-file recovery without replay.');
 
@@ -217,22 +221,25 @@ export class Workspace {
   ): Promise<WorkspaceWrite> {
     signal.throwIfAborted();
     const prior = this.store.journal(actionId);
-    const currentHash = await imageFileHash(project.root, relative);
-    signal.throwIfAborted();
+    validateRelative(relative);
     let image: Uint8Array<ArrayBuffer>;
     let hash: string;
+    let dimensions: Pick<WorkspaceWrite, 'width' | 'height' | 'originalBytes'> = {};
 
     if (prior) {
       if (
         prior.workerId !== workerId ||
         prior.runId !== runId ||
-        prior.path !== relative ||
+        (prior.path !== relative && prior.path !== webImagePath(relative)) ||
         typeof prior.after === 'string' ||
         prior.beforeHash !== 'missing' ||
         !['prepared', 'applied'].includes(prior.status)
       ) {
         throw new Error('The image journal belongs to a different edit. The file was preserved.');
       }
+      relative = prior.path;
+      const currentHash = await imageFileHash(project.root, relative);
+      signal.throwIfAborted();
       if (currentHash === prior.afterHash) {
         if (prior.status === 'prepared') {
           this.markApplied(project, actionId);
@@ -240,6 +247,7 @@ export class Workspace {
         return {
           path: relative,
           hash: prior.afterHash,
+          bytes: prior.after.length,
           alreadyApplied: true,
           recovered: prior.status === 'prepared',
         };
@@ -252,18 +260,26 @@ export class Workspace {
       validateProjectImage(Buffer.from(image.buffer, image.byteOffset, image.byteLength), relative);
       hash = prior.afterHash;
     } else {
+      const currentHash = await imageFileHash(project.root, relative);
+      signal.throwIfAborted();
       if (currentHash !== 'missing') {
         throw new Error(`Image destination already exists: ${relative}. Choose a new filename.`);
       }
       const bytes = await loadBytes();
       signal.throwIfAborted();
       validateProjectImage(bytes, relative);
-      const liveHash = await imageFileHash(project.root, relative);
-      signal.throwIfAborted();
-      if (liveHash !== 'missing') {
-        throw new Error(`Image destination already exists: ${relative}. Choose a new filename.`);
+      const optimized = await optimizeProjectImage(bytes, relative, signal);
+      for (const destination of new Set([relative, optimized.path])) {
+        const liveHash = await imageFileHash(project.root, destination);
+        signal.throwIfAborted();
+        if (liveHash !== 'missing') {
+          throw new Error(`Image destination already exists: ${destination}. Choose a new filename.`);
+        }
       }
-      image = new Uint8Array(bytes);
+      relative = optimized.path;
+      validateProjectImage(optimized.bytes, relative);
+      dimensions = { width: optimized.width, height: optimized.height, originalBytes: bytes.length };
+      image = new Uint8Array(optimized.bytes);
       hash = digest(image);
       this.store.prepareWrite({
         id: actionId,
@@ -281,7 +297,7 @@ export class Workspace {
 
     await atomicWrite(project.root, relative, image, 'missing', signal);
     this.markApplied(project, actionId);
-    return { path: relative, hash, bytes: image.length, recovered: prior !== undefined };
+    return { path: relative, hash, bytes: image.length, recovered: prior !== undefined, ...dimensions };
   }
 
   async rollback(
