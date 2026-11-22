@@ -165,7 +165,7 @@ async function verificationFixture(context) {
     await fixture.write(output + '/' + filename, bytes);
   }
 
-  for (const filename of ['sidepanel.html', 'workspace.html', 'file.html']) {
+  for (const filename of ['sidepanel.html', 'workspace.html', 'file.html', 'docs.html']) {
     await fixture.write(output + '/' + filename, '<!doctype html>\n');
   }
 
@@ -425,7 +425,7 @@ test('build verification rejects version, identity and malformed JSON metadata m
 test('build verification retains empty-asset and unbundled-framework checks', async (context) => {
   const fixture = await verificationFixture(context);
 
-  for (const filename of ['sidepanel.html', 'workspace.html', 'file.html', 'background.js']) {
+  for (const filename of ['sidepanel.html', 'workspace.html', 'file.html', 'docs.html', 'background.js']) {
     const original = await readFile(path.join(fixture.root, fixture.output, filename));
 
     await fixture.write(fixture.output + '/' + filename, '');

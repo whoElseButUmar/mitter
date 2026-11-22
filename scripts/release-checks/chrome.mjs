@@ -29,6 +29,7 @@ import { preparePickerHost } from './chrome-picker-host.mjs';
 import { checkTaskRecovery } from './chrome-task-recovery.mjs';
 import { checkStaticPreview } from './chrome-static-preview.mjs';
 import { checkAppRun } from './chrome-app-run.mjs';
+import { checkDocs } from './chrome-docs.mjs';
 import { checkConfirmation } from './chrome-confirmation.mjs';
 import { checkFeedback } from './chrome-feedback.mjs';
 import { assertNoSystemHost, installNativeHost } from './chrome-native.mjs';
@@ -167,6 +168,8 @@ async function main() {
     );
     await checkAppRun(executable, directory, path.join(directory, 'extension'), log.fd, signal);
     console.log('PASS: Run opens the completed app’s terminal session, reuses it and stops it.');
+    await checkDocs(chrome, app.session, id);
+    console.log('PASS: Help opens searchable docs with keyboard navigation, deep links and live schemas.');
     const workspacePage = path.join(directory, 'extension', 'workspace.html');
     const productionWorkspace = await readFile(workspacePage, 'utf8');
     const packagedStyles = await writePackagedFixture(

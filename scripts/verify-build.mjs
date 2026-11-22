@@ -147,6 +147,7 @@ export async function verifyBuild(root) {
     'sidepanel.html',
     'workspace.html',
     'file.html',
+    'docs.html',
     'preview-sandbox.html',
     'background.js',
   ]) {

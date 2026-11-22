@@ -9,6 +9,8 @@ Miter is a Chrome workspace for building and editing local projects. Give it a t
 3. Open Miter and choose **Create project** or **Open existing project**.
 4. Select **New task**, describe what you want, and start. For example, “Build a reading list where I can save books, mark them as read, and find them again after a reload.”
 
+Open **Help → Documentation** inside Miter for the user guide, troubleshooting, and the ChatGPT message and action reference.
+
 To install from source, use Node.js 26 or newer and run `node scripts/setup.mjs` from the repository root. Setup downloads the pinned dependencies and terminal font, builds both components, and installs them in the managed folder above. Local installer bundles are unsigned.
 
 After an update, open **Setup & connection → Build versions**. The extension and local helper should show the same release and build ID. If the helper shows an older release, run the installer or source setup to update it, then choose **Reload extension**. If Chrome already loads Miter from a source checkout, follow the source build instructions below or see the [installation and migration guide](scripts/installation/README.md) before switching folders.

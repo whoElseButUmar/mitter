@@ -338,6 +338,15 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
         <MenuButton
           label="Help"
           items={[
+            {
+              id: 'docs',
+              label: 'Documentation',
+              run: () => {
+                void chrome.tabs
+                  .create({ url: chrome.runtime.getURL('/docs.html') })
+                  .catch((error) => setNotice(errorMessage(error)));
+              },
+            },
             { id: 'setup', label: 'Setup & connection', run: () => setModal('health') },
             {
               id: 'diagnostics',

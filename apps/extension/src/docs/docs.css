@@ -1,0 +1,395 @@
+/* Docs uses the workspace palette and the browser's page scroll. */
+body:has(.docs-page) {
+  overflow: auto;
+}
+
+.docs-page {
+  min-height: 100%;
+  font-size: 1rem;
+}
+
+.docs-toolbar {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  display: grid;
+  grid-template-columns: minmax(155px, 1fr) minmax(220px, 440px) minmax(155px, 1fr);
+  align-items: center;
+  gap: 20px;
+  min-height: 65px;
+  padding: 10px clamp(16px, 4vw, 48px);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.docs-brand,
+.docs-workspace {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.docs-brand svg {
+  color: var(--accent);
+}
+
+.docs-brand span {
+  font-size: 1.125rem;
+  font-weight: 650;
+}
+
+.docs-brand strong {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.docs-workspace {
+  justify-self: end;
+  font-size: 0.875rem;
+}
+
+.docs-workspace:hover {
+  color: var(--accent);
+}
+
+.docs-search input {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--editor);
+  color: var(--text);
+  font-size: 0.9375rem;
+}
+
+.docs-search input::placeholder {
+  color: var(--muted);
+}
+
+.docs-layout {
+  display: grid;
+  grid-template-columns: minmax(200px, 245px) minmax(0, 840px);
+  gap: clamp(24px, 5vw, 76px);
+  max-width: 1250px;
+  padding: 0 clamp(16px, 4vw, 48px);
+  margin-inline: auto;
+}
+
+.docs-sidebar {
+  position: sticky;
+  top: 65px;
+  align-self: start;
+  max-height: calc(100dvh - 65px);
+  padding: 22px 10px 28px 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-right: 1px solid var(--line);
+}
+
+.docs-browse {
+  display: none;
+}
+
+.docs-nav-group + .docs-nav-group {
+  margin-top: 22px;
+}
+
+.docs-nav-group h2 {
+  margin: 0 0 5px;
+  padding-inline: 10px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+
+.docs-sidebar ul,
+.docs-result-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.docs-sidebar a {
+  display: block;
+  padding: 6px 10px;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 0.875rem;
+  line-height: 1.35;
+  text-decoration: none;
+}
+
+.docs-sidebar a:hover,
+.docs-sidebar a[aria-current='page'] {
+  background: var(--raised);
+}
+
+.docs-sidebar a[aria-current='page'] {
+  box-shadow: inset 2px 0 var(--accent);
+  color: var(--accent);
+}
+
+.docs-main {
+  min-width: 0;
+  padding: clamp(24px, 5vw, 58px) 0 64px;
+}
+
+.docs-article {
+  max-width: 76ch;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.docs-article h1 {
+  margin: 0 0 10px;
+  font-size: clamp(1.85rem, 4vw, 2.65rem);
+  line-height: 1.14;
+  letter-spacing: -0.025em;
+}
+
+.docs-article h2 {
+  margin: 30px 0 9px;
+  font-size: 1.25rem;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+}
+
+.docs-article h1:focus {
+  outline: none;
+}
+
+.docs-article p {
+  margin: 0 0 14px;
+}
+
+.docs-article .docs-summary {
+  margin-bottom: 24px;
+  color: var(--muted);
+  font-size: 1.0625rem;
+}
+
+.docs-article ol,
+.docs-article ul {
+  padding-inline-start: 24px;
+}
+
+.docs-article li + li {
+  margin-top: 6px;
+}
+
+.docs-article a {
+  color: var(--accent);
+  text-underline-offset: 3px;
+}
+
+.docs-article a:hover {
+  color: var(--text);
+}
+
+.docs-note {
+  padding: 12px 16px;
+  margin-block: 17px;
+  border-inline-start: 2px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  background: var(--panel);
+}
+
+.docs-note p {
+  margin: 0;
+}
+
+.docs-terms {
+  margin: 14px 0 20px;
+  border-block-start: 1px solid var(--line);
+}
+
+.docs-terms div {
+  display: grid;
+  grid-template-columns: minmax(135px, 1fr) minmax(0, 2.5fr);
+  gap: 6px 16px;
+  padding-block: 11px;
+  border-bottom: 1px solid var(--line);
+}
+
+.docs-terms dt {
+  font-weight: 650;
+}
+
+.docs-terms dd {
+  margin: 0;
+  color: var(--muted);
+}
+
+.docs-code {
+  min-width: 0;
+  margin: 16px 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+}
+
+.docs-code figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.docs-code button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.docs-copy-feedback {
+  margin-inline-start: auto;
+  font-size: 0.8125rem;
+}
+
+.docs-code pre {
+  max-height: 28rem;
+  margin: 0;
+  padding: 13px 16px;
+  overflow: auto;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.docs-code pre:focus-visible {
+  outline-offset: -3px;
+}
+
+.docs-schema {
+  padding: 8px 12px;
+  margin-block: 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.docs-schema summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+.docs-pager {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 14px 20px;
+  padding-top: 20px;
+  margin-top: 35px;
+  border-top: 1px solid var(--line);
+}
+
+.docs-pager span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.docs-article .docs-result-list {
+  padding: 0;
+}
+
+.docs-result-list a {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  text-decoration: none;
+}
+
+.docs-result-list a:hover {
+  background: var(--raised);
+}
+
+.docs-result-list span {
+  color: var(--muted);
+  font-size: 0.9375rem;
+}
+
+.docs-visually-hidden,
+.docs-skip:not(:focus) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.docs-skip:focus {
+  position: fixed;
+  z-index: 3;
+  top: 8px;
+  left: 8px;
+  padding: 8px 12px;
+  border-radius: 5px;
+  background: var(--accent);
+  color: var(--editor);
+}
+
+@media (max-width: 720px) {
+  .docs-toolbar {
+    grid-template-columns: 1fr auto;
+    gap: 8px 14px;
+  }
+
+  .docs-search {
+    grid-row: 2;
+    grid-column: 1;
+  }
+
+  .docs-workspace {
+    grid-row: 2;
+    grid-column: 2;
+  }
+
+  .docs-layout {
+    display: block;
+  }
+
+  .docs-sidebar {
+    position: static;
+    max-height: none;
+    padding: 14px 0;
+    overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .docs-browse {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .docs-sidebar nav:not(.docs-nav-open) {
+    display: none;
+  }
+
+  .docs-sidebar nav {
+    margin-top: 14px;
+  }
+
+  .docs-main {
+    padding-top: 24px;
+  }
+}
+
+@media (max-width: 420px) {
+  .docs-terms div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
