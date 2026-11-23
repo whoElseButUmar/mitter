@@ -1,5 +1,23 @@
 # Local installation
 
+## Install or update with npx
+
+Once published, `npx miter-install@latest` installs or updates Miter on macOS from a terminal with Node.js 22 or newer and npm. It downloads the prebuilt bundle for your Mac, checks the SHA-256 recorded in the npm package, and runs the managed installer. Use the same command for updates. It keeps your project registrations, task history, and settings.
+
+On first install, use **Load unpacked** in `chrome://extensions` and pick the folder printed by the installer. For updates, click **Reload** on Miter’s extension card. Add `--chromium` for Chromium or `--destination=PATH` for a custom managed folder. Use the same options when updating a custom installation.
+
+### Prepare an npm release
+
+Run `pnpm build` and `pnpm bundle:local` on each Mac architecture you plan to support. Upload the resulting ZIPs to an HTTPS release directory where each ZIP can be downloaded directly. Keep the generated `.sha256` files beside the local ZIPs for packaging.
+
+```sh
+pnpm bundle:npm https://github.com/OWNER/REPO/releases/download/TAG path/to/apple-silicon.zip path/to/intel.zip
+```
+
+Pass the ZIP paths exactly as printed by `pnpm bundle:local`. The command accepts one ZIP per architecture and requires matching versions. It creates the `miter-install` tarball in `.cache/npm/`. Smoke-test the final tarball with `npx --package=/absolute/path/to/miter-install-VERSION.tgz miter-install` before publishing it. Publishing the tarball with npm’s `latest` tag makes that version available to new installs and updates.
+
+## Install from source or a ZIP
+
 On macOS with Node.js 26 or newer, run `node scripts/setup.mjs` from the checkout. Setup installs dependencies using the pinned pnpm version and existing `allowBuilds` policy, builds the app, checks the native runtime, and installs a managed copy in `~/Library/Application Support/Miter`. Unknown dependency build scripts stop setup for review; setup never approves them automatically.
 
 For a first installation, load `~/Library/Application Support/Miter/extension` using Chrome's **Extensions → Developer mode → Load unpacked**. If Chrome already loads Miter from this managed folder, reload Miter in `chrome://extensions` after an update, then close and reopen the workspace.

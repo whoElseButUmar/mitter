@@ -25,6 +25,7 @@
     "dev": "pnpm build:host && pnpm --filter @mitter/extension dev",
     "setup": "node scripts/setup.mjs",
     "bundle:local": "node scripts/installation/bundle.mjs",
+    "bundle:npm": "node scripts/installation/npm/package.mjs",
     "mitter": "node dist/apps/host/src/cli.js",
     "register": "pnpm verify:build && node scripts/register-host.mjs",
     "doctor": "node scripts/doctor.mjs",
