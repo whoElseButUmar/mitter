@@ -1,84 +1,50 @@
+<img align="right" src="apps/extension/public/icon-128.png" width="56" height="56" alt="">
+
 # Miter
 
-Miter is a Chrome workspace for building and editing local projects. Give it a task in plain language. The extension works with your signed-in ChatGPT session, and a native host applies file edits and runs checks on your computer. You can also configure a local GGUF model.
+Build and run local projects from Chrome with your signed-in ChatGPT session. Open a folder, describe what you want to change, and follow the edits and checks in Miter.
+
+Miter and ChatGPT exchange structured JSON. A local helper applies edits, runs checks, and sends results back so the task can continue. When a command needs approval, you review it in Miter.
 
 ## Get started on macOS
 
-1. Unzip the Miter bundle and open **Install Miter.command**. The bundle includes Node and its dependencies.
-2. In Chrome, open **Extensions**, enable **Developer mode**, choose **Load unpacked**, and select `~/Library/Application Support/Miter/extension`.
-3. Open Miter and choose **Create project** or **Open existing project**.
-4. Select **New task**, describe what you want, and start. For example, “Build a reading list where I can save books, mark them as read, and find them again after a reload.”
-
-Open **Help → Documentation** inside Miter for the user guide, troubleshooting, and the ChatGPT message and action reference.
-
-### Install or update with npm
-
-The npm package is pending publication. Once it’s available, use the same command for first installs and updates with Node.js 22 or newer.
+With Chrome and Node.js 26 or newer, clone and install Miter.
 
 ```sh
-npx miter-install@latest
+git clone https://github.com/whoElseButUmar/mitter.git
+cd mitter
+node scripts/setup.mjs
 ```
 
-Use **Load unpacked** in Chrome on first install. After updates, reload Miter’s extension card and reopen its workspace. See the [installation guide](scripts/installation/README.md#install-or-update-with-npx) for custom install options.
+If you have the Mac installer ZIP, unzip it and open **Install Miter.command**. It includes Node.
 
-### Source setup and troubleshooting
+1. Open `chrome://extensions` and turn on **Developer mode**.
+2. Choose **Load unpacked** and select `~/Library/Application Support/Miter/extension`, or the folder printed by your installer.
+3. Open Miter from Chrome’s Extensions menu. Use the same profile where you sign in to ChatGPT.
 
-To install from source, use Node.js 26 or newer and run `node scripts/setup.mjs` from the repository root. Setup downloads the pinned dependencies and terminal font, builds both components, and installs them in the managed folder above. Local installer bundles are unsigned.
+The npm installer is pending publication. Once it’s available, `npx miter-install@latest` will handle installs and updates with Node.js 22 or newer. Reload Miter’s extension card after updating. [Install, update, and uninstall guide](scripts/installation/README.md)
 
-After an update, open **Setup & connection → Build versions**. The extension and local helper should show the same release and build ID. If the helper shows an older release, run the installer or source setup to update it, then choose **Reload extension**. If Chrome already loads Miter from a source checkout, follow the source build instructions below or see the [installation and migration guide](scripts/installation/README.md) before switching folders.
+## Try a task
 
-To remove the managed Mac install, quit Chrome and run `miter uninstall`. To clear its local data as well, use `miter uninstall --purge`. See the [uninstall instructions](scripts/installation/README.md#uninstall) for confirmation and Chrome cleanup.
+Choose **Create project** or **Open existing project**, then **New task**.
 
-For a database-backed starting point, choose **Create project → Vite + TypeScript + SQLite**. The starter includes a working notes form, a Node API and a SQLite database. Choose **Run app** on the project to install its dependencies and open the app. Outside Miter, use the commands in the generated README.
+> Build a reading list where I can save books, mark them as read, and find them again after a reload.
 
-## How a task runs
+You can paste a screenshot into a new task or a follow-up. For a database-backed starting point, choose the **Vite + TypeScript + SQLite** starter. For supported web apps, open the live preview and manage its server from the project terminal.
 
-The extension sends the task and relevant project context to the selected model. The native host checks proposed file edits against recorded reads, journals changes, and runs registered project commands with approval. Approved commands run with your user permissions. Stopping a task cannot undo their external effects. Projects and task history live in `~/.mitter` or the configured `MITTER_HOME`.
+## Documentation
 
-In **New task** or **Follow up**, choose **Attach images** or paste a screenshot into the draft. You can add up to four PNG, JPEG, WebP, or GIF images of up to 5 MiB each. Use **Remove** to take one out. Images stay with the draft through rewrites and reloads in the same Chrome profile. When the task or queued follow-up runs, Miter uploads the images to its linked ChatGPT conversation before sending the prompt.
+Open **Help → Documentation** in Miter for the full user guide, setup help, and examples of the JSON messages.
 
-Ask a ChatGPT task to find a reusable web image or generate an illustration and use it in your app. Miter opens ChatGPT’s Create image mode for original illustrations, then saves the result to the project. The importer accepts public HTTPS image files and generated images from the linked chat, up to 5 MiB each.
-
-For a framework or another language, ask for the stack you want. Miter can write project files such as `package.json`, `pyproject.toml` and `Cargo.toml`. If you say “I’ll run pnpm install,” Miter opens the setup dialog once the project manifest is ready. The dialog shows the command, working folder, purpose and expected changes. You can copy it, decline, suggest an alternative, or approve it once with **Run it**. **I’ll do it myself** opens a fresh terminal in the task folder and waits for you to enter a command. Miter reports its exit status and limited, redacted output to the task. Your keystrokes and ordinary shell history stay private.
-
-**Ponytail** applies to coding tasks by default. It directs the model to reuse existing code and shared components, keep changes easy to read, and check the behavior it changed. **Caveman** keeps task updates concise. **No AI Slop** guides writing and UI copy. New local and ChatGPT tasks get the bundled guidance automatically. See the [skill definitions and credits](packages/protocol/src/task-skills/README.md).
-
-For dependency-free Node projects, Miter runs the `*.test.mjs` files a task creates or edits in a sandbox and records the result at completion. Projects that need installed packages can use a registered test command.
-
-For supported web apps, Miter checks shared controls, runs domain tests, and exercises browser journeys in isolated Chrome profiles. It flags a status printed twice in the same row, subtitles that repeat nearby controls or empty-state instructions, and common promotional phrases, unless you asked for that copy. Every scored Lighthouse category must reach 100 on desktop and mobile. Findings go back to the model for repair within the task budget. The reports describe the tested version and workflows. See [what the quality checks cover](apps/host/src/core/quality/README.md).
-
-When a coding task builds or changes a static HTML, Vite, or Next.js app, Miter opens its preview in Chrome after verification. To launch an existing Vite or Next.js project, open its folder, choose **New task**, and enter **“Install dependencies with pnpm, start the dev server, and open the app preview.”** Miter installs dependencies in a private working copy and opens the app when the server is ready. This launch runs locally without a chat account.
-
-Choose **Run** on a completed app to start it in the project’s **Terminal**. Its header shows the selected app with **Open app**, **Restart**, and **Stop** controls; hover or focus an icon for its label. Server status stays visible, and **Logs** opens startup output when needed. Use the session picker to switch apps and shells, and **Settings → Terminal appearance** to change fonts and colors. Choosing **Run** again selects the existing session. Apps with a Node backend can serve an API and keep data across preview sessions. **Setup & connection** shows how to recover a disconnected host or chat. For scripting, the [terminal command](apps/host/src/cli/README.md) starts and monitors tasks through the same running extension.
-
-To edit a specific control, choose **Point to edit** in the running app’s terminal. Navigate to the screen in the picker, select the element, and describe the change. Miter opens a task in the same project folder with the route, viewport, accessible name and selector as model context. The cropped screenshot stays with the task and can be reopened under **Selected element**.
-
-To keep a regression test for a project, open **Actions → Workflows** and start a recording. Exercise the app in the recording window using test data. Choose the element you expect to see at the end, name the workflow, and save it. Enable the restart check to verify that the result survives a fresh browser and server. Miter replays saved workflows on disposable data during web app verification. You can also replay or remove a workflow from the same menu.
-
-## Where to find the code
-
-| Location                                                                        | Responsibility                                                                                                   |
-| ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| [apps/extension](apps/extension)                                                | Chrome workspace, background controller, preview, and terminal UI. Built with SolidJS and WXT.                   |
-| [packages/bridge](packages/bridge/README.md)                                    | Chat tabs, prompt delivery, reply reading, and reconnecting interrupted tasks.                                   |
-| [packages/protocol](packages/protocol/README.md)                                | Shared message schemas, task skills, and validation of proposed actions.                                         |
-| [apps/host](apps/host/README.md)                                                | Native messaging, project files, SQLite state, command approvals, and task execution.                            |
-| [apps/inference](apps/inference/README.md)                                      | Optional local model process. Install its runtime with `pnpm models:install` and select a GGUF file in Settings. |
-| [packages/ui](packages/ui/README.md) and [packages/terminal](packages/terminal) | Shared UI behavior, preview messages, and terminal settings.                                                     |
-| [scripts](scripts)                                                              | Installation, build verification, diagnostics, and release checks.                                               |
+- [Terminal commands](apps/host/src/cli/README.md) to start and monitor tasks.
+- [App previews](apps/host/src/core/preview/README.md) and [browser checks](apps/host/src/core/quality/README.md), including accessibility and Lighthouse.
+- [ChatGPT bridge](packages/bridge/README.md), [JSON protocol](packages/protocol/README.md), and [bundled skills](packages/protocol/src/task-skills/README.md).
+- [Local model runtime](apps/inference/README.md) for an optional GGUF model.
 
 ## Development
 
-From a source checkout with Node.js 26 or newer:
+After source setup, run `pnpm check` for formatting, type checks, and tests. Use `pnpm dev` to work on the SolidJS extension. `pnpm build` verifies the native helper and writes the unpacked extension to `apps/extension/.output/chrome-mv3`.
 
-```sh
-node scripts/setup.mjs --build-only
-pnpm check
-pnpm dev
-```
+See the [native host guide](apps/host/README.md), [coding standards](CODING_STANDARDS.md), and [release checks](scripts/release-checks/README.md) when contributing.
 
-`pnpm build` builds and verifies both the native helper and the unpacked Chrome extension. Its output is `apps/extension/.output/chrome-mv3`. To run directly from the checkout, run `pnpm register` after the build to point Chrome at the matching source helper, then load that output folder using **Load unpacked** or reload the existing source extension. `pnpm build:extension` rebuilds just the extension.
-
-`pnpm check` runs formatting, source standards, type checks, and tests. `pnpm run doctor` checks Miter’s native host registration and installed build. `pnpm bundle:local` produces the macOS installer folder and ZIP for the current architecture. For an offline font build, point `MITER_FONT_FILE` and `MITER_FONT_LICENSE` at the licensed terminal font and its SIL OFL license.
-
-See the [coding standards](CODING_STANDARDS.md) and [release checks](scripts/release-checks/README.md) for contributor instructions. Miter is a release candidate. [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY.md).
+[MIT license](LICENSE) · [Third-party notices](THIRD_PARTY.md)
