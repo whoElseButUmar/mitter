@@ -171,8 +171,16 @@ body:has(.docs-page) {
 }
 
 .docs-sidebar a[aria-current='page'] {
-  box-shadow: inset 2px 0 var(--accent);
+  position: relative;
   color: var(--accent);
+}
+
+.docs-sidebar a[aria-current='page']::before {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  border-inline-start: 2px solid currentColor;
+  content: '';
 }
 
 .docs-main {
