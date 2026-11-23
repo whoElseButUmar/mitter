@@ -4,14 +4,24 @@ Miter is a Chrome workspace for building and editing local projects. Give it a t
 
 ## Get started on macOS
 
-The npm install and update command will be available once the first package is published. The [installation guide](scripts/installation/README.md#install-or-update-with-npx) covers the workflow.
-
 1. Unzip the Miter bundle and open **Install Miter.command**. The bundle includes Node and its dependencies.
 2. In Chrome, open **Extensions**, enable **Developer mode**, choose **Load unpacked**, and select `~/Library/Application Support/Miter/extension`.
 3. Open Miter and choose **Create project** or **Open existing project**.
 4. Select **New task**, describe what you want, and start. For example, “Build a reading list where I can save books, mark them as read, and find them again after a reload.”
 
 Open **Help → Documentation** inside Miter for the user guide, troubleshooting, and the ChatGPT message and action reference.
+
+### Install or update with npm
+
+The npm package is pending publication. Once it’s available, use the same command for first installs and updates with Node.js 22 or newer.
+
+```sh
+npx miter-install@latest
+```
+
+Use **Load unpacked** in Chrome on first install. After updates, reload Miter’s extension card and reopen its workspace. See the [installation guide](scripts/installation/README.md#install-or-update-with-npx) for custom install options.
+
+### Source setup and troubleshooting
 
 To install from source, use Node.js 26 or newer and run `node scripts/setup.mjs` from the repository root. Setup downloads the pinned dependencies and terminal font, builds both components, and installs them in the managed folder above. Local installer bundles are unsigned.
 

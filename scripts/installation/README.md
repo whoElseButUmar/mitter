@@ -2,7 +2,13 @@
 
 ## Install or update with npx
 
-Once published, `npx miter-install@latest` installs or updates Miter on macOS from a terminal with Node.js 22 or newer and npm. It downloads the prebuilt bundle for your Mac, checks the SHA-256 recorded in the npm package, and runs the managed installer. Use the same command for updates. It keeps your project registrations, task history, and settings.
+The npm package is pending publication. Once it’s available, run this command on macOS with Node.js 22 or newer for both installs and updates.
+
+```sh
+npx miter-install@latest
+```
+
+The command downloads the prebuilt bundle for your Mac, verifies its SHA-256 checksum, and runs the managed installer. It keeps your project registrations, task history, and settings during an update.
 
 On first install, use **Load unpacked** in `chrome://extensions` and pick the folder printed by the installer. For updates, click **Reload** on Miter’s extension card. Add `--chromium` for Chromium or `--destination=PATH` for a custom managed folder. Use the same options when updating a custom installation.
 

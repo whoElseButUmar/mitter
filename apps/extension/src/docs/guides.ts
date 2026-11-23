@@ -68,6 +68,16 @@ export const guideTopics: DocsTopic[] = [
           'Check for Helper connected. If you want to run a ChatGPT task, use the same Chrome profile where you are signed in to ChatGPT and grant site access when Chrome asks.',
         ],
       },
+      { kind: 'heading', text: 'Install or update with npm' },
+      {
+        kind: 'text',
+        text: 'The npm package is pending publication. Once it’s available, use this command for both installs and updates with Node.js 22 or newer.',
+      },
+      { kind: 'code', language: 'sh', text: 'npx miter-install@latest' },
+      {
+        kind: 'text',
+        text: 'On first install, load the folder the installer prints using the Chrome steps above. After an update, reload Miter’s extension card and reopen the workspace.',
+      },
       { kind: 'heading', text: 'Try a reading list' },
       {
         kind: 'steps',
@@ -660,7 +670,7 @@ export const guideTopics: DocsTopic[] = [
       {
         kind: 'steps',
         items: [
-          'Run the updated Install Miter.command, or run source setup from the updated checkout.',
+          'Run the updated Install Miter.command or source setup. Once the npm package is published, you can also run npx miter-install@latest.',
           'Open chrome://extensions in the profile where you use Miter. Reload its extension card. Close and reopen the workspace.',
           'Open Help → Setup & connection → Build versions and check that the helper and extension match.',
         ],
