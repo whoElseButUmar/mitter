@@ -8,7 +8,7 @@ Miter and ChatGPT exchange structured JSON. A local helper applies edits, runs c
 
 ## Get started on macOS
 
-Use Chrome and Node.js 22 or newer to install Miter.
+The npm installer is live for Apple silicon Macs. Use Chrome and Node.js 22 or newer. [View on npm](https://www.npmjs.com/package/miter-install)
 
 ```sh
 npx miter-install@latest
