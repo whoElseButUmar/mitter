@@ -2,6 +2,8 @@
 
 # Miter
 
+[Website](https://whoelsebutumar.github.io/mitter/) · [Docs](https://whoelsebutumar.github.io/mitter/docs/) · [Install](https://whoelsebutumar.github.io/mitter/install/)
+
 Build and run local projects from Chrome with your signed-in ChatGPT session. Open a folder, describe what you want to change, and follow the edits and checks in Miter.
 
 Miter and ChatGPT exchange structured JSON. A local helper applies edits, runs checks, and sends results back so the task can continue. When a command needs approval, you review it in Miter.
