@@ -1,3 +1,4 @@
+import './host-source-loader.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
@@ -22,6 +23,7 @@ import { digest, inventory, copyTree } from '../installation/files.mjs';
 import { buildLocalBundle } from '../installation/bundle.mjs';
 import { verifyBundle } from '../installation/verification.mjs';
 import { installLocalBundle, parseInstallArguments } from '../installation/install.mjs';
+import { parseUninstallArguments, uninstallManaged } from '../installation/uninstall.mjs';
 import { copyDependencies } from '../installation/dependencies.mjs';
 
 const macOnly = process.platform !== 'darwin';
@@ -62,6 +64,7 @@ async function fixtureBundle(directory) {
     'brand/extension-identity.json': JSON.stringify(identity),
     'scripts/verify-build.mjs': 'console.log("fixture assets verified");',
     'scripts/installation/verify-runtime.mjs': 'console.log("fixture runtime verified");',
+    'scripts/installation/uninstall.mjs': 'console.log(JSON.stringify(process.argv.slice(2)));',
     'dist/apps/host/src/native.js': 'console.log("fixture-host=" + process.execPath);',
     'dist/apps/host/src/cli.js':
       'console.log(JSON.stringify({cwd:process.cwd(),args:process.argv.slice(2),home:process.env.MITTER_HOME}));',
@@ -101,6 +104,160 @@ test('local installer arguments reject repeated flags and empty or unknown overr
     });
   }
 });
+
+test('uninstall rejects unknown flags and requires an explicit purge flag', () => {
+  assert.deepEqual(parseUninstallArguments(['--dry-run']), { purge: false, dryRun: true, help: false });
+  assert.equal(parseUninstallArguments(['--purge']).purge, true);
+  assert.throws(() => parseUninstallArguments(['--force']), /Usage/);
+  assert.throws(() => parseUninstallArguments(['--purge', '--purge']), /Usage/);
+});
+
+test(
+  'managed uninstall removes only its own installation and registrations',
+  { skip: macOnly },
+  async (context) => {
+    const directory = await temporary(context);
+    const bundle = await fixtureBundle(directory);
+    const home = await realpath(directory);
+    const dataHome = path.join(home, 'empty-state');
+    const manifestDirectory = path.join(home, 'custom host registrations');
+    const installed = await installLocalBundle({ bundle, home, dataHome, manifestDirectory });
+    const shortcut = path.join(home, '.local/bin/miter');
+    const { registrationManifest, registrationPaths } = await import('../installation/registration.mjs');
+    const other = registrationPaths({
+      platform: 'darwin',
+      root: bundle,
+      home,
+      browser: 'chromium',
+      nativeHost: identity.nativeHost,
+    });
+    const foreign = JSON.stringify(registrationManifest(identity, path.join(home, 'other-setup/host')));
+
+    await mkdir(other.manifestDirectory, { recursive: true });
+    await writeFile(other.manifestPath, foreign);
+    assert.deepEqual(JSON.parse(execFileSync(shortcut, ['uninstall', '--dry-run'], { encoding: 'utf8' })), [
+      home,
+      installed.manifest,
+      '--dry-run',
+    ]);
+
+    const options = { home, manifestPath: installed.manifest, release: installed.release };
+    const output = [];
+    const ui = {
+      output: (line) => {
+        output.push(line);
+      },
+      confirm: () => assert.fail('Unexpected confirmation'),
+    };
+    await uninstallManaged({ ...options, dryRun: true }, ui);
+    assert.ok(output.includes('  ' + installed.destination));
+    assert.ok(output.includes('  ' + installed.manifest));
+    assert.ok(output.includes('  ' + shortcut));
+    assert.ok(!output.includes('  ' + other.manifestPath));
+    assert.equal((await lstat(installed.destination)).isDirectory(), true);
+
+    const unknown = path.join(installed.destination, 'my-project');
+    await mkdir(unknown);
+    await assert.rejects(uninstallManaged(options, ui), /unrecognized item/);
+    assert.equal((await lstat(unknown)).isDirectory(), true);
+    await rm(unknown, { recursive: true });
+
+    const otherManifest = path.join(home, 'other-manifest.json');
+    await rename(other.manifestPath, otherManifest);
+    await symlink(otherManifest, other.manifestPath);
+    await uninstallManaged(options, ui);
+    await assert.rejects(lstat(installed.destination), { code: 'ENOENT' });
+    await assert.rejects(lstat(installed.manifest), { code: 'ENOENT' });
+    await assert.rejects(lstat(shortcut), { code: 'ENOENT' });
+    await assert.rejects(lstat(dataHome), { code: 'ENOENT' });
+    assert.equal((await lstat(other.manifestPath)).isSymbolicLink(), true);
+    assert.equal(await readFile(other.manifestPath, 'utf8'), foreign);
+    assert.equal((await lstat(bundle)).isDirectory(), true);
+  },
+);
+
+test(
+  'purge requires confirmation and preserves saved projects, worktrees and unrelated files',
+  { skip: macOnly },
+  async (context) => {
+    const directory = await temporary(context);
+    const bundle = await fixtureBundle(directory);
+    const home = await realpath(directory);
+    const data = path.join(home, 'custom-state');
+    const backup = path.join(data, 'backups/state.sqlite');
+    const worktree = path.join(data, 'worktrees/task/project.txt');
+    const databaseFile = path.join(data, 'mitter.sqlite');
+    const project = path.join(home, 'source-project');
+    const unrelated = path.join(data, 'keep.txt');
+    const { openNodeSqlite } = await import('../../apps/host/src/adapters/sqlite.js');
+    const { Store } = await import('../../apps/host/src/core/database.js');
+    const { acquireHostLock } = await import('../../apps/host/src/core/host-lock.js');
+
+    function saveProject(root) {
+      const database = openNodeSqlite(databaseFile);
+      try {
+        new Store(database).saveProject({
+          id: 'project',
+          name: 'Saved project',
+          root,
+          profiles: [],
+          revision: 0,
+        });
+      } finally {
+        database.close();
+      }
+    }
+
+    await mkdir(path.dirname(backup), { recursive: true });
+    await mkdir(path.dirname(worktree), { recursive: true });
+    await mkdir(project);
+    await writeFile(path.join(project, 'index.html'), 'project source');
+    await writeFile(backup, 'saved backup');
+    await writeFile(worktree, 'project source');
+    await writeFile(unrelated, 'other data');
+    await symlink(project, path.join(path.dirname(backup), 'project-link'));
+    saveProject(path.dirname(backup));
+    const installed = await installLocalBundle({ bundle, home, dataHome: data });
+    const output = [];
+    const options = { home, manifestPath: installed.manifest, release: installed.release, purge: true };
+
+    await uninstallManaged(options, {
+      output: (line) => {
+        output.push(line);
+      },
+      confirm: () => 'cancel',
+    });
+
+    assert.ok(output.includes('  ' + path.dirname(backup)));
+    assert.ok(!output.includes('  ' + path.join(data, 'worktrees')));
+    assert.ok(output.includes('Uninstall canceled.'));
+    assert.equal(await readFile(backup, 'utf8'), 'saved backup');
+    assert.equal(await readFile(worktree, 'utf8'), 'project source');
+    assert.equal((await lstat(installed.manifest)).isFile(), true);
+    await assert.rejects(lstat(path.join(data, 'host-lease.sqlite')), { code: 'ENOENT' });
+
+    const confirmed = { output() {}, confirm: () => 'PURGE' };
+    const unlock = await acquireHostLock(data);
+    try {
+      await assert.rejects(uninstallManaged(options, confirmed), /Another Miter host is running/);
+    } finally {
+      await unlock();
+    }
+    await assert.rejects(uninstallManaged(options, confirmed), /A saved project is inside a removal path/);
+    assert.equal(await readFile(backup, 'utf8'), 'saved backup');
+    assert.equal((await lstat(installed.manifest)).isFile(), true);
+
+    saveProject(project);
+    await uninstallManaged(options, confirmed);
+    await assert.rejects(lstat(installed.destination), { code: 'ENOENT' });
+    await assert.rejects(lstat(databaseFile), { code: 'ENOENT' });
+    await assert.rejects(lstat(backup), { code: 'ENOENT' });
+    await assert.rejects(lstat(path.join(data, 'host-lease.sqlite')), { code: 'ENOENT' });
+    assert.equal(await readFile(path.join(project, 'index.html'), 'utf8'), 'project source');
+    assert.equal(await readFile(worktree, 'utf8'), 'project source');
+    assert.equal(await readFile(unrelated, 'utf8'), 'other data');
+  },
+);
 
 test('dependency packaging retains distinct transitive versions without external links', async (context) => {
   const directory = await temporary(context);

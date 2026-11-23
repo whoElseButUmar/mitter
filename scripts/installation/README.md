@@ -23,3 +23,18 @@ Miter state stays in `~/.mitter` or the configured data folder. Without an expli
 For a read-only check, run `node scripts/doctor.mjs` (`--chromium` for Chromium), or use the installed release's `runtime/node` with its `scripts/doctor.mjs`. Missing production assets, required dependencies, runtime prerequisites or registration return a nonzero exit code. Diagnostics check launcher permissions, referenced runtime paths, and managed release integrity without executing the launcher; stale registrations point to rerunning the installer. Diagnostics do not prove a live Chrome connection; Miter's connection panel shows that state.
 
 The installer includes `bin/miter` for terminal task control and safely links `~/.local/bin/miter` when that name is free or already points to this installation. It leaves unrelated commands and shell profiles unchanged. If `~/.local/bin` is not on PATH, use the full command path printed by setup. Source registration similarly provides `~/.mitter/native/miter`. See the [terminal command reference](../../apps/host/src/cli/README.md) for start, status, watch and stop commands.
+
+## Uninstall
+
+Quit Chrome to stop Miter's local helper. Then choose one command.
+
+| Command                   | What it removes                                                                                                                                                              |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `miter uninstall`         | The managed extension files, local helper, matching browser registration and `miter` shortcut. Saved local data is available on reinstall.                                   |
+| `miter uninstall --purge` | The managed install plus its local tasks, settings, edit history, backups, quality reports and saved preview databases. Review the listed paths and type `PURGE` to confirm. |
+
+Add `--dry-run` to either command to see the paths first. If `miter` is unavailable on your PATH, use `"$HOME/Library/Application Support/Miter/bin/miter"` or the command path printed by your installer. Project folders, the source checkout, and isolated worktrees are preserved.
+
+Open `chrome://extensions` in each profile where you loaded Miter and choose **Remove**. Chrome clears that profile's Miter settings and unsent drafts when you remove the extension.
+
+These commands are for the managed macOS installation. For a checkout registered directly with `pnpm register`, use `pnpm register --remove` from that checkout to unregister its helper.

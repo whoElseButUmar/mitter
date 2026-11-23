@@ -48,6 +48,13 @@ export function parseStoredJSON(row: unknown): unknown {
   return parsed;
 }
 
+export function readStoredProjects(database: SqlDatabase): Project[] {
+  return database
+    .prepare('SELECT value FROM projects ORDER BY rowid')
+    .all()
+    .map((row) => projectSchema.parse(parseStoredJSON(row)));
+}
+
 export class Store {
   constructor(readonly db: SqlDatabase) {
     const version = databaseVersion(db);
@@ -126,10 +133,7 @@ export class Store {
   }
 
   projects(): Project[] {
-    return this.db
-      .prepare('SELECT value FROM projects ORDER BY rowid')
-      .all()
-      .map((row) => projectSchema.parse(parseStoredJSON(row)));
+    return readStoredProjects(this.db);
   }
 
   workers(): Worker[] {

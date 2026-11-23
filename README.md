@@ -15,6 +15,8 @@ To install from source, use Node.js 26 or newer and run `node scripts/setup.mjs`
 
 After an update, open **Setup & connection → Build versions**. The extension and local helper should show the same release and build ID. If the helper shows an older release, run the installer or source setup to update it, then choose **Reload extension**. If Chrome already loads Miter from a source checkout, follow the source build instructions below or see the [installation and migration guide](scripts/installation/README.md) before switching folders.
 
+To remove the managed Mac install, quit Chrome and run `miter uninstall`. To clear its local data as well, use `miter uninstall --purge`. See the [uninstall instructions](scripts/installation/README.md#uninstall) for confirmation and Chrome cleanup.
+
 For a database-backed starting point, choose **Create project → Vite + TypeScript + SQLite**. The starter includes a working notes form, a Node API and a SQLite database. Choose **Run app** on the project to install its dependencies and open the app. Outside Miter, use the commands in the generated README.
 
 ## How a task runs

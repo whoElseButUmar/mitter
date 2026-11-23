@@ -284,6 +284,7 @@ export const terminalHelp = `Miter — terminal task control
   miter stop TASK_ID [--request-id UUID] [--json]
   miter resume TASK_ID [--watch] [--request-id UUID] [--json]
   miter operation REQUEST_ID [--json]
+  miter uninstall [--purge] [--dry-run]   Managed macOS installation only
   miter --version
 
 Start options:

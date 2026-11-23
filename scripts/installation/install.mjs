@@ -208,6 +208,11 @@ export async function installLocalBundle({
             nodeExecutable: path.join(releaseRoot, 'runtime/node'),
             cliScript: path.join(releaseRoot, 'dist/apps/host/src/cli.js'),
             dataDirectory: paths.dataDirectory,
+            uninstall: {
+              script: path.join(releaseRoot, 'scripts/installation/uninstall.mjs'),
+              home,
+              manifestPath: paths.manifestPath,
+            },
           }),
           0o700,
         );

@@ -126,7 +126,7 @@ export function launcherSource(options) {
 }
 
 /** The terminal client preserves cwd and literal arguments; it never launches a second host. */
-export function cliLauncherSource({ platform, nodeExecutable, cliScript, dataDirectory }) {
+export function cliLauncherSource({ platform, nodeExecutable, cliScript, dataDirectory, uninstall }) {
   if (platform === 'win32') {
     if (/[\r\n%"]/.test(nodeExecutable + cliScript + dataDirectory)) {
       throw new Error('For Windows registration, use an installation path without %, quotes, or newlines.');
@@ -137,9 +137,20 @@ export function cliLauncherSource({ platform, nodeExecutable, cliScript, dataDir
     );
   }
 
+  let maintenance = '';
+
+  if (uninstall) {
+    const command = [nodeExecutable, uninstall.script, uninstall.home, uninstall.manifestPath]
+      .map(quotePosix)
+      .join(' ');
+
+    maintenance = `if [ "$1" = uninstall ]; then\n  shift\n  exec ${command} "$@"\nfi\n`;
+  }
+
   return (
     '#!/bin/sh\n' +
     `export MITTER_HOME=${quotePosix(dataDirectory)}\n` +
+    maintenance +
     `exec ${quotePosix(nodeExecutable)} ${quotePosix(cliScript)} "$@"\n`
   );
 }
