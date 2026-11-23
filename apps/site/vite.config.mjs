@@ -1,6 +1,7 @@
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
+import solid from 'vite-plugin-solid';
 
 export default defineConfig({
   build: {
@@ -15,5 +16,6 @@ export default defineConfig({
     host: '127.0.0.1',
     allowedHosts: ['terminal.local'],
   },
-  plugins: [react()],
+  resolve: { dedupe: ['solid-js'] },
+  plugins: [solid({ include: /\.tsx$/ }), react({ include: /\.jsx$/ })],
 });

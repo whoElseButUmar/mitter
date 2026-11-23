@@ -23,7 +23,7 @@ body:has(.docs-page) {
 }
 
 .docs-brand,
-.docs-workspace {
+.docs-toolbar-links a {
   display: inline-flex;
   width: fit-content;
   align-items: center;
@@ -46,13 +46,41 @@ body:has(.docs-page) {
   font-weight: 500;
 }
 
-.docs-workspace {
+.docs-toolbar-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 16px;
   justify-self: end;
   font-size: 0.875rem;
 }
 
-.docs-workspace:hover {
+.docs-toolbar-links a {
+  min-height: 2rem;
+}
+
+.docs-toolbar-links a:hover {
   color: var(--accent);
+}
+
+.docs-page :where(button, summary, input, a, pre):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.docs-page button {
+  min-height: 2rem;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--text);
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.docs-page button:hover {
+  background: var(--hover);
 }
 
 .docs-search input {
@@ -88,6 +116,20 @@ body:has(.docs-page) {
   overflow: auto;
   overscroll-behavior: contain;
   border-right: 1px solid var(--line);
+}
+
+.docs-sidebar,
+.docs-code pre {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb, #777a6d) transparent;
+}
+
+@media (forced-colors: active) {
+  .docs-sidebar,
+  .docs-code pre {
+    scrollbar-width: auto;
+    scrollbar-color: auto;
+  }
 }
 
 .docs-browse {
@@ -342,17 +384,17 @@ body:has(.docs-page) {
 
 @media (max-width: 720px) {
   .docs-toolbar {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     gap: 8px 14px;
   }
 
   .docs-search {
     grid-row: 2;
-    grid-column: 1;
+    grid-column: 1 / -1;
   }
 
-  .docs-workspace {
-    grid-row: 2;
+  .docs-toolbar-links {
+    grid-row: 1;
     grid-column: 2;
   }
 

@@ -1,8 +1,14 @@
+import { ChevronDown, Copy } from 'lucide-solid';
+import type { JSX } from 'solid-js';
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
-import { Icon, Mark } from '../icons';
-import { searchTopics, topicGroups, topics } from './catalog';
-import type { DocsBlock, DocsSchema } from './content-types';
-import { schemaText, schemaTitle } from './schema-reference';
+import { searchTopics, topicGroups, topics } from './catalog.js';
+import type { DocsBlock, DocsSchema } from './content-types.js';
+import { schemaText, schemaTitle } from './schema-reference.js';
+
+type DocsPageProps = {
+  brandMark: JSX.Element;
+  toolbarLinks: { label: string; href: string }[];
+};
 
 function CodeSample(props: { text: string; caption: string }) {
   const [status, setStatus] = createSignal('');
@@ -24,7 +30,7 @@ function CodeSample(props: { text: string; caption: string }) {
           {status()}
         </span>
         <button type="button" onClick={() => void copy()} aria-label={'Copy ' + props.caption}>
-          <Icon name="copy" /> Copy
+          <Copy size={16} aria-hidden="true" /> Copy
         </button>
       </figcaption>
       <pre tabindex="0" aria-label={props.caption}>
@@ -110,7 +116,7 @@ function ArticleBlock(props: { block: DocsBlock }) {
   }
 }
 
-export function DocsPage() {
+export function DocsPage(props: DocsPageProps) {
   const introduction = topics.find((topic) => topic.id === 'introduction');
   if (!introduction) {
     throw new Error('The Miter Docs introduction is missing.');
@@ -176,7 +182,7 @@ export function DocsPage() {
       </a>
       <header class="docs-toolbar">
         <a class="docs-brand" href="#introduction" onClick={(event) => useLink(event, 'introduction')}>
-          <Mark size={27} />{' '}
+          {props.brandMark}
           <span>
             Miter <strong>Docs</strong>
           </span>
@@ -203,9 +209,9 @@ export function DocsPage() {
             onInput={(event) => setDraft(event.currentTarget.value)}
           />
         </form>
-        <a class="docs-workspace" href="workspace.html">
-          Workspace <Icon name="right" />
-        </a>
+        <nav class="docs-toolbar-links" aria-label="Miter links">
+          <For each={props.toolbarLinks}>{(link) => <a href={link.href}>{link.label}</a>}</For>
+        </nav>
       </header>
       <div class="docs-layout">
         <aside class="docs-sidebar">
@@ -216,7 +222,7 @@ export function DocsPage() {
             aria-controls="docs-topics"
             onClick={() => setBrowse(!browse())}
           >
-            Browse topics <Icon name="down" />
+            Browse topics <ChevronDown size={16} aria-hidden="true" />
           </button>
           <nav id="docs-topics" classList={{ 'docs-nav-open': browse() }} aria-label="Documentation topics">
             <For each={topicGroups}>

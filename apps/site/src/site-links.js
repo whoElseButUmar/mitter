@@ -8,10 +8,6 @@ export const links = {
   repository,
   releases: repository + '/releases',
   installGuide: source + 'scripts/installation/README.md',
-  terminal: source + 'apps/host/src/cli/README.md',
-  checks: source + 'apps/host/src/core/quality/README.md',
-  protocol: source + 'packages/protocol/README.md',
-  issues: repository + '/issues',
 };
 
 export const installCommand = 'npx miter-install@latest';

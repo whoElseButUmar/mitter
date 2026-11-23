@@ -6,6 +6,9 @@ on:
     paths:
       - '.github/workflows/website.yml'
       - 'apps/site/**'
+      - 'packages/docs/**'
+      - 'packages/bridge/src/**'
+      - 'packages/protocol/src/**'
       - 'package.json'
       - 'pnpm-workspace.yaml'
   workflow_dispatch:
@@ -35,7 +38,7 @@ jobs:
       - name: Install website dependencies
         run: |
           npm install --global pnpm@12.11.2
-          pnpm --filter @mitter/site install --no-frozen-lockfile --ignore-scripts
+          pnpm --filter @mitter/site... install --no-frozen-lockfile --ignore-scripts
       - name: Build website
         env:
           PAGES_BASE_PATH: ${{ steps.pages.outputs.base_path }}

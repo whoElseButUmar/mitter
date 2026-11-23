@@ -1,16 +1,11 @@
-import { DocsPage, InstallPage } from './Guides.jsx';
 import { InstallCommand } from './InstallCommand.jsx';
+import { InstallPage } from './InstallPage.jsx';
 import { links, requirements } from './site-links.js';
 import { WorkspaceDemo } from './WorkspaceDemo.jsx';
 
 const icon = links.home + 'miter-icon.png';
 
-function SiteNav({ page, footer = false }) {
-  let docsCurrent;
-  if (page === 'docs') {
-    docsCurrent = 'page';
-  }
-
+function SiteNav({ footer = false }) {
   let label = 'Main navigation';
   if (footer) {
     label = 'Footer navigation';
@@ -18,15 +13,13 @@ function SiteNav({ page, footer = false }) {
 
   return (
     <nav aria-label={label} className="site-nav">
-      <a href={links.docs} aria-current={docsCurrent}>
-        Docs
-      </a>
+      <a href={links.docs}>Docs</a>
       <a href={links.repository}>GitHub</a>
     </nav>
   );
 }
 
-function SiteHeader({ page }) {
+function SiteHeader() {
   return (
     <>
       <a className="skip-link" href="#main">
@@ -38,7 +31,7 @@ function SiteHeader({ page }) {
             <img src={icon} width="42" height="42" alt="" />
             <span>Miter</span>
           </a>
-          <SiteNav page={page} />
+          <SiteNav />
         </div>
       </header>
     </>
@@ -55,7 +48,7 @@ function SiteFooter({ page }) {
           </a>
           {page === 'home' && <InstallCommand />}
         </div>
-        <SiteNav page={page} footer />
+        <SiteNav footer />
       </div>
     </footer>
   );
@@ -100,17 +93,13 @@ function LandingPage() {
 export function App({ page }) {
   let content = <LandingPage />;
 
-  if (page === 'docs') {
-    content = <DocsPage />;
-  }
-
   if (page === 'install') {
     content = <InstallPage />;
   }
 
   return (
     <>
-      <SiteHeader page={page} />
+      <SiteHeader />
       {content}
       <SiteFooter page={page} />
     </>

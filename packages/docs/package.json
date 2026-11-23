@@ -1,0 +1,14 @@
+{
+  "name": "@mitter/docs",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/DocsPage.tsx",
+    "./styles.css": "./src/docs.css"
+  },
+  "dependencies": {
+    "lucide-solid": "1.73.0",
+    "solid-js": "1.9.17",
+    "zod": "4.6.5"
+  }
+}

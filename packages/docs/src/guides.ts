@@ -71,7 +71,7 @@ export const guideTopics: DocsTopic[] = [
       { kind: 'heading', text: 'Install or update with npm' },
       {
         kind: 'text',
-        text: 'The npm package is pending publication. Once it’s available, use this command for both installs and updates with Node.js 22 or newer.',
+        text: 'On Apple silicon Macs with Node.js 22 or newer, use this command to install or update Miter.',
       },
       { kind: 'code', language: 'sh', text: 'npx miter-install@latest' },
       {
@@ -670,7 +670,7 @@ export const guideTopics: DocsTopic[] = [
       {
         kind: 'steps',
         items: [
-          'Run the updated Install Miter.command or source setup. Once the npm package is published, you can also run npx miter-install@latest.',
+          'Run npx miter-install@latest, open the updated Install Miter.command, or rerun source setup.',
           'Open chrome://extensions in the profile where you use Miter. Reload its extension card. Close and reopen the workspace.',
           'Open Help → Setup & connection → Build versions and check that the helper and extension match.',
         ],

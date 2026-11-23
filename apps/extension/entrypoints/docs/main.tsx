@@ -1,10 +1,19 @@
+import { DocsPage } from '@mitter/docs';
 import { render } from 'solid-js/web';
-import { DocsPage } from '../../src/docs/DocsPage';
+import { Mark } from '../../src/icons';
 import '../../src/style.css';
-import '../../src/docs/docs.css';
+import '@mitter/docs/styles.css';
 
 const root = document.getElementById('root');
 
 if (root) {
-  render(() => <DocsPage />, root);
+  render(
+    () => (
+      <DocsPage
+        brandMark={<Mark size={27} />}
+        toolbarLinks={[{ label: 'Workspace', href: 'workspace.html' }]}
+      />
+    ),
+    root,
+  );
 }

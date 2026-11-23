@@ -1,24 +1,18 @@
 import { z } from 'zod';
-import { proposalActionSchema, checkSchema } from '../../../../packages/protocol/src/schemas/actions.js';
-import { workerSchema } from '../../../../packages/protocol/src/schemas/domain.js';
+import { proposalActionSchema, checkSchema } from '../../protocol/src/schemas/actions.js';
+import { workerSchema } from '../../protocol/src/schemas/domain.js';
 import {
   envelopeSchema,
   proposalEnvelopeSchema,
   requestSchema,
   responseSchema,
-} from '../../../../packages/protocol/src/schemas/envelopes.js';
-import { imageAttachmentSchema } from '../../../../packages/protocol/src/schemas/image-attachments.js';
-import { followupRequestSchema } from '../../../../packages/protocol/src/schemas/requests.js';
-import {
-  rewriteReplySchema,
-  rewriteRequestSchema,
-} from '../../../../packages/protocol/src/schemas/rewrite.js';
-import {
-  commandProfileInputSchema,
-  workerCreateParamsSchema,
-} from '../../../../packages/protocol/src/rpc/requests.js';
-import { previewStartResultSchema } from '../../../../packages/protocol/src/rpc/preview.js';
-import { pageReplySchema, pageRequestSchema } from '../../../../packages/bridge/src/transport/messages.js';
+} from '../../protocol/src/schemas/envelopes.js';
+import { imageAttachmentSchema } from '../../protocol/src/schemas/image-attachments.js';
+import { followupRequestSchema } from '../../protocol/src/schemas/requests.js';
+import { rewriteReplySchema, rewriteRequestSchema } from '../../protocol/src/schemas/rewrite.js';
+import { commandProfileInputSchema, workerCreateParamsSchema } from '../../protocol/src/rpc/requests.js';
+import { previewStartResultSchema } from '../../protocol/src/rpc/preview.js';
+import { pageReplySchema, pageRequestSchema } from '../../bridge/src/transport/messages.js';
 import type { DocsSchema } from './content-types.js';
 
 const automaticReply = proposalEnvelopeSchema.safeExtend({

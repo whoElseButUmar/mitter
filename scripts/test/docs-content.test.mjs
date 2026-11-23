@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import '../../packages/bridge/src/runner/test-source-loader.mjs';
 
-const { searchTopics, topics } = await import('../../apps/extension/src/docs/catalog.ts');
-const { schemaText } = await import('../../apps/extension/src/docs/schema-reference.ts');
+const { searchTopics, topics } = await import('../../packages/docs/src/catalog.ts');
+const { schemaText } = await import('../../packages/docs/src/schema-reference.ts');
 const { proposalEnvelopeSchema } = await import('../../packages/protocol/src/schemas/envelopes.ts');
 
 test('documentation topics have unique addresses and working cross-links', () => {
