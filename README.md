@@ -45,6 +45,8 @@ To build from source, clone the repo and run `node scripts/setup.mjs` with Node.
 
 After source setup, run `pnpm check` for formatting, type checks, and tests. Use `pnpm dev` to work on the SolidJS extension. `pnpm build` verifies the native helper and writes the unpacked extension to `apps/extension/.output/chrome-mv3`.
 
+Use `pnpm dev:site` to preview the public website. `pnpm build:site` builds the landing page, install guide, and docs into `apps/site/dist/client`.
+
 See the [native host guide](apps/host/README.md), [coding standards](CODING_STANDARDS.md), and [release checks](scripts/release-checks/README.md) when contributing.
 
 [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY.md)

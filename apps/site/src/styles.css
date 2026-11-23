@@ -1,0 +1,678 @@
+:root {
+  color-scheme: dark;
+  --editor: #20211f;
+  --panel: #282925;
+  --raised: #30312d;
+  --hover: #383934;
+  --line: #3b3c36;
+  --edge: #595a51;
+  --muted: #b0b1a7;
+  --text: #eeeee6;
+  --accent: #dfbd82;
+  --accent-text: #262017;
+  --gutter: clamp(1.25rem, 3.7vw, 3.5rem);
+  --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  font:
+    100%/1.5 -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+  background: var(--editor);
+  color: var(--text);
+  scrollbar-color: #777a6d transparent;
+  scrollbar-width: thin;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+#root > main {
+  flex: 1;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+  text-underline-offset: 0.2em;
+}
+
+a:hover {
+  color: var(--accent);
+}
+
+:where(a, button, input):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+code {
+  font-family: var(--mono);
+}
+
+.shell {
+  width: min(100% - 2 * var(--gutter), 90rem);
+  margin-inline: auto;
+}
+
+.visually-hidden,
+.skip-link:not(:focus) {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.skip-link:focus {
+  position: absolute;
+  z-index: 1;
+  inset: 0.75rem auto auto var(--gutter);
+  padding: 0.5rem 0.85rem;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.site-header {
+  border-block-end: 1px solid var(--line);
+}
+
+.header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.35rem;
+  min-height: 4.9rem;
+}
+
+.site-brand,
+.workspace-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 750;
+}
+
+.site-brand {
+  font-size: 1.75rem;
+  text-decoration: none;
+}
+
+.site-brand img {
+  width: 3rem;
+  height: 3rem;
+  margin-inline-start: -0.3rem;
+}
+
+.site-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem clamp(1.3rem, 3.5vw, 2.65rem);
+  font-size: clamp(0.95rem, 1.6vw, 1.2rem);
+}
+
+.site-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  text-decoration: none;
+}
+
+.site-nav a:hover,
+.site-nav a[aria-current='page'] {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(1.75rem, 3vw, 3.1rem);
+  padding-block: clamp(3rem, 5vw, 5.25rem) clamp(3.25rem, 6.4vw, 6.2rem);
+}
+
+h1 {
+  font-size: clamp(2.65rem, 5.35vw, 5.15rem);
+  font-weight: 750;
+  letter-spacing: -0.035em;
+  line-height: 1.08;
+}
+
+.hero h1 span {
+  display: block;
+}
+
+.intro {
+  margin-block-start: 1.7rem;
+  font-size: clamp(1.12rem, 2.05vw, 1.58rem);
+  line-height: 1.38;
+}
+
+.hero-copy .install-command {
+  margin-block-start: 3rem;
+}
+
+.requirements {
+  margin-block-start: 1.7rem;
+  color: var(--muted);
+  font-size: clamp(0.875rem, 1.48vw, 1.1rem);
+}
+
+.install-command {
+  min-width: 0;
+}
+
+.command-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem 0.85rem;
+  padding: 0.45rem;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.command-field code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding-inline: clamp(0.4rem, 1vw, 0.85rem);
+  font-size: clamp(0.93rem, 1.75vw, 1.42rem);
+}
+
+.button {
+  display: inline-flex;
+  min-height: 2.7rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding-inline: 1rem;
+  padding-block: 0.45rem;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.button:hover {
+  background: var(--hover);
+}
+
+.button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.button.primary:hover {
+  background: #edc991;
+}
+
+.button.primary:active {
+  background: #ccab75;
+}
+
+.copy-button {
+  min-width: 4.75rem;
+}
+
+.copy-feedback {
+  margin-block-start: 0.65rem;
+  color: var(--muted);
+}
+
+.workspace {
+  overflow: clip;
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 18px 38px #15161250;
+}
+
+.workspace-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.85rem;
+  min-height: 3.05rem;
+  padding: 0.45rem 1.15rem;
+  border-block-end: 1px solid var(--line);
+}
+
+.workspace-brand {
+  font-size: 1.12rem;
+}
+
+.workspace-project {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+  overflow-wrap: anywhere;
+  padding-inline-start: 0.85rem;
+  border-inline-start: 1px solid var(--edge);
+  font-size: 1rem;
+}
+
+.workspace-content {
+  padding: 1.35rem 1.85rem 1.15rem;
+}
+
+.workspace h2 {
+  font-size: clamp(1.42rem, 2.42vw, 2.08rem);
+  font-weight: 720;
+  letter-spacing: -0.035em;
+  line-height: 1.2;
+}
+
+.file-list,
+.reading-list {
+  padding: 0;
+  list-style: none;
+}
+
+.file-list {
+  overflow: clip;
+  margin-block: 1.3rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--raised);
+}
+
+.file-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.8rem;
+  min-height: 2.45rem;
+  padding: 0.4rem 0.9rem;
+}
+
+.file-list li + li {
+  border-block-start: 1px solid var(--line);
+}
+
+.filename {
+  overflow-wrap: anywhere;
+  font: 0.95rem/1.4 var(--mono);
+}
+
+.file-state {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.workspace-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-block-start: 0.95rem;
+}
+
+.workspace-state {
+  padding: 0.35rem 0.65rem;
+  border-radius: 6px;
+  background: #393d33;
+  color: var(--text);
+  font-size: 0.94rem;
+}
+
+.terminal {
+  min-height: 8.7rem;
+  margin: 0 1.3rem 1.3rem;
+  border: 1px solid var(--edge);
+  border-radius: 9px;
+  background: #1c1d1b;
+}
+
+.terminal-label {
+  padding: 0.25rem 0.75rem;
+  border-block-end: 1px solid var(--line);
+  border-radius: 8px 8px 0 0;
+  background: var(--raised);
+  font-size: 0.94rem;
+}
+
+.terminal-output {
+  padding: 0.75rem 1rem;
+  overflow-wrap: anywhere;
+  font: 0.94rem/1.5 var(--mono);
+}
+
+.workflow {
+  padding-block: clamp(2.6rem, 4.5vw, 4.5rem) clamp(3.1rem, 7.3vw, 6.35rem);
+  border-block-start: 1px solid var(--line);
+}
+
+.workflow h2,
+.guide h2 {
+  font-size: clamp(1.9rem, 4.5vw, 3.75rem);
+  font-weight: 740;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+}
+
+.workflow-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.85rem clamp(1.2rem, 4.3vw, 4rem);
+  margin-block-start: clamp(1.6rem, 4vw, 3.2rem);
+}
+
+.workflow h3 {
+  font-size: clamp(1.2rem, 2.15vw, 1.8rem);
+  letter-spacing: -0.028em;
+  line-height: 1.25;
+}
+
+.workflow p {
+  max-width: 32ch;
+  margin-block-start: 0.8rem;
+  font-size: clamp(1rem, 1.65vw, 1.27rem);
+  line-height: 1.42;
+}
+
+.site-footer {
+  border-block-start: 1px solid var(--edge);
+}
+
+.footer-inner,
+.footer-install {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem clamp(1.25rem, 2.6vw, 2.5rem);
+}
+
+.footer-inner {
+  justify-content: space-between;
+  min-height: 10.7rem;
+  padding-block: 1.75rem;
+}
+
+.footer-install {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.footer-label {
+  font-size: clamp(1.2rem, 2vw, 1.6rem);
+  font-weight: 730;
+  text-decoration: none;
+}
+
+.footer-label:hover {
+  text-decoration: underline;
+}
+
+.footer-install .install-command {
+  width: 30.5rem;
+  max-width: 100%;
+}
+
+.guide {
+  max-width: 55rem;
+  padding-block: clamp(2.5rem, 6vw, 5rem);
+}
+
+.guide .install-command {
+  max-width: 32rem;
+  margin-block-start: 1rem;
+}
+
+.guide .intro {
+  margin-block-start: 1rem;
+}
+
+.guide-section {
+  margin-block-start: clamp(2rem, 4.25vw, 3.75rem);
+  padding-block-start: 1.65rem;
+  border-block-start: 1px solid var(--line);
+  font-size: 1.08rem;
+}
+
+.guide-section h2 {
+  margin-block-end: 1rem;
+  font-size: clamp(1.55rem, 2.7vw, 2.3rem);
+}
+
+.guide-section p,
+.guide-section a,
+.guide-section li {
+  overflow-wrap: anywhere;
+}
+
+.guide-section p + p {
+  margin-block-start: 0.75rem;
+}
+
+.guide-section ol,
+.resource-links {
+  padding-inline-start: 1.35rem;
+}
+
+.guide-section li + li {
+  margin-block-start: 0.45rem;
+}
+
+.guide-section a {
+  color: var(--accent);
+}
+
+.guide-section blockquote {
+  margin: 1.3rem 0;
+  padding: 0.8rem 1.1rem;
+  border-inline-start: 2px solid var(--accent);
+  background: var(--panel);
+}
+
+.demo-dialog {
+  width: min(100% - 2rem, 31rem);
+  max-height: calc(100dvh - 2rem);
+  overflow: auto;
+  padding: 1.4rem;
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+}
+
+.demo-dialog::backdrop {
+  background: #121310b0;
+}
+
+.demo-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.demo-heading p {
+  margin-block-end: 0.2rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.icon-button {
+  width: 2.7rem;
+  padding: 0;
+}
+
+.book-form {
+  margin-block-start: 1.3rem;
+}
+
+.book-form > label {
+  display: block;
+  margin-block-end: 0.45rem;
+  font-weight: 620;
+}
+
+.book-field {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.book-field input {
+  flex: 1 1 13rem;
+  width: 100%;
+  min-width: 0;
+  min-height: 2.75rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  background: var(--editor);
+  color: var(--text);
+}
+
+.book-field input::placeholder {
+  color: var(--muted);
+}
+
+.book-field input[aria-invalid='true'] {
+  border-color: #e8a590;
+}
+
+.book-error {
+  margin-block-start: 0.5rem;
+  color: #e8a590;
+  font-size: 0.875rem;
+}
+
+.reading-list {
+  margin-block: 1.2rem 0;
+  border-block-start: 1px solid var(--line);
+}
+
+.reading-list label {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 2.75rem;
+  padding-block: 0.4rem;
+  border-block-end: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.reading-list input {
+  flex-shrink: 0;
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.reading-list span {
+  overflow-wrap: anywhere;
+}
+
+.reading-list input:checked + span {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+@media (max-width: 58rem) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2.5rem;
+  }
+
+  .hero-copy {
+    max-width: 40rem;
+  }
+
+  .hero-copy .install-command {
+    margin-block-start: 1.65rem;
+  }
+
+  .command-field {
+    max-width: 32rem;
+  }
+
+  .requirements {
+    margin-block-start: 1rem;
+  }
+}
+
+@media (max-width: 38rem) {
+  .header-inner {
+    min-height: 4.25rem;
+  }
+
+  .site-brand {
+    font-size: 1.4rem;
+  }
+
+  .site-brand img {
+    width: 2.125rem;
+    height: 2.125rem;
+  }
+
+  .intro {
+    margin-block-start: 1.1rem;
+  }
+
+  .workspace-content {
+    padding: 1rem 1.05rem;
+  }
+
+  .terminal {
+    min-height: 6.5rem;
+    margin: 0 1rem 1rem;
+  }
+
+  .workflow-steps {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.35rem;
+  }
+
+  .workflow p {
+    max-width: 40ch;
+    margin-block-start: 0.4rem;
+  }
+
+  .footer-inner {
+    min-height: auto;
+  }
+}
