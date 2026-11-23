@@ -4,11 +4,14 @@ import { createReadStream } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { errorMessage, isMainModule } from '../../helpers/runtime.mjs';
+import { errorMessage, isMainModule, parseContract } from '../../helpers/runtime.mjs';
 import { bundleManifestSchema } from '../bundle-contracts.mjs';
+import { installedPackageSchema } from '../contracts.mjs';
 import { digest, rejectLinks } from '../files.mjs';
 
-const usage = 'Usage: pnpm bundle:npm HTTPS_RELEASE_DIRECTORY BUNDLE.zip [BUNDLE.zip]';
+const usage =
+  'Usage: pnpm bundle:npm [--npm-version=VERSION] HTTPS_RELEASE_DIRECTORY BUNDLE.zip [BUNDLE.zip]';
+const versionOption = '--npm-version=';
 const projectRoot = path.resolve(import.meta.dirname, '../../..');
 
 function releaseDirectoryUrl(directory) {
@@ -78,7 +81,7 @@ async function readReleaseAsset(archive, releaseDirectory) {
   };
 }
 
-export async function createNpmInstaller({ releaseDirectory, archives, output }) {
+export async function createNpmInstaller({ releaseDirectory, archives, output, npmVersion }) {
   if (archives.length < 1 || archives.length > 2) {
     throw new Error(usage);
   }
@@ -97,23 +100,30 @@ export async function createNpmInstaller({ releaseDirectory, archives, output })
     release.assets[architecture] = asset;
   }
 
+  const version = parseContract(
+    installedPackageSchema.shape.version,
+    npmVersion ?? release.version,
+    'Choose a valid npm package version.',
+  );
   const staging = await mkdtemp(path.join(os.tmpdir(), 'miter-npm-package-'));
 
   try {
     const packageJson = {
       name: 'miter-install',
-      version: release.version,
+      version,
       description: 'Install or update the Miter workspace and local helper on macOS.',
       license: 'MIT',
+      repository: { type: 'git', url: 'git+https://github.com/whoElseButUmar/mitter.git' },
       type: 'module',
       bin: { 'miter-install': 'install.mjs' },
       engines: { node: '>=22' },
-      files: ['install.mjs', 'release.json', 'LICENSE'],
+      files: ['install.mjs', 'release.json', 'README.md', 'LICENSE'],
     };
 
     await writeFile(path.join(staging, 'package.json'), JSON.stringify(packageJson, null, 2) + '\n');
     await writeFile(path.join(staging, 'release.json'), JSON.stringify(release, null, 2) + '\n');
     await copyFile(path.join(import.meta.dirname, 'install.mjs'), path.join(staging, 'install.mjs'));
+    await copyFile(path.join(import.meta.dirname, 'README.md'), path.join(staging, 'README.md'));
     await copyFile(path.join(projectRoot, 'LICENSE'), path.join(staging, 'LICENSE'));
     await mkdir(output, { recursive: true });
     execFileSync('npm', ['pack', '--ignore-scripts', '--pack-destination', output], {
@@ -121,7 +131,7 @@ export async function createNpmInstaller({ releaseDirectory, archives, output })
       timeout: 30000,
       stdio: 'pipe',
     });
-    const artifact = path.join(output, `miter-install-${release.version}.tgz`);
+    const artifact = path.join(output, `miter-install-${version}.tgz`);
 
     if (!(await stat(artifact)).isFile()) {
       throw new Error('npm did not produce the installer tarball.');
@@ -135,7 +145,14 @@ export async function createNpmInstaller({ releaseDirectory, archives, output })
 
 if (isMainModule(import.meta.url)) {
   try {
-    const [releaseDirectory, ...archives] = process.argv.slice(2);
+    const args = process.argv.slice(2);
+    let npmVersion;
+
+    if (args[0]?.startsWith(versionOption)) {
+      npmVersion = args.shift().slice(versionOption.length);
+    }
+
+    const [releaseDirectory, ...archives] = args;
 
     if (releaseDirectory === '--help') {
       console.log(usage);
@@ -146,7 +163,7 @@ if (isMainModule(import.meta.url)) {
 
       const output = path.join(projectRoot, '.cache/npm');
       await rejectLinks(output, projectRoot);
-      const artifact = await createNpmInstaller({ releaseDirectory, archives, output });
+      const artifact = await createNpmInstaller({ releaseDirectory, archives, output, npmVersion });
       console.log('npm installer package: ' + artifact);
     }
   } catch (error) {

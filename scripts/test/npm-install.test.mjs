@@ -99,6 +99,8 @@ test(
     const manifest = JSON.parse(
       execFileSync('/usr/bin/tar', ['-xOf', pkg, 'package/release.json'], { encoding: 'utf8' }),
     );
+    const readme = execFileSync('/usr/bin/tar', ['-xOf', pkg, 'package/README.md'], { encoding: 'utf8' });
+    assert.equal(readme, await readFile(new URL('../installation/npm/README.md', import.meta.url), 'utf8'));
     assert.equal(manifest.version, '1.0.0');
     assert.deepEqual(Object.keys(manifest.assets), ['arm64', 'x64']);
 
@@ -122,6 +124,25 @@ test(
       timeout: 30000,
     });
     assert.match(help, /Usage: npx miter-install@latest/);
+
+    const revised = await createNpmInstaller({
+      releaseDirectory,
+      archives: [arm, intel],
+      output,
+      npmVersion: '1.0.1',
+    });
+    const revisedMetadata = JSON.parse(
+      execFileSync('/usr/bin/tar', ['-xOf', revised, 'package/package.json'], { encoding: 'utf8' }),
+    );
+    const revisedRelease = JSON.parse(
+      execFileSync('/usr/bin/tar', ['-xOf', revised, 'package/release.json'], { encoding: 'utf8' }),
+    );
+    assert.equal(revisedMetadata.version, '1.0.1');
+    assert.deepEqual(revisedRelease, manifest);
+    await assert.rejects(
+      createNpmInstaller({ releaseDirectory, archives: [arm], output, npmVersion: '../unsafe' }),
+      /valid npm package version/,
+    );
 
     const differentVersion = await zipFixture(directory, 'x64', '1.0.1');
     await assert.rejects(

@@ -2,7 +2,7 @@
 
 ## Install or update with npx
 
-The npm package is pending publication. Once it’s available, run this command on macOS with Node.js 22 or newer for both installs and updates.
+Run this command on macOS with Node.js 22 or newer for both installs and updates.
 
 ```sh
 npx miter-install@latest
@@ -21,6 +21,8 @@ pnpm bundle:npm https://github.com/OWNER/REPO/releases/download/TAG path/to/appl
 ```
 
 Pass the ZIP paths exactly as printed by `pnpm bundle:local`. The command accepts one ZIP per architecture and requires matching versions. It creates the `miter-install` tarball in `.cache/npm/`. Smoke-test the final tarball with `npx --package=/absolute/path/to/miter-install-VERSION.tgz miter-install` before publishing it. Publishing the tarball with npm’s `latest` tag makes that version available to new installs and updates.
+
+The npm package includes its own [README](npm/README.md). For an installer-only update, pass `--npm-version=VERSION` before the release URL and reuse the existing ZIPs. The new npm version can point to the same Miter app build.
 
 ## Install from source or a ZIP
 

@@ -8,12 +8,10 @@ Miter and ChatGPT exchange structured JSON. A local helper applies edits, runs c
 
 ## Get started on macOS
 
-With Chrome and Node.js 26 or newer, clone and install Miter.
+Use Chrome and Node.js 22 or newer to install Miter.
 
 ```sh
-git clone https://github.com/whoElseButUmar/mitter.git
-cd mitter
-node scripts/setup.mjs
+npx miter-install@latest
 ```
 
 If you have the Mac installer ZIP, unzip it and open **Install Miter.command**. It includes Node.
@@ -22,7 +20,7 @@ If you have the Mac installer ZIP, unzip it and open **Install Miter.command**. 
 2. Choose **Load unpacked** and select `~/Library/Application Support/Miter/extension`, or the folder printed by your installer.
 3. Open Miter from Chrome’s Extensions menu. Use the same profile where you sign in to ChatGPT.
 
-The npm installer is pending publication. Once it’s available, `npx miter-install@latest` will handle installs and updates with Node.js 22 or newer. Reload Miter’s extension card after updating. [Install, update, and uninstall guide](scripts/installation/README.md)
+Run the same command to update, then reload Miter’s extension card. [Install, update, and uninstall guide](scripts/installation/README.md)
 
 ## Try a task
 
@@ -42,6 +40,8 @@ Open **Help → Documentation** in Miter for the full user guide, setup help, an
 - [Local model runtime](apps/inference/README.md) for an optional GGUF model.
 
 ## Development
+
+To build from source, clone the repo and run `node scripts/setup.mjs` with Node.js 26 or newer.
 
 After source setup, run `pnpm check` for formatting, type checks, and tests. Use `pnpm dev` to work on the SolidJS extension. `pnpm build` verifies the native helper and writes the unpacked extension to `apps/extension/.output/chrome-mv3`.
 
