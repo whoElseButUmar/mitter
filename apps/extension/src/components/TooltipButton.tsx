@@ -9,6 +9,7 @@ export function TooltipButton(props: {
   label: string;
   icon: ComponentProps<typeof Icon>['name'];
   disabled?: boolean;
+  busy?: boolean;
   class?: string;
   ariaHasPopup?: 'dialog';
   onClick: JSX.EventHandler<HTMLButtonElement, MouseEvent>;
@@ -32,6 +33,8 @@ export function TooltipButton(props: {
       type="button"
       class={'tooltip-button ' + (props.class || '')}
       aria-label={props.label}
+      aria-busy={props.busy}
+      aria-disabled={props.busy || undefined}
       aria-haspopup={props.ariaHasPopup}
       disabled={props.disabled}
       onClick={props.onClick}

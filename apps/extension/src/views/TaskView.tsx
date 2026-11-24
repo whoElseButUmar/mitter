@@ -14,8 +14,10 @@ import { createResource, Show } from 'solid-js';
 import { createApprovalTrust } from '../ui/approval-trust';
 
 import { displayTaskName } from '../../../../packages/protocol/src/task-brief';
-import { TaskAppRunButton } from '../components/TaskAppRunButton';
 import { Icon } from '../icons';
+import { TooltipButton } from '../components/TooltipButton';
+import { previewFailures } from '../preview-failures';
+import { createTaskAppRun } from '../ui/task-app-run';
 import { SetupCommandReview, setupReviewKey } from '../components/SetupCommandReview';
 import { savedChatResultSchema } from '../schemas/local-results';
 import { callResult } from '../ui/rpc';
@@ -42,6 +44,15 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
 
   const task = () => props.task;
   const progress = () => taskStatus(task(), bridge());
+  const completed = () => task().state === 'complete' && !task().pending;
+  const completionEvidence = () => task().completion?.evidence;
+  const appRun = createTaskAppRun({
+    task,
+    connected,
+    rpc,
+    failures: previewFailures,
+    showTerminal: props.controller.showAppTerminal,
+  });
   const [savedChat] = createResource(
     () => connected() && task().state === 'complete' && task().mode === 'handoff' && task().id,
     async (workerId) => {
@@ -79,55 +90,62 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
         ]}
       >
         <section class="goal-block">
-          <div classList={{ 'task-handoff': task().state === 'complete' }}>
-            <div class="task-heading-row">
-              <h1 title={displayTaskName(task())}>{displayTaskName(task())}</h1>
-              <div
-                class="task-state"
-                data-tone={progress().tone}
-                role="status"
-                aria-live="polite"
-                aria-atomic="true"
-              >
-                <h2 class="task-status-heading">
-                  <Show when={progress().tone === 'success'}>
-                    <Icon name="check" />
-                  </Show>
-                  {progress().heading}
-                </h2>
-                <Show when={progress().detail}>
-                  <span class="state-summary">{progress().detail}</span>
-                </Show>
-              </div>
-            </div>
-            <Show when={task().state === 'complete' && !task().pending}>
+          <div class="task-heading-row" classList={{ 'task-handoff': completed() }}>
+            <h1 title={displayTaskName(task())}>{displayTaskName(task())}</h1>
+            <Show when={completed()}>
               <div class="task-handoff-actions" role="group" aria-label="Completed task actions">
-                <TaskAppRunButton controller={props.controller} task={task()} />
-                <button
-                  type="button"
+                <Show when={appRun.available()}>
+                  <TooltipButton
+                    class="primary"
+                    label="Run"
+                    icon="play"
+                    busy={appRun.busy()}
+                    disabled={appRun.busy() || !connected()}
+                    onClick={() => void appRun.start()}
+                  />
+                </Show>
+                <TooltipButton
+                  class="icon-button"
+                  label="Open files"
+                  icon="folder"
+                  ariaHasPopup="dialog"
+                  busy={output.browsing()}
                   disabled={!connected()}
-                  aria-disabled={output.browsing()}
-                  aria-busy={output.browsing()}
                   onClick={() => void output.browseFiles()}
-                >
-                  <Icon name="folder" />
-                  <Show when={output.browsing()} fallback="Open files">
-                    Opening…
-                  </Show>
-                </button>
+                />
                 <Show when={task().mode === 'handoff' && savedChat() === task().id}>
-                  <button
-                    type="button"
+                  <TooltipButton
+                    class="icon-button"
+                    label="Open chat"
+                    icon="external"
                     disabled={!connected() || busy()}
                     onClick={() => void action('bridge.openChat', { workerId: task().id })}
-                  >
-                    <Icon name="external" />
-                    Open chat
-                  </button>
+                  />
                 </Show>
               </div>
             </Show>
           </div>
+          <Show when={!completed()}>
+            <div
+              class="task-state"
+              data-tone={progress().tone}
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <h2 class="task-status-heading">{progress().heading}</h2>
+              <Show when={progress().detail}>
+                <span class="state-summary">{progress().detail}</span>
+              </Show>
+            </div>
+          </Show>
+          <Show when={appRun.error()}>
+            {(message) => (
+              <p class="error" role="alert">
+                {message()}
+              </p>
+            )}
+          </Show>
           <details class="task-details">
             <summary>
               <Icon name="right" />
@@ -143,24 +161,23 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
           </Show>
         </section>
       </ContextArea>
-      <Show when={task().completion?.evidence}>
-        {(evidence) => (
-          <details class="completion-evidence">
-            <summary>
-              <Icon name="right" />
-              Verification details
-            </summary>
-            <p>{evidence().detail}</p>
-            <Show when={task().completion?.summary}>
-              {(summary) => (
-                <>
-                  <strong>Model summary</strong>
-                  <TaskMarkdown source={summary()} />
-                </>
-              )}
-            </Show>
-          </details>
-        )}
+      <Show when={completed() || completionEvidence()}>
+        <details class="completion-evidence">
+          <summary>
+            <Icon name="right" />
+            Verification details
+          </summary>
+          <Show when={completed() && progress().detail}>{(detail) => <p>{detail()}</p>}</Show>
+          <Show when={completionEvidence()}>{(evidence) => <p>{evidence().detail}</p>}</Show>
+          <Show when={task().completion?.summary}>
+            {(summary) => (
+              <>
+                <strong>Model summary</strong>
+                <TaskMarkdown source={summary()} />
+              </>
+            )}
+          </Show>
+        </details>
       </Show>
       <Show when={task().error && task().error !== progress().detail}>
         <div class="error-banner" role="alert">

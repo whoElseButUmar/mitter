@@ -423,48 +423,36 @@ p {
   padding: var(--space-md) 0;
 }
 
+.goal-block:has(> .task-handoff) {
+  padding-top: var(--space-md);
+}
+
 .task-handoff {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-md) var(--space-lg);
-  padding-bottom: var(--space-md);
-  border-bottom: 1px solid var(--line);
+  gap: var(--space-md);
 }
 
-.task-handoff > .task-heading-row {
-  flex: 1 1 12rem;
-  min-width: 0;
-}
-
-.task-handoff .task-state {
-  padding: var(--space-xs) 0 0;
+.task-handoff h1 {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .task-handoff-actions {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
+  flex: none;
+  align-items: center;
   gap: var(--space-xs);
-  max-width: 100%;
-}
-
-.task-handoff-actions > button {
-  padding-inline: var(--space-sm);
-  background: transparent;
-  border-color: transparent;
-  color: var(--muted);
-}
-
-.task-handoff-actions > button:enabled:hover,
-.task-handoff-actions > button:focus-visible {
-  background: var(--hover);
-  color: var(--text);
 }
 
 .task-handoff-actions > button[aria-busy='true'] {
   cursor: progress;
-  color: var(--muted);
+}
+
+.goal-block > .error {
+  overflow-wrap: anywhere;
 }
 
 .task-status-heading {
@@ -473,24 +461,8 @@ p {
   line-height: 1.4;
 }
 
-.task-handoff .task-status-heading {
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs);
-  font-size: var(--font-small);
-}
-
-.task-handoff .task-status-heading .miter-icon {
-  width: 0.875rem;
-  height: 0.875rem;
-}
-
 .task-state[data-tone='attention'] .task-status-heading {
   color: var(--accent);
-}
-
-.task-state[data-tone='success'] .task-status-heading {
-  color: var(--green);
 }
 
 .status {
@@ -3411,20 +3383,6 @@ button.miter-toast-close:hover {
 
 .task-output .editor-surface {
   margin-inline: calc(-1 * var(--space-lg));
-}
-
-.app-preview-launch {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-sm);
-  flex: 0 1 auto;
-  max-width: 100%;
-}
-
-.app-preview-launch > p {
-  flex-basis: 100%;
-  overflow-wrap: anywhere;
 }
 
 .confirmation-dialog[open] {

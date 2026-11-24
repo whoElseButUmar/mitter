@@ -651,9 +651,9 @@ async function checkTaskStages(chrome, session) {
     { scenario: 'running', heading: 'Updating project', controls: ['Pause', 'Stop'] },
     { scenario: 'checking', heading: 'Checking results', controls: ['Pause', 'Stop'] },
     { scenario: 'approval', heading: 'Approval needed', controls: ['Reject', 'Approve', 'Pause', 'Stop'] },
-    { scenario: 'ready', heading: 'App ready', controls: ['Run', 'Open files', 'Open chat'] },
-    { scenario: 'unverified', heading: 'Task complete', controls: ['Open files'] },
-    { scenario: 'unverified-app', heading: 'Task complete', controls: ['Run', 'Open files'] },
+    { scenario: 'ready', heading: null, controls: ['Run', 'Open files', 'Open chat'] },
+    { scenario: 'unverified', heading: null, controls: ['Open files'] },
+    { scenario: 'unverified-app', heading: null, controls: ['Run', 'Open files'] },
   ];
   for (const width of [1024, 320]) {
     await chrome.request(
@@ -671,7 +671,7 @@ async function checkTaskStages(chrome, session) {
         await waitFor(
           chrome,
           session,
-          '!!document.querySelector(".app-preview-launch button")',
+          '!!document.querySelector(".task-handoff-actions button.primary")',
           'existing unverified app entry',
         );
       }
@@ -679,7 +679,7 @@ async function checkTaskStages(chrome, session) {
         await waitFor(
           chrome,
           session,
-          'document.querySelectorAll(".task-handoff-actions > button").length === 2',
+          'document.querySelectorAll(".task-handoff-actions > button").length === 3',
           'saved chat action',
         );
         assert.equal(
@@ -687,20 +687,40 @@ async function checkTaskStages(chrome, session) {
             chrome,
             session,
             `(() => {
-              const title = document.querySelector('.task-heading-row').getBoundingClientRect();
+              const title = document.querySelector('.task-heading-row h1');
+              const heading = title.getBoundingClientRect();
               const group = document.querySelector('.task-handoff-actions');
-              const actions = group.getBoundingClientRect();
-              const besideTitle = actions.left >= title.right;
-              const belowTitle = actions.top >= title.bottom;
-              return !document.querySelector('.task-state .state-summary') &&
-                document.querySelector('.task-status-heading svg[aria-hidden="true"]').checkVisibility() &&
-                besideTitle === (innerWidth === 1024) && belowTitle === (innerWidth === 320) &&
-                [...group.querySelectorAll('button')].every(button => button.getBoundingClientRect().top === actions.top);
+              return title.title === title.textContent && [...group.querySelectorAll('button')].every(button => {
+                const bounds = button.getBoundingClientRect();
+                return !button.textContent.trim() && button.querySelector('svg[aria-hidden="true"]') &&
+                  bounds.left >= heading.right && bounds.top < heading.bottom && bounds.bottom > heading.top;
+              });
             })()`,
           ),
           true,
-          'The compact ready state keeps actions beside the title when wide and below it when narrow.',
+          'The three icon-only actions stay beside the full task title on wide and narrow panels.',
         );
+        for (const label of stage.controls) {
+          const selector = JSON.stringify('.task-handoff-actions button[aria-label="' + label + '"]');
+          await evaluate(chrome, session, `document.querySelector(${selector}).focus()`);
+          assert.equal(
+            await evaluate(
+              chrome,
+              session,
+              'document.querySelector(".button-tooltip:popover-open")?.textContent',
+            ),
+            label,
+          );
+          await press(chrome, session, 'Escape', 27);
+          assert.equal(
+            await evaluate(
+              chrome,
+              session,
+              `!document.querySelector('.button-tooltip:popover-open') && document.activeElement === document.querySelector(${selector})`,
+            ),
+            true,
+          );
+        }
       }
       assert.deepEqual(
         await evaluate(
@@ -712,9 +732,9 @@ async function checkTaskStages(chrome, session) {
             const technical = document.querySelector('.task-diagnostics');
             const output = document.querySelector('.task-output');
             return {
-              heading: state.querySelector('h2').textContent,
-              announcement: [state.getAttribute('role'), state.getAttribute('aria-live'), state.getAttribute('aria-atomic')],
-              controls: [...document.querySelectorAll('.app-preview-launch button, .task-handoff-actions > button, .approval button, .runner-controls button')].filter(visible).map(button => button.textContent.trim()),
+              heading: state?.querySelector('h2')?.textContent ?? null,
+              announcement: state && [state.getAttribute('role'), state.getAttribute('aria-live'), state.getAttribute('aria-atomic')],
+              controls: [...document.querySelectorAll('.task-handoff-actions > button, .approval button, .runner-controls button')].filter(visible).map(button => button.textContent.trim() || button.getAttribute('aria-label')),
               outputClosed: !output.open,
               technicalClosed: !technical.open,
               counterHidden: !visible(document.querySelector('.task-turn-counter')),
@@ -724,7 +744,7 @@ async function checkTaskStages(chrome, session) {
         ),
         {
           heading: stage.heading,
-          announcement: ['status', 'polite', 'true'],
+          announcement: stage.heading && ['status', 'polite', 'true'],
           controls: stage.controls,
           outputClosed: true,
           technicalClosed: true,
@@ -750,7 +770,7 @@ async function checkTaskStages(chrome, session) {
           await evaluate(
             chrome,
             session,
-            `document.querySelector('.state-summary').textContent === 'Completion checks did not run.'`,
+            `document.querySelector('.completion-evidence p').textContent === 'Completion checks did not run.'`,
           ),
           true,
         );
@@ -769,7 +789,7 @@ async function checkTaskStages(chrome, session) {
         await evaluate(
           chrome,
           session,
-          `[...document.querySelectorAll('.task-handoff-actions button')].find(button => button.textContent.trim() === 'Open files').focus()`,
+          `document.querySelector('.task-handoff-actions button[aria-label="Open files"]').focus()`,
         );
         await press(chrome, session, 'Enter', 13);
         assert.deepEqual(await evaluate(chrome, session, 'window.mitterReleaseFixture.attentionActions()'), [

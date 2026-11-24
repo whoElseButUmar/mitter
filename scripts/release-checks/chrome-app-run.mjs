@@ -14,6 +14,7 @@ const firstTask = 'Cozy Desk Kanban';
 const secondTask = 'Studio inventory';
 const entry = '<!doctype html><title>Run session</title>';
 const picker = '.terminal-session-picker select';
+const runButton = '.task-handoff-actions button.primary';
 
 async function completeProject(native) {
   const { openNodeSqlite } = await import('../../dist/apps/host/src/adapters/sqlite.js');
@@ -75,11 +76,11 @@ async function completeProject(native) {
 }
 
 async function checkFileHandoff(chrome, session) {
-  const opener = `[...document.querySelectorAll('.task-handoff-actions button')].find(button => button.textContent.trim() === 'Open files')`;
+  const opener = `document.querySelector('.task-handoff-actions button[aria-label="Open files"]')`;
   await waitFor(chrome, session, 'Boolean(' + opener + ')', 'completed-task file action');
   assert.equal(
-    await evaluate(chrome, session, 'document.querySelector(".task-status-heading").textContent'),
-    'Task complete',
+    await evaluate(chrome, session, 'document.querySelector(".completion-evidence p").textContent'),
+    'Checks passed.',
     'An existing runnable entry does not imply browser verification.',
   );
   await waitFor(
@@ -441,7 +442,7 @@ async function checkLogsAndTooltips(chrome, session) {
     true,
     'Escape dismisses the tooltip without moving keyboard focus.',
   );
-  await evaluate(chrome, session, 'document.querySelector(".app-preview-launch button").focus()');
+  await evaluate(chrome, session, `document.querySelector('${runButton}').focus()`);
   for (const selector of ['[aria-label=Restart]', '[role=tooltip]:popover-open']) {
     const point = await evaluate(
       chrome,
@@ -508,13 +509,8 @@ async function checkSidePanelTerminal(chrome, workspace, id) {
     'Chrome did not return the side panel debugging session.',
   );
   await chrome.request('Runtime.enable', {}, sessionId);
-  const run = '.app-preview-launch button';
-  await waitFor(
-    chrome,
-    sessionId,
-    `document.querySelector('${run}')?.innerText.trim() === 'Run'`,
-    'side panel Run',
-  );
+  const run = runButton;
+  await waitFor(chrome, sessionId, `!!document.querySelector('${run}:enabled')`, 'side panel Run');
   const originalURL = await expectAppTab(chrome, 'Side panel Run', () => click(chrome, sessionId, run));
   await waitFor(
     chrome,
@@ -619,13 +615,13 @@ export async function checkAppRun(executable, directory, extension, log, signal)
     const native = await installNativeHost(owned, id);
     await completeProject(native);
     const app = await page(chrome, 'chrome-extension://' + id + '/workspace.html');
-    const taskButton = '.app-preview-launch button';
+    const taskButton = runButton;
     const dock = '.terminal-dock';
     const sessions = `[...document.querySelector('${picker}').options].filter(option => option.value)`;
     await waitFor(
       chrome,
       app.session,
-      `document.querySelector('${taskButton}')?.innerText.trim() === 'Run'`,
+      `!!document.querySelector('${taskButton}:enabled')`,
       'verified app Run button',
     );
     await selectTask(chrome, app.session, firstTask);

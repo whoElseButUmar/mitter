@@ -51,12 +51,13 @@ function buttons(html) {
 }
 
 test('completed task actions keep Open chat beside Run and Open files when a saved chat exists', async () => {
-  const linked = buttons(await renderCompletedChat(true)).map((button) => button.label);
+  const linked = [...(await renderCompletedChat(true)).matchAll(/<button\b[^>]*aria-label="([^"]+)"/g)].map(
+    (match) => match[1],
+  );
   assert.ok(linked.includes('Run'));
   assert.ok(linked.includes('Open files'));
   assert.equal(linked.filter((label) => label === 'Open chat').length, 1);
-  const unlinked = buttons(await renderCompletedChat(false)).map((button) => button.label);
-  assert.ok(!unlinked.includes('Open chat'));
+  assert.doesNotMatch(await renderCompletedChat(false), /<button\b[^>]*aria-label="Open chat"/);
 });
 
 function labels(task, state) {
@@ -431,8 +432,6 @@ test('task stages keep output and technical information in closed disclosures', 
     ['running', 'Updating project'],
     ['checking', 'Checking results'],
     ['approval', 'Approval needed'],
-    ['ready', 'App ready'],
-    ['unverified', 'Task complete'],
   ]) {
     const html = renderTaskState(scenario);
     assert.equal(
@@ -647,17 +646,18 @@ test('verified results group Run and Open files with the outcome and keep full e
     summary: proposal,
     evidence: { source: 'passed', domain: 'passed', browser: 'passed', lighthouse: 'passed', detail },
   });
-  const heading = /<div class="task-heading-row">([\s\S]*?)<\/div>/.exec(html);
+  const heading = /<div class="task-heading-row task-handoff">([\s\S]*?)<\/div>/.exec(html);
   assert.ok(heading);
   assert.match(heading[1], /<h1\b/);
-  const handoff = html.slice(html.indexOf('class="task-handoff"'), html.indexOf('class="task-details"'));
-  assert.match(handoff, /App ready/);
-  assert.match(handoff, /aria-label="Run the app"/);
+  const handoff = heading[1];
   assert.deepEqual(
-    buttons(handoff).map((button) => button.label),
-    ['Run', 'Open files'],
+    buttons(handoff).map((button) => [button.attributes.match(/aria-label="([^"]+)"/)?.[1], button.label]),
+    [
+      ['Run', ''],
+      ['Open files', ''],
+    ],
   );
-  assert.doesNotMatch(handoff, /state-summary/);
+  assert.doesNotMatch(html, /App ready|class="task-state"|class="state-summary"/);
   assert.equal(html.split(detail).length, 2);
   assert.ok(html.indexOf(detail) < html.indexOf(proposal));
   const evidence = /<details\b([^>]*\bclass="completion-evidence"[^>]*)>([\s\S]*?)<\/details>/.exec(html);
@@ -677,7 +677,7 @@ test('unverified completion keeps its qualification and does not claim browser c
     at: 1,
     summary: 'Files are ready.',
   });
-  assert.match(html, /Completion checks did not run\./);
-  assert.ok(buttons(html).some((button) => button.label === 'Open files'));
-  assert.doesNotMatch(html, /Browser checks passed|Verification details|aria-label="Run the app"/);
+  assert.match(html, /<details class="completion-evidence">[\s\S]*?Completion checks did not run\./);
+  assert.match(html, /<button\b[^>]*aria-label="Open files"/);
+  assert.doesNotMatch(html, /Browser checks passed|class="task-state"|aria-label="Run"/);
 });
