@@ -354,7 +354,7 @@ test('a follow-up rewrite rejects invalid text and applies a valid preview witho
 
   composer.focus('keep this draft');
   const input = root.querySelector('textarea');
-  await button(root, 'Rewrite…').emit('click');
+  await root.querySelector('.rewrite-toggle').emit('click');
   assert.equal(root.querySelector('.followup-footer').hidden, true);
   await root.querySelector('form').emit('submit');
   await button(root, 'Rewrite with ChatGPT').emit('click');
@@ -370,7 +370,7 @@ test('a follow-up rewrite rejects invalid text and applies a valid preview witho
   assert.equal(input.value, text);
   assert.equal(document.activeElement, input);
   assert.equal(root.querySelector('.followup-footer').hidden, false);
-  assert.equal(button(root, 'Send').disabled, false);
+  assert.equal(root.querySelector('.followup-send').disabled, false);
   composer.dispose();
 });
 
@@ -412,7 +412,7 @@ test('follow-up rewriting aborts on task changes and retrying send keeps its ide
   };
   const composer = mountFollowupComposer(root, options);
   composer.focus('follow up');
-  await button(root, 'Rewrite…').emit('click');
+  await root.querySelector('.rewrite-toggle').emit('click');
   const generating = button(root, 'Rewrite with ChatGPT').emit('click');
   composer.update({ ...options, workerId: 'b' });
   assert.equal(signal.aborted, true);
@@ -425,7 +425,7 @@ test('follow-up rewriting aborts on task changes and retrying send keeps its ide
   assert.equal(requests[0].id, requests[1].id);
   assert.equal(requests[0].instruction, 'follow up');
   assert.equal(root.querySelector('textarea').value, '');
-  assert.equal(button(root, 'Send').disabled, true);
+  assert.equal(root.querySelector('.followup-send').disabled, true);
   composer.dispose();
   assert.equal(root.children.length, 0);
 });

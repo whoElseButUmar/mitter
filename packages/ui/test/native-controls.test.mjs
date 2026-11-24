@@ -418,18 +418,15 @@ test('follow-up actions track running and disabled state without resetting the d
   const footer = root.querySelector('.followup-footer');
   const send = footer.querySelector('.primary');
   const steer = footer.querySelector('.steer-button');
-  const hint = footer.querySelector('small');
   composer.focus('Keep the current draft.');
   assert.equal(steer.hidden, true);
-  assert.equal(hint.hidden, true);
-  assert.equal(send.textContent, 'Send');
+  assert.equal(send.getAttribute('aria-label'), 'Send');
 
   composer.update({ ...options, running: true });
   assert.equal(steer.hidden, false);
   assert.equal(steer.textContent, 'Steer now');
   assert.equal(steer.disabled, false);
-  assert.equal(hint.hidden, false);
-  assert.equal(send.textContent, 'Queue follow-up');
+  assert.equal(send.getAttribute('aria-label'), 'Queue follow-up');
 
   composer.update({ ...options, running: true, disabled: true });
   assert.equal(input.disabled, true);
@@ -438,8 +435,7 @@ test('follow-up actions track running and disabled state without resetting the d
 
   composer.update({ ...options, disabled: true });
   assert.equal(steer.hidden, true);
-  assert.equal(hint.hidden, true);
-  assert.equal(send.textContent, 'Send');
+  assert.equal(send.getAttribute('aria-label'), 'Send');
   assert.equal(send.disabled, true);
   assert.equal(input.disabled, true);
   assert.equal(input.value, 'Keep the current draft.');
@@ -480,7 +476,7 @@ test('queue, steer and send require nonblank follow-up text and reset after subm
   assert.equal(input.value, '');
   assert.ok(queue.disabled && steer.disabled && rewrite.disabled);
   composer.update({ ...options, running: false });
-  assert.equal(queue.textContent, 'Send');
+  assert.equal(queue.getAttribute('aria-label'), 'Send');
   assert.equal(queue.disabled, true);
   composer.dispose();
 });

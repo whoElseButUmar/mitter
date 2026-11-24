@@ -387,9 +387,15 @@ p {
 .task-layout {
   display: flex;
   flex-direction: column;
-  /* The project pane scrolls; wrapped status and recovery rows must keep their height. */
-  flex: 1 0 auto;
+  flex: 1;
   min-height: 0;
+}
+
+.task-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .goal-block {
@@ -2549,50 +2555,124 @@ select[data-enhanced] {
 }
 
 .followup-section {
-  border-top: 1px solid var(--line);
-  background: var(--panel);
-  padding: var(--space-lg);
   flex: none;
+  max-block-size: 70%;
+  overflow: auto;
+  padding: var(--space-sm) var(--space-lg) var(--space-md);
+}
+
+@media (max-height: 480px) {
+  .app-shell:has(.followup-section) .debug-console {
+    min-height: 0;
+    max-height: 24dvh;
+  }
+
+  .app-shell:has(.followup-section) > .terminal-dock {
+    min-height: 0;
+    max-height: 26dvh;
+  }
 }
 
 .followup-composer {
-  padding: 0;
+  padding: var(--space-sm);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
 }
 
-.followup-label {
+.followup-composer:focus-within {
+  border-color: var(--scroll-thumb);
+}
+
+.followup-draft {
   display: grid;
-  gap: var(--space-sm);
-  font-size: var(--font-small);
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-xs);
+}
+
+.followup-draft textarea {
+  inline-size: 100%;
+  height: auto;
+  min-block-size: calc(1lh + 8px);
+  max-block-size: min(calc(6lh + 8px), 30dvh);
+  field-sizing: content;
+  overflow-y: auto;
+  resize: none;
+  padding: 4px var(--space-xs);
+  border: 0;
+  background: transparent;
+  font-size: var(--font-body);
+  line-height: 1.55;
+}
+
+.followup-draft textarea:focus-visible {
+  outline: none;
+}
+
+@supports not (field-sizing: content) {
+  .followup-draft::before {
+    content: attr(data-draft) ' ';
+    grid-area: 1 / 1;
+    visibility: hidden;
+    overflow: hidden;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    padding: 4px var(--space-xs);
+    font-size: var(--font-body);
+    line-height: 1.55;
+    max-block-size: min(calc(6lh + 8px), 30dvh);
+  }
+
+  .followup-draft textarea {
+    grid-area: 1 / 1;
+    align-self: stretch;
+  }
+
+  .followup-draft .rewrite-toggle {
+    grid-area: 1 / 2;
+  }
+}
+
+.followup-composer .icon-button {
   color: var(--muted);
 }
 
-.followup-label textarea {
-  box-sizing: border-box;
-  width: 100%;
-  resize: vertical;
-  min-height: 51px;
-  max-height: 200px;
-  font:
-    0.75rem/1.45 system-ui,
-    sans-serif;
+.followup-footer,
+.followup-send-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
 }
 
 .followup-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding-top: 6px;
+  margin-top: var(--space-xs);
+  min-height: 30px;
 }
 
-.followup-footer small {
-  font-size: 0.75rem;
-  color: #aaa799;
+.followup-send-actions {
+  margin-inline-start: auto;
 }
 
-.followup-footer button {
-  font-size: 0.75rem;
-  padding: 5px 12px;
+.followup-send {
+  inline-size: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: 8px;
+}
+
+.followup-composer .image-attachments {
+  margin: 0 0 var(--space-xs);
+  max-block-size: 7rem;
+  overflow: auto;
+}
+
+.followup-rewrite .rewrite-panel {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  border-top: 1px solid var(--line);
+  padding: var(--space-sm) var(--space-xs) var(--space-xs);
 }
 
 .followup-status {
@@ -2603,7 +2683,9 @@ select[data-enhanced] {
 
 .followup-queue {
   font-size: 0.75rem;
-  margin: 8px 14px 0;
+  margin-bottom: var(--space-xs);
+  max-block-size: 6rem;
+  overflow: auto;
 }
 
 .followup-row {
@@ -2747,10 +2829,6 @@ select[data-enhanced] {
 
   .file-caption > span:first-child {
     max-width: calc(100% - 170px);
-  }
-
-  .followup-footer small {
-    max-width: 180px;
   }
 
   .selection-editor {
@@ -2911,15 +2989,6 @@ button.miter-toast-close:hover {
   .miter-toast {
     animation: none;
   }
-}
-
-.followup-footer {
-  flex-wrap: wrap;
-  gap: 7px;
-}
-
-.followup-footer small {
-  flex: 1 1 140px;
 }
 
 .steer-button {
@@ -3145,24 +3214,6 @@ button.miter-toast-close:hover {
     BlinkMacSystemFont,
     sans-serif;
   resize: vertical;
-}
-
-.followup-footer .rewrite-toggle {
-  white-space: nowrap;
-}
-
-.followup-footer small {
-  flex: 1;
-}
-
-@media (max-width: 410px) {
-  .followup-footer {
-    flex-wrap: wrap;
-  }
-
-  .followup-footer small {
-    flex-basis: 100%;
-  }
 }
 
 .task-composer-actions {

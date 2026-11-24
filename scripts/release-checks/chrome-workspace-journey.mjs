@@ -265,6 +265,7 @@ export async function checkWorkspaceJourney(chrome, session, projectRoot, modelP
     'title and details reach the workspace without starting the task',
   );
 
+  await checkFollowupLayout(chrome, session);
   await checkFollowupRewrite(chrome, session);
   await assertCloseInsideTab(chrome, session, '.task-tab[aria-selected=true]', 'Close Evening journal tab');
   await chrome.request(
@@ -365,6 +366,86 @@ export async function checkWorkspaceJourney(chrome, session, projectRoot, modelP
   await click(chrome, session, '[data-clear-model]');
   assert.equal(await evaluate(chrome, session, 'document.querySelector("[data-clear-model]").hidden'), true);
   await press(chrome, session, 'Escape', 27);
+}
+
+async function checkFollowupLayout(chrome, session) {
+  try {
+    for (const width of [1024, 320]) {
+      await chrome.request(
+        'Emulation.setDeviceMetricsOverride',
+        {
+          width,
+          height: 900,
+          deviceScaleFactor: 1,
+          mobile: false,
+        },
+        session,
+      );
+      const layout = await evaluate(
+        chrome,
+        session,
+        `(() => {
+        const section = document.querySelector('.followup-section');
+        const composer = section.querySelector('.followup-composer');
+        const input = composer.querySelector('.followup-draft textarea');
+        const attach = composer.querySelector('.attach-images');
+        const rewrite = composer.querySelector('.rewrite-toggle');
+        const send = composer.querySelector('button[type=submit]');
+        const scroller = document.querySelector('.task-scroll');
+        const content = scroller.firstElementChild;
+        const previousPadding = content.style.paddingBottom;
+        const previousScroll = scroller.scrollTop;
+        const setDraft = value => {
+          input.value = value;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          return input.clientHeight;
+        };
+        const original = input.value;
+        const iconOnly = [attach, rewrite, send].every(button =>
+          button.getAttribute('aria-label') && !button.textContent.trim() && button.querySelector('svg[aria-hidden=true]'));
+        const drafting = input.getBoundingClientRect();
+        const plus = attach.getBoundingClientRect();
+        const pen = rewrite.getBoundingClientRect();
+        const arrow = send.getBoundingClientRect();
+        const compact = input.clientHeight;
+        const threeLines = setDraft(['First line', 'Second line', 'Third line'].join(String.fromCharCode(10)));
+        const capped = setDraft(('Another line' + String.fromCharCode(10)).repeat(30));
+        const cappedWithScroll = input.scrollHeight > capped && capped <= 6 * parseFloat(getComputedStyle(input).lineHeight) + 9;
+        const shrunk = setDraft(original);
+        const bottom = section.getBoundingClientRect().bottom;
+        content.style.paddingBottom = '1200px';
+        scroller.scrollTop = scroller.scrollHeight;
+        const pinned = scroller.scrollTop > 0 && section.getBoundingClientRect().bottom === bottom &&
+          bottom === document.querySelector('.task-layout').getBoundingClientRect().bottom;
+        content.style.paddingBottom = previousPadding;
+        scroller.scrollTop = previousScroll;
+        return {
+          iconOnly: !!iconOnly,
+          controls: plus.top >= drafting.bottom && Math.abs(arrow.top - plus.top) <= 1 &&
+            arrow.left > plus.right && pen.left >= drafting.right && pen.top === drafting.top,
+          autosize: compact < threeLines && threeLines < capped && cappedWithScroll && shrunk === compact,
+          pinned,
+        };
+      })()`,
+      );
+      assert.deepEqual(
+        layout,
+        { iconOnly: true, controls: true, autosize: true, pinned: true },
+        'Follow-up composer at ' + width + 'px.',
+      );
+    }
+  } finally {
+    await chrome.request(
+      'Emulation.setDeviceMetricsOverride',
+      {
+        width: 1024,
+        height: 900,
+        deviceScaleFactor: 1,
+        mobile: false,
+      },
+      session,
+    );
+  }
 }
 
 async function checkFollowupRewrite(chrome, session) {

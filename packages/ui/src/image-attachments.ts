@@ -359,6 +359,7 @@ export function mountImageAttachments(
   renderPreviews();
 
   return {
+    trigger: attach,
     setScope,
     get busy() {
       return !!scope?.busy || !!scope?.blocked;

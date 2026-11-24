@@ -6,7 +6,7 @@ import { mountFollowupComposer } from '../../../packages/ui/src/followup-compose
 import type { FollowupSummary } from '../../../packages/protocol/src/requests';
 import type { ChangeRequest } from './FileViewer';
 import { ContextArea } from './ContextArea';
-import { TooltipButton } from './components/TooltipButton';
+import { TooltipButton, bindTooltip } from './components/TooltipButton';
 import { Icon } from './icons';
 
 export function FollowupPanel(props: {
@@ -39,7 +39,10 @@ export function FollowupPanel(props: {
           autoStart: true,
         }),
     });
-    createEffect(() =>
+    const tooltips = form.iconButtons.map((button) =>
+      bindTooltip(button, () => button.getAttribute('aria-label') || ''),
+    );
+    createEffect(() => {
       form.update({
         workerId: props.workerId,
         running: props.running,
@@ -52,9 +55,17 @@ export function FollowupPanel(props: {
             ...result,
             autoStart: true,
           }),
-      }),
-    );
-    onCleanup(form.dispose);
+      });
+      for (const tooltip of tooltips) {
+        tooltip.refresh();
+      }
+    });
+    onCleanup(() => {
+      for (const tooltip of tooltips) {
+        tooltip.dispose();
+      }
+      form.dispose();
+    });
   });
   const pending = () => props.items.filter((followup) => ['queued', 'blocked'].includes(followup.status));
   return (
@@ -66,11 +77,6 @@ export function FollowupPanel(props: {
           </button>
         </div>
       </Show>
-      <div
-        ref={(element) => {
-          root = element;
-        }}
-      />
       <Show when={pending().length}>
         <details class="followup-queue" open>
           <summary class="disclosure-summary">
@@ -132,6 +138,11 @@ export function FollowupPanel(props: {
           {error()}
         </p>
       </Show>
+      <div
+        ref={(element) => {
+          root = element;
+        }}
+      />
     </section>
   );
 }

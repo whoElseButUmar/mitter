@@ -2,6 +2,7 @@ import type { RewriteRequest } from '../../protocol/src/rewrite.js';
 import type { FollowupRequest } from '../../protocol/src/requests.js';
 import { mountDraftRewrite } from './draft-rewrite.js';
 import { mountImageAttachments } from './image-attachments.js';
+import { createIcon } from './icons.js';
 
 type ComposerRequest = Pick<FollowupRequest, 'id' | 'instruction' | 'autoStart' | 'imageAttachments'>;
 
@@ -26,22 +27,22 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
   let taskGeneration = 0;
   const form = document.createElement('form');
   form.className = 'followup-composer';
-  const label = document.createElement('label');
-  label.className = 'followup-label';
-  label.textContent = 'Follow up';
+  const draft = document.createElement('div');
+  draft.className = 'followup-draft';
+  const mirrorDraft = document.defaultView?.CSS?.supports('field-sizing', 'content') === false;
   const input = document.createElement('textarea');
   input.placeholder = 'What would you like to change next?';
-  input.rows = 2;
+  input.rows = 1;
   input.maxLength = 4000;
   input.required = true;
   input.setAttribute('aria-label', 'Follow-up instruction');
-  label.append(input);
+  draft.append(input);
   const footer = document.createElement('div');
   footer.className = 'followup-footer';
-  const hint = document.createElement('small');
   const send = document.createElement('button');
   send.type = 'submit';
-  send.className = 'primary';
+  send.className = 'primary followup-send';
+  send.append(createIcon(document, 'arrowUp'));
   const status = document.createElement('p');
   status.className = 'followup-status';
   status.hidden = true;
@@ -52,10 +53,10 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
   steer.textContent = 'Steer now';
   steer.title = 'Stop the pending plan and use this instruction now. Completed work stays.';
   const rewriteRoot = document.createElement('div');
+  rewriteRoot.className = 'followup-rewrite';
   const attachmentRoot = document.createElement('div');
   attachmentRoot.className = 'image-attachments';
-  footer.append(hint);
-  form.append(label, attachmentRoot, rewriteRoot, footer, status);
+  form.append(attachmentRoot, draft, rewriteRoot, footer, status);
   root.append(form);
   const attachments = mountImageAttachments(attachmentRoot, input, render, footer);
   const rewrite = mountDraftRewrite(
@@ -67,11 +68,24 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
       },
       openChanged: () => render(),
     },
-    footer,
+    draft,
   );
-  footer.append(steer, send);
+  const trailingActions = document.createElement('div');
+  trailingActions.className = 'followup-send-actions';
+  trailingActions.append(steer, send);
+  footer.append(trailingActions);
+
+  attachments.trigger.classList.add('icon-button');
+  attachments.trigger.setAttribute('aria-label', 'Attach images');
+  attachments.trigger.replaceChildren(createIcon(document, 'plus'));
+  rewrite.trigger.classList.add('icon-button');
+  rewrite.trigger.setAttribute('aria-label', 'Rewrite draft');
+  rewrite.trigger.replaceChildren(createIcon(document, 'pencil'));
 
   function render(): void {
+    if (mirrorDraft) {
+      draft.dataset.draft = input.value;
+    }
     const blocked = !!options.disabled || busy;
     const imagesAllowed = options.canAttachImages !== false;
     const submissionDisabled =
@@ -88,24 +102,13 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
     rewrite.setDisabled(blocked);
     attachments.setAvailability(imagesAllowed, blocked);
 
-    send.textContent = 'Send';
-
+    let sendLabel = 'Send';
     if (busy) {
-      send.textContent = 'Sending…';
+      sendLabel = 'Sending…';
     } else if (options.running) {
-      send.textContent = 'Queue follow-up';
+      sendLabel = 'Queue follow-up';
     }
-
-    hint.hidden = !options.running;
-    hint.textContent = '';
-
-    if (options.running) {
-      hint.textContent = 'Runs after the current work.';
-
-      if (options.steer) {
-        hint.textContent = 'Queue waits. Steer changes the current plan.';
-      }
-    }
+    send.setAttribute('aria-label', sendLabel);
   }
 
   function showError(reason: unknown): void {
@@ -221,7 +224,9 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
   const keydown = (event: KeyboardEvent) => {
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.isComposing) {
       event.preventDefault();
-      form.requestSubmit();
+      if (!send.disabled) {
+        form.requestSubmit(send);
+      }
     }
   };
   const changed = () => {
@@ -234,6 +239,7 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
   update(options);
 
   return {
+    iconButtons: [attachments.trigger, rewrite.trigger, send],
     update,
     focus(text?: string) {
       if (text) {

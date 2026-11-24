@@ -1,4 +1,5 @@
 import {
+  ArrowUp,
   Check,
   ChevronDown,
   CircleCheck,
@@ -9,18 +10,21 @@ import {
   Folders,
   Info,
   ListTodo,
+  Pencil,
   Plus,
   TriangleAlert,
   X,
 } from 'lucide';
 
 const icons = {
+  arrowUp: ArrowUp,
   check: Check,
   chevronDown: ChevronDown,
   folders: Folders,
   folder: Folder,
   fileText: FileText,
   listTodo: ListTodo,
+  pencil: Pencil,
   plus: Plus,
   close: X,
   more: Ellipsis,

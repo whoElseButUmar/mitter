@@ -178,6 +178,7 @@ export function mountDraftRewrite(
   render();
 
   return {
+    trigger: toggle,
     get open() {
       return !panel.hidden;
     },
