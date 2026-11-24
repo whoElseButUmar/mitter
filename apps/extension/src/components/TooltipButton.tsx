@@ -12,12 +12,14 @@ export function TooltipButton(props: {
   busy?: boolean;
   class?: string;
   ariaHasPopup?: 'dialog';
+  ariaPressed?: boolean;
+  hint?: string;
   onClick: JSX.EventHandler<HTMLButtonElement, MouseEvent>;
 }) {
   let button: HTMLButtonElement | undefined;
 
   onMount(() => {
-    const tooltip = bindTooltip(requireElement(button, 'tooltip button'), () => props.label);
+    const tooltip = bindTooltip(requireElement(button, 'tooltip button'), () => props.hint ?? props.label);
     createEffect(() => {
       tooltip.refresh();
       if (props.disabled) {
@@ -36,6 +38,7 @@ export function TooltipButton(props: {
       aria-busy={props.busy}
       aria-disabled={props.busy || undefined}
       aria-haspopup={props.ariaHasPopup}
+      aria-pressed={props.ariaPressed}
       disabled={props.disabled}
       onClick={props.onClick}
     >

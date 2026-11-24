@@ -54,7 +54,7 @@ async function checkTerminalAfterRebuild(chrome, session, extension) {
   // A source rebuild can replace all old chunks while this document stays open.
   await rename(chunks, previousChunks);
   try {
-    await click(chrome, session, '.statusbar button[title^="App runs and shells"]');
+    await click(chrome, session, '.statusbar button[aria-label="Terminal"]');
     await waitFor(
       chrome,
       session,

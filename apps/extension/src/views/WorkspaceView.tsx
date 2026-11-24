@@ -14,6 +14,7 @@ import { SetupPanel } from './SetupPanel';
 import { connectionHelp } from '../ui/connection-help';
 import { ConnectionAction } from './ConnectionGuide';
 import { ProjectHome } from './ProjectHome';
+import { createWorkspaceHandoff } from '../ui/workspace-handoff';
 // Load the code with the workspace so a rebuild cannot remove it before the first Terminal click.
 import { TerminalDock } from '../TerminalDock';
 
@@ -46,7 +47,10 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
   } = props.controller;
   const { chooseProject, choose, openLibrary, closeTabs, menuItems, projectTabs, taskTabs, activeCount } =
     tabs;
-  const canExpand = typeof location !== 'undefined' && location.pathname !== '/workspace.html';
+  const canExpand = typeof location !== 'undefined' && location.pathname === '/sidepanel.html';
+  const handoff = createWorkspaceHandoff(canExpand, setNotice);
+  const inTab = () => handoff.externalTab() !== undefined;
+  let workspaceButton: HTMLButtonElement | undefined;
 
   const projectPanelLabel = () => {
     const currentProject = project();
@@ -95,8 +99,17 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
     return 'Open a project to add a task';
   };
 
-  return (
-    <div class="app-shell">
+  const workingTasksLabel = () => {
+    const count = activeCount();
+    if (count === 1) {
+      return '1 working task';
+    }
+
+    return count + ' working tasks';
+  };
+
+  const workspace = (
+    <div class="app-shell" hidden={inTab()}>
       <a class="skip-link" href="#mitter-task-view">
         Skip to workspace
       </a>
@@ -135,14 +148,12 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
         </Show>
         <Show when={canExpand}>
           <button
+            ref={workspaceButton}
             class="workspace-open"
             aria-label="Open full workspace"
             title="Open full workspace"
-            onClick={() =>
-              chrome.tabs.create({
-                url: chrome.runtime.getURL('/workspace.html'),
-              })
-            }
+            disabled={handoff.opening()}
+            onClick={() => void handoff.openWorkspace()}
           >
             <Icon name="external" />
             Workspace
@@ -282,7 +293,7 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
                   </Show>
                 }
               >
-                {(task) => <TaskView controller={props.controller} task={task()} />}
+                {(task) => <TaskView controller={props.controller} task={task()} suspended={inTab()} />}
               </Show>
             </div>
           </div>
@@ -315,26 +326,27 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
       </Show>
       <footer class="statusbar">
         <Show when={activeCount()}>
-          <button
-            title="View working tasks, including closed tabs"
+          <TooltipButton
+            class="icon-button"
+            icon="tasks"
+            label={workingTasksLabel()}
             onClick={() => openLibrary('tasks', '', 'active')}
-          >
-            {activeCount()} working
-          </button>
+          />
         </Show>
         <Show when={project() || terminalOpen()}>
-          <button
+          <TooltipButton
+            class="icon-button"
+            icon="terminal"
+            label="Terminal"
+            hint={'Terminal · Ctrl+Shift+`'}
+            ariaPressed={terminalOpen()}
             onClick={toggleTerminal}
-            aria-pressed={terminalOpen()}
-            title="App runs and shells · Ctrl+Shift+`"
-          >
-            <Icon name="terminal" />
-            Terminal
-          </button>
+          />
         </Show>
         <div class="spacer" />
         <MenuButton
           label="Help"
+          icon="help"
           items={[
             {
               id: 'docs',
@@ -356,18 +368,44 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
             },
           ]}
         />
-        <button
-          class="settings-button"
-          aria-label="Settings"
-          title="Settings"
+        <TooltipButton
+          class="icon-button settings-button"
+          icon="settings"
+          label="Settings"
+          ariaHasPopup="dialog"
           onClick={() => setModal('settings')}
           disabled={!connected()}
-        >
-          <Icon name="settings" />
-          Settings
-        </button>
+        />
       </footer>
       {props.children}
     </div>
+  );
+
+  return (
+    <>
+      {workspace}
+      <Show when={inTab()}>
+        <main class="app-shell workspace-handoff" aria-labelledby="workspace-handoff-title">
+          <div class="workspace-handoff-content">
+            <Mark size={30} />
+            <h1 id="workspace-handoff-title">Miter is open in a tab</h1>
+            <div class="workspace-handoff-actions">
+              <button type="button" class="primary" autofocus onClick={() => void handoff.takeMeThere()}>
+                Take me there
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handoff.openHere();
+                  queueMicrotask(() => workspaceButton?.focus());
+                }}
+              >
+                Open here instead
+              </button>
+            </div>
+          </div>
+        </main>
+      </Show>
+    </>
   );
 }

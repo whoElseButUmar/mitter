@@ -22,7 +22,7 @@ import { SetupCommandReview, setupReviewKey } from '../components/SetupCommandRe
 import { savedChatResultSchema } from '../schemas/local-results';
 import { callResult } from '../ui/rpc';
 
-export function TaskView(props: { controller: WorkspaceController; task: Worker }) {
+export function TaskView(props: { controller: WorkspaceController; task: Worker; suspended?: boolean }) {
   const {
     snapshot,
     connected,
@@ -196,7 +196,13 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
           </div>
         </Show>
         <Show keyed when={setupReviewKey(task())}>
-          {(_identity) => <SetupCommandReview task={task()} controller={props.controller} />}
+          {(_identity) => (
+            <SetupCommandReview
+              task={task()}
+              controller={props.controller}
+              suspended={props.suspended === true}
+            />
+          )}
         </Show>
         <Show when={!setupReviewKey(task()) && task().pending}>
           {(pending) => (

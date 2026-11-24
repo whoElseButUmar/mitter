@@ -360,11 +360,7 @@ async function checkFileHandoff(chrome, session) {
   );
   await press(chrome, session, 'Escape', 27);
   await waitFor(chrome, session, '!document.querySelector("dialog[open]")', 'Settings dismissed');
-  await evaluate(
-    chrome,
-    session,
-    `[...document.querySelectorAll('.statusbar button')].find(button => button.textContent.trim() === 'Terminal').click()`,
-  );
+  await click(chrome, session, '.statusbar button[aria-label="Terminal"]');
   await waitFor(
     chrome,
     session,
@@ -593,6 +589,81 @@ async function checkLogsAndTooltips(chrome, session) {
   );
 }
 
+async function checkWorkspaceHandoff(chrome, session) {
+  const open = 'button[aria-label="Open full workspace"]';
+  const handoff = '.workspace-handoff';
+  const workspaceTabs = `chrome.runtime.getContexts({contextTypes: ['TAB']}).then(contexts =>
+    contexts.filter(context => context.documentUrl === chrome.runtime.getURL('workspace.html'))
+      .map(context => context.tabId))`;
+  const draft = '.followup-composer textarea';
+  await waitFor(chrome, session, `!!document.querySelector('${draft}')`, 'follow-up composer');
+  await evaluate(chrome, session, `document.querySelector('${draft}').focus()`);
+  await chrome.request('Input.insertText', { text: 'Keep this draft' }, session);
+  const [original] = await evaluate(chrome, session, workspaceTabs);
+  assert.ok(Number.isInteger(original), 'The full workspace tab is already open.');
+
+  await click(chrome, session, open);
+  await waitFor(
+    chrome,
+    session,
+    `document.querySelector('${handoff} h1')?.textContent === 'Miter is open in a tab' &&
+      !document.querySelector('#mitter-task-view').checkVisibility()`,
+    'the handoff replaces the side panel workspace',
+  );
+  assert.deepEqual(await evaluate(chrome, session, workspaceTabs), [original]);
+  await evaluate(chrome, session, 'chrome.tabs.create({url: "about:blank"})');
+  await click(chrome, session, handoff + ' .primary');
+  await waitFor(
+    chrome,
+    session,
+    `chrome.tabs.get(${original}).then(tab => tab.active)`,
+    'Take me there activates the existing workspace tab',
+  );
+  await click(chrome, session, handoff + ' button:last-child');
+  await waitFor(
+    chrome,
+    session,
+    `!document.querySelector('${handoff}') && document.querySelector('${draft}').checkVisibility() &&
+      document.querySelector('${draft}').value === 'Keep this draft'`,
+    'Open here instead restores the side panel and its draft',
+  );
+  assert.deepEqual(await evaluate(chrome, session, workspaceTabs), [original]);
+
+  await evaluate(chrome, session, `chrome.tabs.remove(${original})`);
+  await click(chrome, session, open);
+  await waitFor(chrome, session, `(${workspaceTabs}).then(ids => ids.length === 1)`, 'new workspace tab');
+  await evaluate(chrome, session, `(${workspaceTabs}).then(([tab]) => chrome.tabs.remove(tab))`);
+  await waitFor(
+    chrome,
+    session,
+    `!document.querySelector('${handoff}') && document.querySelector('${open}').checkVisibility()`,
+    'closing the workspace tab restores the side panel',
+  );
+}
+
+async function checkFooter(chrome, session) {
+  await chrome.request('Page.bringToFront', {}, session);
+  assert.equal(
+    await evaluate(
+      chrome,
+      session,
+      `['Terminal', 'Help', 'Settings'].every(label => {
+        const button = document.querySelector('.statusbar button[aria-label="' + label + '"]');
+        return button?.checkVisibility() && !!button.querySelector('svg') && !button.textContent.trim();
+      })`,
+    ),
+    true,
+    'Footer controls use icons and keep their accessible names.',
+  );
+  await evaluate(chrome, session, 'document.querySelector(".statusbar [aria-label=Help]").focus()');
+  await waitFor(
+    chrome,
+    session,
+    `document.querySelector('.statusbar [role=tooltip]:popover-open')?.textContent === 'Help'`,
+    'Help has a keyboard tooltip',
+  );
+}
+
 async function checkSidePanelTerminal(chrome, workspace, id) {
   await evaluate(
     chrome,
@@ -705,6 +776,7 @@ async function checkSidePanelTerminal(chrome, workspace, id) {
     ),
     3,
   );
+  await checkWorkspaceHandoff(chrome, sessionId);
 }
 
 /** Cross the actual workspace → terminal dock → native host boundary using an isolated saved completion. */
@@ -858,6 +930,7 @@ export async function checkAppRun(executable, directory, extension, log, signal)
       true,
       'Stopping the app keeps keyboard focus in its terminal.',
     );
+    await checkFooter(chrome, app.session);
     await checkSidePanelTerminal(chrome, app.session, id);
     assert.deepEqual(
       chrome.events.filter((event) => event.method === 'Runtime.exceptionThrown'),

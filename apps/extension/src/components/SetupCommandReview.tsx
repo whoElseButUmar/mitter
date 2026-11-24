@@ -44,7 +44,11 @@ function CommandSnippet(props: { command: string; copy: (text: string) => Promis
   );
 }
 
-export function SetupCommandReview(props: { controller: WorkspaceController; task: Worker }) {
+export function SetupCommandReview(props: {
+  controller: WorkspaceController;
+  task: Worker;
+  suspended: boolean;
+}) {
   const controller = props.controller;
   const task = props.task;
   const pending = task.pending;
@@ -66,7 +70,7 @@ export function SetupCommandReview(props: { controller: WorkspaceController; tas
   const [error, setError] = createSignal('');
   const [manualReceipt, setManualReceipt] = createSignal('');
   const manualSession = () => props.task.pending?.manualSessionId || manualReceipt();
-  const dialogVisible = () => open() && !manualSession() && !controller.modal();
+  const dialogVisible = () => open() && !manualSession() && !controller.modal() && !props.suspended;
   createEffect(() => {
     if (dialogVisible()) {
       onCleanup(controller.reviewingSetup(task.id));

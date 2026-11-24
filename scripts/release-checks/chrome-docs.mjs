@@ -5,12 +5,7 @@ import { browserTargetsSchema, sessionIdSchema } from './chrome-schemas.mjs';
 import { evaluate, waitFor, click, press } from './chrome-ui.mjs';
 
 export async function openHelpItem(chrome, workspace, label) {
-  await evaluate(
-    chrome,
-    workspace,
-    `[...document.querySelectorAll('.statusbar .menu-trigger')]
-      .find(button => button.textContent.trim() === 'Help').click()`,
-  );
+  await click(chrome, workspace, '.statusbar button[aria-label="Help"]');
   const item = `[...document.querySelectorAll('[role="menuitem"]')]
     .find(item => item.textContent.trim() === ${JSON.stringify(label)})`;
   await waitFor(chrome, workspace, 'Boolean(' + item + ')', label + ' appears in Help');

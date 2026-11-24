@@ -746,14 +746,49 @@ p {
   flex-shrink: 0;
 }
 
-.statusbar button {
+.statusbar .icon-button {
   background: transparent;
   border: 0;
   color: var(--muted);
-  min-height: 32px;
-  padding: 5px 8px;
-  font-size: var(--font-small);
-  gap: 6px;
+  min-height: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+.statusbar .icon-button:enabled:hover,
+.statusbar .icon-button[aria-pressed='true'],
+.statusbar .icon-button[aria-expanded='true'] {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.workspace-handoff {
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: var(--space-xl);
+  text-align: center;
+}
+
+.workspace-handoff-content {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-lg);
+}
+
+.workspace-handoff-content > svg {
+  color: var(--accent);
+}
+
+.workspace-handoff-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-sm);
+}
+
+body:has(.workspace-handoff) > .miter-toasts {
+  display: none;
 }
 
 .welcome {
@@ -1157,11 +1192,6 @@ select {
 
 .segmented .selected {
   background: #585755;
-}
-
-.statusbar .icon-button {
-  min-height: 28px;
-  height: 28px;
 }
 
 @media (max-width: 800px) {
