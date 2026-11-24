@@ -11,6 +11,7 @@ import { enhanceSelects } from './select.js';
 export type DraftRewriteOptions = {
   rewrite?: ((request: RewriteRequest, signal: AbortSignal) => Promise<string>) | undefined;
   openChanged?(open: boolean): void;
+  hideEmptyTrigger?: boolean;
 };
 
 /** Reviews a draft before applying it. The parent form owns submission. */
@@ -52,8 +53,9 @@ export function mountDraftRewrite(
   }
 
   function render(): void {
-    toggle.hidden = !panel.hidden;
-    toggle.disabled = disabled || !input.value.trim();
+    const empty = !input.value.trim();
+    toggle.hidden = !panel.hidden || (!!options.hideEmptyTrigger && empty);
+    toggle.disabled = disabled || empty;
     settings.hidden = Boolean(request || result);
     output.hidden = !result;
     apply.hidden = !result;

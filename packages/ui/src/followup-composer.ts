@@ -66,6 +66,7 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
       get rewrite() {
         return options.rewrite;
       },
+      hideEmptyTrigger: true,
       openChanged: () => render(),
     },
     draft,

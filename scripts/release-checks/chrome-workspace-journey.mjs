@@ -401,17 +401,21 @@ async function checkFollowupLayout(chrome, session) {
           return input.clientHeight;
         };
         const original = input.value;
+        setDraft('   ');
+        const hiddenWhenBlank = !rewrite.checkVisibility();
+        const compact = setDraft('Draft');
+        const visibleWhenFilled = rewrite.checkVisibility() && !rewrite.disabled;
         const iconOnly = [attach, rewrite, send].every(button =>
           button.getAttribute('aria-label') && !button.textContent.trim() && button.querySelector('svg[aria-hidden=true]'));
         const drafting = input.getBoundingClientRect();
         const plus = attach.getBoundingClientRect();
         const pen = rewrite.getBoundingClientRect();
         const arrow = send.getBoundingClientRect();
-        const compact = input.clientHeight;
         const threeLines = setDraft(['First line', 'Second line', 'Third line'].join(String.fromCharCode(10)));
         const capped = setDraft(('Another line' + String.fromCharCode(10)).repeat(30));
         const cappedWithScroll = input.scrollHeight > capped && capped <= 6 * parseFloat(getComputedStyle(input).lineHeight) + 9;
         const shrunk = setDraft(original);
+        const hiddenWhenCleared = !rewrite.checkVisibility();
         const bottom = section.getBoundingClientRect().bottom;
         content.style.paddingBottom = '1200px';
         scroller.scrollTop = scroller.scrollHeight;
@@ -421,6 +425,7 @@ async function checkFollowupLayout(chrome, session) {
         scroller.scrollTop = previousScroll;
         return {
           iconOnly: !!iconOnly,
+          rewriteVisibility: hiddenWhenBlank && visibleWhenFilled && hiddenWhenCleared,
           controls: plus.top >= drafting.bottom && Math.abs(arrow.top - plus.top) <= 1 &&
             arrow.left > plus.right && pen.left >= drafting.right && pen.top === drafting.top,
           autosize: compact < threeLines && threeLines < capped && cappedWithScroll && shrunk === compact,
@@ -430,7 +435,7 @@ async function checkFollowupLayout(chrome, session) {
       );
       assert.deepEqual(
         layout,
-        { iconOnly: true, controls: true, autosize: true, pinned: true },
+        { iconOnly: true, rewriteVisibility: true, controls: true, autosize: true, pinned: true },
         'Follow-up composer at ' + width + 'px.',
       );
     }

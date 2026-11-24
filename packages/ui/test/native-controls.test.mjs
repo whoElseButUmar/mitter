@@ -460,10 +460,12 @@ test('queue, steer and send require nonblank follow-up text and reset after subm
   const steer = root.querySelector('.steer-button');
   const rewrite = root.querySelector('.rewrite-toggle');
   assert.ok(queue.disabled && steer.disabled && rewrite.disabled);
+  assert.equal(rewrite.hidden, true);
 
   input.value = '  \n';
   await input.emit('input');
   assert.ok(queue.disabled && steer.disabled && rewrite.disabled);
+  assert.equal(rewrite.hidden, true);
   await form.emit('submit');
   await steer.emit('click');
   assert.deepEqual(instructions, []);
@@ -471,10 +473,12 @@ test('queue, steer and send require nonblank follow-up text and reset after subm
   input.value = ' Ship this ';
   await input.emit('input');
   assert.ok(!queue.disabled && !steer.disabled && !rewrite.disabled);
+  assert.equal(rewrite.hidden, false);
   await form.emit('submit');
   assert.deepEqual(instructions, ['Ship this']);
   assert.equal(input.value, '');
   assert.ok(queue.disabled && steer.disabled && rewrite.disabled);
+  assert.equal(rewrite.hidden, true);
   composer.update({ ...options, running: false });
   assert.equal(queue.getAttribute('aria-label'), 'Send');
   assert.equal(queue.disabled, true);
