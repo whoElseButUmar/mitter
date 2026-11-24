@@ -5,6 +5,7 @@ import type { previewFailures } from '../preview-failures';
 import { errorMessage } from '../schemas/primitives';
 import { callResult, type ViewRPC } from './rpc';
 import { reviewedTaskBoundary } from './task-boundary';
+import { openAppPreview } from './terminal-runs';
 
 export function createTaskAppRun(options: {
   task: () => Worker;
@@ -98,15 +99,17 @@ export function createTaskAppRun(options: {
     try {
       const expectedRun = reviewedTaskBoundary(task);
       reportFailure = options.showTerminal(task);
-      await callResult(options.rpc, previewStartResultSchema, 'worker.previewStart', {
+      const started = await callResult(options.rpc, previewStartResultSchema, 'worker.previewStart', {
         workerId: task.id,
         expectedRun,
         mode: 'run',
       });
+      reportFailure = undefined;
       // The host owns the session even if the user switches tasks during startup.
       await options.failures?.clear(task.id, expectedRun).catch(() => {});
       if (current === revision) {
         setAutoError('');
+        await openAppPreview(started.url);
       }
     } catch (failure) {
       const message = errorMessage(failure);

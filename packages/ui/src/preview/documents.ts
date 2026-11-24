@@ -250,7 +250,7 @@ export async function htmlDocument(
 
   if (document.querySelector('script[type="module"]')) {
     warnings.push(
-      'Module imports and network requests need the app server. In the completed task, choose Run, then Open app in Terminal.',
+      'Module imports and network requests need the app server. Choose Run on the completed task to open it.',
     );
   }
 

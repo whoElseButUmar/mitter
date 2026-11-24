@@ -92,7 +92,7 @@ async function modifiedClick(page, key, selector, options) {
   }
 }
 
-async function assertHighlight(page, selector) {
+async function assertOutlines(page, className, selectors) {
   const session = await page.createCDPSession();
   try {
     const { root } = await session.send('DOM.getDocument', { depth: -1, pierce: true });
@@ -103,16 +103,19 @@ async function assertHighlight(page, selector) {
     const { node: toolbar } = await session.send('DOM.describeNode', { nodeId: toolbarId, pierce: true });
     const shadow = toolbar.shadowRoots?.[0];
     assert.ok(shadow);
-    const { nodeId } = await session.send('DOM.querySelector', {
+    const { nodeIds } = await session.send('DOM.querySelectorAll', {
       nodeId: shadow.nodeId,
-      selector: '.outline:not([hidden])',
+      selector: '.' + className + ':not([hidden])',
     });
-    const { model } = await session.send('DOM.getBoxModel', { nodeId });
-    const expected = await page.$eval(selector, (element) => {
-      const { left, top, right, bottom } = element.getBoundingClientRect();
-      return [left, top, right, top, right, bottom, left, bottom];
-    });
-    assert.deepEqual(model.border.map(Math.round), expected.map(Math.round));
+    assert.equal(nodeIds.length, selectors.length, 'Number of visible ' + className + ' boxes');
+    for (const [index, selector] of selectors.entries()) {
+      const { model } = await session.send('DOM.getBoxModel', { nodeId: nodeIds[index] });
+      const expected = await page.$eval(selector, (element) => {
+        const { left, top, right, bottom } = element.getBoundingClientRect();
+        return [left, top, right, top, right, bottom, left, bottom];
+      });
+      assert.deepEqual(model.border.map(Math.round), expected.map(Math.round));
+    }
   } finally {
     await session.detach();
   }
@@ -127,13 +130,30 @@ test('plain clicks keep only the most recent successful capture', { skip: !chrom
   await page.waitForSelector('#go');
   await page.click('#go');
   await waitForPickerStatus(page, singleCapture);
+  await page.mouse.move(400, 300);
+  await assertOutlines(page, 'capture-outline', ['#go']);
   await Promise.all([page.waitForNavigation(), modifiedClick(page, 'Alt', '#go')]);
   await waitForPickerStatus(page, singleCapture);
+  await assertOutlines(page, 'capture-outline', []);
 
   await page.click('#save');
   await waitForPickerStatus(page, singleCapture);
+  await modifiedClick(page, 'Shift', '#open-list');
+  await waitForPickerStatus(page, '2 captured. Click to replace or Shift-click to add.');
+  await assertOutlines(page, 'capture-outline', ['#save', '#open-list']);
+  await page.$eval('#open-list', (element) => {
+    element.style.transform = 'translateY(35px)';
+  });
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+  await assertOutlines(page, 'capture-outline', ['#save', '#open-list']);
+  await page.click('#save');
+  await waitForPickerStatus(page, singleCapture);
+  await assertOutlines(page, 'capture-outline', ['#save']);
   await page.click('#private');
   await waitForPickerStatus(page, 'Choose a visible area away from private fields.');
+  await assertOutlines(page, 'capture-outline', ['#save']);
   await pickerButton(page, 'Done');
   assert.deepEqual(
     (await choice).map(({ name }) => name),
@@ -152,7 +172,7 @@ test(
     await page.waitForSelector('#go');
     assert.equal(await page.evaluate(() => typeof window.miterPick), 'undefined');
     await page.hover('#go');
-    await assertHighlight(page, '#go');
+    await assertOutlines(page, 'outline', ['#go']);
     assert.equal(await page.$eval('#go', (element) => element.matches(':hover')), false);
     await page.click('#go');
     await waitForPickerStatus(page, singleCapture);
@@ -168,6 +188,7 @@ test(
     await page.waitForSelector('dialog:modal #list');
     await modifiedClick(page, 'Shift', '#list', { offset: { x: 8, y: 8 } });
     await waitForPickerStatus(page, '3 captured. Click to replace or Shift-click to add.');
+    await assertOutlines(page, 'capture-outline', ['#save', '#list']);
     await pickerButton(page, 'Done');
     const captures = await choice;
     assert.deepEqual(
@@ -236,6 +257,7 @@ test('Enter replaces, Shift+Enter adds, and Escape and abort cancel', { skip: !c
   assert.equal(await page.evaluate(() => document.activeElement.id), 'go');
   await page.keyboard.press('Enter');
   await waitForPickerStatus(page, singleCapture);
+  await assertOutlines(page, 'capture-outline', ['#go']);
   await Promise.all([page.waitForNavigation(), modifiedClick(page, 'Alt', '#go')]);
   await waitForPickerStatus(page, singleCapture);
   await page.focus('#open-list');

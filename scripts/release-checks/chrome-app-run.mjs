@@ -330,9 +330,9 @@ async function selectSession(chrome, session, name) {
   );
 }
 
-async function openApp(chrome, session) {
+async function expectAppTab(chrome, action, open) {
   const before = parseContract(browserTargetsSchema, await chrome.request('Target.getTargets'), 'Owned tabs');
-  await clickDockButton(chrome, session, 'Open app');
+  await open();
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
     const targets = parseContract(
@@ -342,6 +342,7 @@ async function openApp(chrome, session) {
     );
     const opened = targets.targetInfos.find(
       (target) =>
+        target.type === 'page' &&
         !before.targetInfos.some((old) => old.targetId === target.targetId) &&
         /^http:\/\/miter-[a-f0-9]{32}\.localhost:[1-9][0-9]{0,4}\/[a-f0-9]{32}\/index\.html$/.test(
           target.url,
@@ -353,7 +354,7 @@ async function openApp(chrome, session) {
     }
     await delay(30);
   }
-  throw new Error('Open app did not create its owned local preview tab.');
+  throw new Error(action + ' did not create its owned local preview tab.');
 }
 
 async function checkCompactHeader(chrome, session) {
@@ -514,7 +515,7 @@ async function checkSidePanelTerminal(chrome, workspace, id) {
     `document.querySelector('${run}')?.innerText.trim() === 'Run'`,
     'side panel Run',
   );
-  await click(chrome, sessionId, run);
+  const originalURL = await expectAppTab(chrome, 'Side panel Run', () => click(chrome, sessionId, run));
   await waitFor(
     chrome,
     sessionId,
@@ -576,7 +577,8 @@ async function checkSidePanelTerminal(chrome, workspace, id) {
     `Boolean(document.querySelector('${run}:enabled')) && document.querySelector('.terminal-dock').hidden`,
     'ready Run while dock hidden',
   );
-  await click(chrome, sessionId, run);
+  const reopenedURL = await expectAppTab(chrome, 'Side panel Run', () => click(chrome, sessionId, run));
+  assert.equal(reopenedURL, originalURL, 'Run opens the same running app after hiding Terminal.');
   await waitFor(
     chrome,
     sessionId,
@@ -631,7 +633,7 @@ export async function checkAppRun(executable, directory, extension, log, signal)
     await selectTask(chrome, app.session, secondTask);
     await selectTask(chrome, app.session, firstTask);
     await checkFileHandoff(chrome, app.session);
-    await click(chrome, app.session, taskButton);
+    const originalURL = await expectAppTab(chrome, 'Run', () => click(chrome, app.session, taskButton));
     await waitFor(
       chrome,
       app.session,
@@ -655,7 +657,6 @@ export async function checkAppRun(executable, directory, extension, log, signal)
       '18px',
       'Settings appearance applied before the terminal was first mounted.',
     );
-    const originalURL = await openApp(chrome, app.session);
     await clickDockButton(chrome, app.session, 'Restart');
     await waitFor(
       chrome,
@@ -668,7 +669,9 @@ export async function checkAppRun(executable, directory, extension, log, signal)
       true,
       'Restarting the app keeps keyboard focus in its terminal.',
     );
-    const restartedURL = await openApp(chrome, app.session);
+    const restartedURL = await expectAppTab(chrome, 'Open app', () => {
+      return clickDockButton(chrome, app.session, 'Open app');
+    });
     assert.notEqual(restartedURL, originalURL, 'Restart replaces the exact server session.');
     assert.equal(await evaluate(chrome, app.session, sessions + '.length'), 1);
 
@@ -690,20 +693,24 @@ export async function checkAppRun(executable, directory, extension, log, signal)
     } finally {
       await writeFile(path.join(native.project, 'index.html'), entry);
     }
-    await clickDockButton(chrome, app.session, 'Run again');
+    const recoveredURL = await expectAppTab(chrome, 'Run again', () => {
+      return clickDockButton(chrome, app.session, 'Run again');
+    });
     await waitState(chrome, app.session, 'running');
-    assert.equal(
-      await evaluate(chrome, app.session, 'document.activeElement.closest(".terminal-dock") !== null'),
-      true,
-      'Recovering a failed launch keeps keyboard focus in its terminal.',
+    await waitFor(
+      chrome,
+      app.session,
+      'document.activeElement.closest(".terminal-dock") !== null',
+      'keyboard focus returns to the terminal after Run again opens its preview',
     );
     assert.equal(
-      await openApp(chrome, app.session),
+      recoveredURL,
       restartedURL,
       'Recovering a failed replacement reuses the exact server that remained available.',
     );
     await click(chrome, app.session, '[aria-label="Hide terminal"]');
-    await click(chrome, app.session, taskButton);
+    const reusedURL = await expectAppTab(chrome, 'Run', () => click(chrome, app.session, taskButton));
+    assert.equal(reusedURL, restartedURL, 'Run reuses the running server.');
     await waitFor(
       chrome,
       app.session,
@@ -718,7 +725,8 @@ export async function checkAppRun(executable, directory, extension, log, signal)
       `document.querySelector('.task-heading-row h1')?.textContent === ${JSON.stringify(secondTask)} && !!document.querySelector('${taskButton}:enabled')`,
       'second completed task',
     );
-    await click(chrome, app.session, taskButton);
+    const secondURL = await expectAppTab(chrome, 'Run', () => click(chrome, app.session, taskButton));
+    assert.notEqual(secondURL, reusedURL, 'The second task opens its own app session.');
     await waitState(chrome, app.session, 'running');
     await waitFor(
       chrome,

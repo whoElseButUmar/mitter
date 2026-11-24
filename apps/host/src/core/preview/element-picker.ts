@@ -18,7 +18,7 @@ import {
 } from '../quality/browser-launch.js';
 import { removeScratch } from '../quality/sandbox.js';
 import { redact } from '../redaction.js';
-import { mountElementPicker } from './element-picker-page.js';
+import { mountElementPicker, type PickerCaptureUpdate } from './element-picker-page.js';
 
 const bounds = z
   .strictObject({
@@ -153,25 +153,28 @@ export async function pickInPage(page: Page, url: string, signal: AbortSignal): 
   const matchesDocument = (candidate: number) =>
     contextId === candidate && new URL(page.url()).origin === entry.origin;
 
-  async function settle(candidate: number, message = '') {
+  async function settle(candidate: number, message = '', capture?: PickerCaptureUpdate['capture']) {
     if (!finished && !signal.aborted && matchesDocument(candidate)) {
+      const update = { total: elements.length, message, capture };
       await session.send('Runtime.evaluate', {
         contextId: candidate,
-        expression: 'globalThis.miterSettleCapture(' + elements.length + ',' + JSON.stringify(message) + ')',
+        expression: 'globalThis.miterSettleCapture(' + JSON.stringify(update) + ')',
       });
     }
   }
 
   async function collect(candidate: number, append: boolean) {
     let message = '';
+    let update: PickerCaptureUpdate['capture'] = 'rejected';
     try {
       const element = await capture(session, candidate, entry);
       if (!finished && !signal.aborted && matchesDocument(candidate)) {
         if (!append) {
-          elements.length = 0;
-        }
-        if (elements.length < previewCaptureLimit) {
+          elements.splice(0, elements.length, element);
+          update = 'replaced';
+        } else if (elements.length < previewCaptureLimit) {
           elements.push(element);
+          update = 'added';
         }
       }
     } catch (error) {
@@ -183,7 +186,7 @@ export async function pickInPage(page: Page, url: string, signal: AbortSignal): 
       await session
         .send('Runtime.releaseObjectGroup', { objectGroup: 'picked-element-' + candidate })
         .catch(() => {});
-      await settle(candidate, message);
+      await settle(candidate, message, update);
     }
   }
 

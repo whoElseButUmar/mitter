@@ -5,6 +5,7 @@ import { previewStartResultSchema, runResultSchema } from '../../../../packages/
 import { errorMessage } from '../schemas/primitives';
 import { callResult, type ViewRPC } from './rpc';
 import { reviewedTaskBoundary } from './task-boundary';
+import { openAppPreview } from './terminal-runs';
 
 export function createStarterRun(options: {
   rpc: ViewRPC;
@@ -66,10 +67,14 @@ export function createStarterRun(options: {
         await callResult(options.rpc, runResultSchema, 'worker.run', params);
       } else if (task.state === 'complete') {
         reportPreviewError = options.showTerminal(task);
-        await callResult(options.rpc, previewStartResultSchema, 'worker.previewStart', {
+        const started = await callResult(options.rpc, previewStartResultSchema, 'worker.previewStart', {
           ...params,
           mode: 'run',
         });
+        reportPreviewError = undefined;
+        if (current()) {
+          await openAppPreview(started.url);
+        }
       }
     } catch (failure) {
       if (current()) {

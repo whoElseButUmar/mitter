@@ -4,7 +4,7 @@ import { createStarterRun } from '../../src/ui/starter-run.ts';
 import { createRoot, createSignal } from 'solid-js';
 import { createAutomationFormRequests } from '../../src/AutomationForm.tsx';
 import { createWorkerFormRequests, startCreatedTask } from '../../src/forms/WorkerForm.tsx';
-import { admittedChat, control, flush, worker } from './fixtures.mjs';
+import { admittedChat, control, flush, trackOpenedTabs, worker } from './fixtures.mjs';
 
 const reviewed = { workerId: 'worker_a', expectedRun: { runId: 'reviewed_run', epoch: 3 } };
 const startOptions = { consent: true, newChat: true, maxTurns: 15, maxMinutes: 30 };
@@ -295,6 +295,8 @@ test('starter Run reuses the completed app preview and rejects an unrelated loca
   const task = worker({ mode: 'local', goal: 'Run the Vite app', state: 'complete' });
   let receipt = task;
   const previewId = 'a'.repeat(32);
+  const url = 'http://miter-' + 'b'.repeat(32) + '.localhost:1234/' + previewId + '/';
+  const tabs = trackOpenedTabs(context);
   const calls = [],
     opened = [],
     terminals = [],
@@ -310,7 +312,7 @@ test('starter Run reuses the completed app preview and rejects an unrelated loca
         }
         return {
           previewId,
-          url: 'http://miter-' + 'b'.repeat(32) + '.localhost:1234/' + previewId + '/',
+          url,
           files: 2,
           bytes: 200,
           idleTimeoutMs: 1800000,
@@ -335,6 +337,7 @@ test('starter Run reuses the completed app preview and rejects an unrelated loca
     { workerId: task.id, expectedRun: { runId: task.runId, epoch: 0 }, mode: 'run' },
   ]);
   assert.deepEqual(terminals, [task.id]);
+  assert.deepEqual(tabs, [url]);
   assert.deepEqual(failures, []);
   receipt = { ...task, goal: 'Change the business logic' };
   await launcher.run(task.projectId);

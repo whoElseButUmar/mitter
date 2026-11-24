@@ -13,6 +13,14 @@ export type SetupTerminalFocus = { projectId: string; workerId: string; sessionI
 
 export type TerminalRunFocus = TaskBoundary & { projectId: string; workerId: string; failure?: () => string };
 
+export async function openAppPreview(url: string): Promise<void> {
+  try {
+    await chrome.tabs.create({ url });
+  } catch (error) {
+    throw new Error('Chrome could not open the app tab. Try Open app in Terminal.', { cause: error });
+  }
+}
+
 // Keep the same tab through an app restart. Stop still targets an exact server instance.
 export function runTabId(workerId: string, boundary: TaskBoundary): string {
   return 'app:' + JSON.stringify([workerId, boundary.runId, boundary.epoch]);
@@ -158,7 +166,7 @@ export function createTerminalRuns(options: {
         ) {
           throw new Error('This app session has ended. Select the running session or choose Run again.');
         }
-        await chrome.tabs.create({ url: live.url });
+        await openAppPreview(live.url);
       } else if (action === 'stop') {
         await callResult(options.rpc, previewStopResultSchema, 'worker.previewStop', {
           ...params,
@@ -183,6 +191,9 @@ export function createTerminalRuns(options: {
             });
             return next;
           });
+          if (mode.mode === 'run') {
+            await openAppPreview(started.url);
+          }
         }
       }
     } catch (reason) {

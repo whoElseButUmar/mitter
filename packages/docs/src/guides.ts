@@ -324,7 +324,7 @@ export const guideTopics: DocsTopic[] = [
       { kind: 'heading', text: 'Open and manage the app' },
       {
         kind: 'text',
-        text: 'Miter opens previews for supported static HTML, Vite and Next.js projects after verification. To open a completed app again, choose Run, then Open app in its terminal session. A preview is a private page on your computer for trying the app.',
+        text: 'Miter opens previews for supported static HTML, Vite and Next.js projects after verification. Choose Run on a completed task to open its preview in a new Chrome tab as soon as the server is ready. A preview is a private page on your computer for trying the app.',
       },
       {
         kind: 'terms',
@@ -336,13 +336,13 @@ export const guideTopics: DocsTopic[] = [
           {
             name: 'Point to edit',
             description:
-              'Click to capture one element and replace any previous captures. Shift-click to add more, up to ten. Option-click (Alt-click) lets you use the app. With the keyboard, Tab to an element and press Enter to capture it or Shift+Enter to add it. Choose Done to review the captures before starting the edit task.',
+              'Click to capture one element and replace any previous captures. Shift-click to add more, up to ten. Captured elements stay outlined on the current page. Option-click (Alt-click) lets you use the app. With the keyboard, Tab to an element and press Enter to capture it or Shift+Enter to add it. Choose Done to review the captures before starting the edit task.',
           },
         ],
       },
       {
         kind: 'text',
-        text: 'Choosing Run on the task again selects its existing running session. For a stopped session, use Run again in Terminal. Managed servers stop after an idle timeout or when the helper closes. For a supported app with a backend, keep durable server data in the directory Miter supplies as MITER_DATA_DIR so it survives the managed server’s restart.',
+        text: 'Run reuses the task’s running server and opens its preview in Chrome. For a stopped session, use Run again in Terminal. Managed servers stop after an idle timeout or when the helper closes. For a supported app with a backend, keep durable server data in the directory Miter supplies as MITER_DATA_DIR so it survives the managed server’s restart.',
       },
       { kind: 'heading', text: 'Run an existing Vite or Next.js app' },
       {
@@ -600,7 +600,7 @@ export const guideTopics: DocsTopic[] = [
       { kind: 'heading', text: 'The app preview is unavailable' },
       {
         kind: 'text',
-        text: 'Select the app in Terminal and inspect Logs. Restart the managed session after editing source files. If you see a module error when opening an HTML file directly, use Miter’s Run and Open app so Chrome loads it over the local preview server.',
+        text: 'Select the app in Terminal and inspect Logs. Restart the managed session after editing source files. If you see a module error when opening an HTML file directly, choose Run in Miter so Chrome loads it over the local preview server.',
       },
       {
         kind: 'text',

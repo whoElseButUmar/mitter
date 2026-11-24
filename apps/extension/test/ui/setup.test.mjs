@@ -8,7 +8,7 @@ import { createReadiness } from '../../src/ui/readiness.ts';
 import { ConnectionGuide } from '../../src/views/ConnectionGuide.tsx';
 import { ReadinessDetails } from '../../src/views/SetupPanel.tsx';
 import { createTaskAppRun } from '../../src/ui/task-app-run.ts';
-import { assetChunk, flush, worker } from './fixtures.mjs';
+import { assetChunk, flush, trackOpenedTabs, worker } from './fixtures.mjs';
 
 const available = readinessSchema.parse({
   version: 1,
@@ -231,7 +231,8 @@ function completedApp(overrides = {}) {
   });
 }
 
-test('Run opens the terminal immediately and admits one managed start for the displayed task', async () => {
+test('Run opens the terminal immediately and one browser tab after the server is ready', async (context) => {
+  const tabs = trackOpenedTabs(context);
   const pending = Promise.withResolvers();
   const calls = [];
   const owner = createRoot((dispose) => {
@@ -250,6 +251,7 @@ test('Run opens the terminal immediately and admits one managed start for the di
   await flush();
   const request = owner.model.start();
   await owner.model.start();
+  assert.deepEqual(tabs, []);
   assert.deepEqual(calls, [
     ['terminal', owner.task().id],
     [
@@ -266,6 +268,7 @@ test('Run opens the terminal immediately and admits one managed start for the di
   assert.equal(owner.model.busy(), true);
   pending.resolve(previewResult);
   await request;
+  assert.deepEqual(tabs, [previewResult.url]);
   assert.equal(owner.model.busy(), false);
   owner.dispose();
 });
@@ -314,7 +317,8 @@ test('unready tasks, pending approval and a disconnected helper do not start an 
 for (const change of ['task', 'run', 'dispose']) {
   test(
     'navigating to another ' + change + ' during startup leaves the managed server in its terminal',
-    async () => {
+    async (context) => {
+      const tabs = trackOpenedTabs(context);
       const pending = Promise.withResolvers();
       const calls = [];
       const owner = createRoot((dispose) => {
@@ -344,6 +348,7 @@ for (const change of ['task', 'run', 'dispose']) {
       pending.resolve(previewResult);
       await start;
       assert.deepEqual(calls, [id, 'worker.previewStart']);
+      assert.deepEqual(tabs, []);
       if (change !== 'dispose') {
         owner.dispose();
       }
@@ -370,7 +375,8 @@ test('a rejected startup reports the failure to the pending terminal tab and the
   owner.dispose();
 });
 
-test('automatic tab errors belong to one task and clear after Run attaches', async () => {
+test('automatic tab errors belong to one task and clear after Run attaches', async (context) => {
+  const tabs = trackOpenedTabs(context);
   const task = completedApp();
   task.completion.evidence.devServer = 'vite';
   let update;
@@ -405,8 +411,32 @@ test('automatic tab errors belong to one task and clear after Run attaches', asy
   update('Choose Run to retry in Terminal.');
   assert.equal(owner.model.error(), 'Choose Run to retry in Terminal.');
   await owner.model.start();
+  assert.deepEqual(tabs, [previewResult.url]);
   assert.equal(cleared, true);
   assert.equal(owner.model.error(), '');
   owner.dispose();
   assert.equal(update, undefined);
+});
+
+test('a browser tab error leaves the running session available in Terminal', async (context) => {
+  trackOpenedTabs(context);
+  context.mock.method(chrome.tabs, 'create', async () => {
+    throw new Error('Chrome could not create a tab.');
+  });
+  const terminalErrors = [];
+  const owner = createRoot((dispose) => ({
+    dispose,
+    model: createTaskAppRun({
+      task: () => completedApp(),
+      connected: () => true,
+      showTerminal: () => (message) => terminalErrors.push(message),
+      rpc: async () => previewResult,
+    }),
+  }));
+  await flush();
+  await owner.model.start();
+  assert.match(owner.model.error(), /Open app in Terminal/);
+  assert.deepEqual(terminalErrors, []);
+  assert.equal(owner.model.busy(), false);
+  owner.dispose();
 });

@@ -84,6 +84,20 @@ export async function flush() {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
+export function trackOpenedTabs(context) {
+  const opened = [];
+  const previous = globalThis.chrome;
+  globalThis.chrome = { tabs: { create: async ({ url }) => opened.push(url) } };
+  context.after(() => {
+    if (previous) {
+      globalThis.chrome = previous;
+    } else {
+      delete globalThis.chrome;
+    }
+  });
+  return opened;
+}
+
 export async function waitFor(condition, description) {
   const deadline = Date.now() + 2000;
   while (!condition()) {

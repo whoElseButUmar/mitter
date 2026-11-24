@@ -610,6 +610,7 @@ export function TerminalDock(props: {
     button: HTMLButtonElement,
   ) => {
     const scope = captureScope();
+    const opensPreview = operation === 'restart' && run.state !== 'running';
     let restoreFocus = document.activeElement === button;
     const cancelRestore = () => {
       restoreFocus = false;
@@ -631,10 +632,11 @@ export function TerminalDock(props: {
       document.removeEventListener('focusin', focusChanged, true);
       // Stop/Restart can remove or disable the focused button. Only repair that
       // lost focus; a later user interaction or another session owns its focus.
+      // Run again can move Chrome to the preview, so restore focus for the return.
       if (
         restoreFocus &&
         scope.isCurrent() &&
-        document.hasFocus() &&
+        (document.hasFocus() || opensPreview) &&
         document.activeElement === document.body
       ) {
         const target = sessionPicker?.querySelector('[role="combobox"]:enabled');

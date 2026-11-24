@@ -167,7 +167,9 @@ async function main() {
       'packaged dialog dismissal',
     );
     await checkAppRun(executable, directory, path.join(directory, 'extension'), log.fd, signal);
-    console.log('PASS: Run opens the completed app’s terminal session, reuses it and stops it.');
+    console.log(
+      'PASS: Run opens the completed app in a browser tab and manages its existing terminal session.',
+    );
     await checkDocs(chrome, app.session, id);
     console.log('PASS: Help opens searchable docs with keyboard navigation, deep links and live schemas.');
     const workspacePage = path.join(directory, 'extension', 'workspace.html');

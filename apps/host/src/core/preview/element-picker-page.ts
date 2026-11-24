@@ -1,3 +1,9 @@
+export type PickerCaptureUpdate = {
+  total: number;
+  message: string;
+  capture?: 'added' | 'replaced' | 'rejected';
+};
+
 // Runs in Chrome's isolated world before the project's own scripts.
 export function mountElementPicker(origin: string, captureLimit: number) {
   if (window !== window.top || location.origin !== origin) {
@@ -25,7 +31,9 @@ export function mountElementPicker(origin: string, captureLimit: number) {
     button:focus-visible { outline:2px solid #dfbd82;outline-offset:2px }
     button:disabled { opacity:.5;cursor:default }
     .done { background:#dfbd82;color:#262017;border-color:#dfbd82 }
-    .outline { position:fixed;box-sizing:border-box;border:2px solid #dfbd82;background:#dfbd8233;pointer-events:none }
+    .outline, .capture-outline { position:fixed;box-sizing:border-box;pointer-events:none }
+    .outline { border:2px solid #dfbd82;background:#dfbd8233 }
+    .capture-outline { border:3px solid #dfbd82;box-shadow:0 0 0 1px #262017 }
     .label { position:fixed;box-sizing:border-box;max-width:100vw;padding:3px 7px;border-radius:4px;background:#262017;color:#fff3dd;font:12px/18px system-ui,sans-serif;white-space:nowrap;pointer-events:none }
   `;
   const bar = document.createElement('div');
@@ -57,6 +65,8 @@ export function mountElementPicker(origin: string, captureLimit: number) {
   let count = 0;
   let interacting = false;
   let selected: Element | undefined;
+  const captureOutlines = new Map<Element, HTMLDivElement>();
+  let captureFrame: number | undefined;
   let privacyMask: HTMLStyleElement | undefined;
   let pointer: { x: number; y: number } | undefined;
   const privateFields = [
@@ -109,6 +119,60 @@ export function mountElementPicker(origin: string, captureLimit: number) {
     };
   }
 
+  function positionOutline(box: HTMLDivElement, left: number, top: number, width: number, height: number) {
+    box.style.left = left + 'px';
+    box.style.top = top + 'px';
+    box.style.width = width + 'px';
+    box.style.height = height + 'px';
+  }
+
+  function drawCaptureOutlines() {
+    for (const [element, box] of captureOutlines) {
+      if (!element.isConnected) {
+        box.remove();
+        captureOutlines.delete(element);
+        continue;
+      }
+      const { left, top, right, bottom } = boundedRect(element);
+      const width = right - left;
+      const height = bottom - top;
+      box.hidden = width < 1 || height < 1 || getComputedStyle(element).visibility !== 'visible';
+      if (!box.hidden) {
+        positionOutline(box, left, top, width, height);
+      }
+    }
+    captureFrame = undefined;
+    if (captureOutlines.size > 0) {
+      captureFrame = requestAnimationFrame(drawCaptureOutlines);
+    }
+  }
+
+  function clearCaptureOutlines() {
+    if (captureFrame !== undefined) {
+      cancelAnimationFrame(captureFrame);
+      captureFrame = undefined;
+    }
+    for (const box of captureOutlines.values()) {
+      box.remove();
+    }
+    captureOutlines.clear();
+  }
+
+  function outlineCapture(element: Element) {
+    if (captureOutlines.has(element)) {
+      return;
+    }
+    const box = document.createElement('div');
+    box.className = 'capture-outline';
+    box.hidden = true;
+    box.setAttribute('aria-hidden', 'true');
+    shadow.insertBefore(box, outline);
+    captureOutlines.set(element, box);
+    if (captureFrame === undefined) {
+      drawCaptureOutlines();
+    }
+  }
+
   function unsafe(element: Element) {
     if (
       !element.isConnected ||
@@ -150,8 +214,7 @@ export function mountElementPicker(origin: string, captureLimit: number) {
     const { left, top, right, bottom } = boundedRect(element);
     const width = right - left;
     const height = bottom - top;
-    outline.style.cssText =
-      'left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;height:' + height + 'px';
+    positionOutline(outline, left, top, width, height);
     label.style.top = Math.max(0, top - 25) + 'px';
     label.textContent = element.localName + ' · ' + Math.round(width) + ' × ' + Math.round(height);
     label.hidden = false;
@@ -205,12 +268,21 @@ export function mountElementPicker(origin: string, captureLimit: number) {
     }
   }
 
-  Reflect.set(globalThis, 'miterSettleCapture', (total: number, message: string) => {
+  Reflect.set(globalThis, 'miterSettleCapture', ({ total, message, capture }: PickerCaptureUpdate) => {
     count = total;
-    privacyMask?.remove();
-    privacyMask = undefined;
-    selected = undefined;
-    toolbar.style.removeProperty('display');
+    if (capture) {
+      const element = selected;
+      privacyMask?.remove();
+      privacyMask = undefined;
+      selected = undefined;
+      toolbar.style.removeProperty('display');
+      if (capture === 'replaced') {
+        clearCaptureOutlines();
+      }
+      if (element && capture !== 'rejected') {
+        outlineCapture(element);
+      }
+    }
     updateStatus(message);
     if (pointer) {
       highlighted(elementAt(pointer.x, pointer.y));
@@ -284,14 +356,17 @@ export function mountElementPicker(origin: string, captureLimit: number) {
   );
   cancel.addEventListener('click', (event) => {
     if (event.isTrusted) {
+      clearCaptureOutlines();
       notify('cancel');
     }
   });
   done.addEventListener('click', (event) => {
     if (event.isTrusted && !done.disabled) {
+      clearCaptureOutlines();
       notify('done');
     }
   });
+  window.addEventListener('pagehide', clearCaptureOutlines);
   window.addEventListener('blur', () => {
     pointer = undefined;
     interact(false);
@@ -326,6 +401,7 @@ export function mountElementPicker(origin: string, captureLimit: number) {
       }
       if (event.key === 'Escape' && !event.altKey) {
         stop(event);
+        clearCaptureOutlines();
         notify('cancel');
         return;
       }

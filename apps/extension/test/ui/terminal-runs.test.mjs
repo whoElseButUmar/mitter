@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRoot, createSignal } from 'solid-js';
 import { createTerminalRuns, runTabId } from '../../src/ui/terminal-runs.ts';
-import { flush } from './fixtures.mjs';
+import { flush, trackOpenedTabs } from './fixtures.mjs';
 
 const expectedRun = { runId: 'run', epoch: 2 };
 
@@ -63,6 +63,7 @@ test('reopening lists existing project runs and late results cannot cross a proj
 });
 
 test('app controls bind mutations to the selected attempt and never send process output to a shell', async (context) => {
+  const opened = trackOpenedTabs(context);
   const running = row('a');
   const stopped = row('b', 'stopped');
   let list = [running];
@@ -87,10 +88,12 @@ test('app controls bind mutations to the selected attempt and never send process
   await flush();
   await runs.control(running, 'restart');
   await runs.control(running, 'stop');
+  assert.deepEqual(opened, []);
   list = [stopped, row('a', 'stopped')];
   await runs.refresh();
   await runs.control(running, 'restart');
   await runs.control(stopped, 'restart');
+  assert.deepEqual(opened, [running.url]);
   assert.deepEqual(calls, [
     {
       method: 'worker.previewStart',
@@ -122,6 +125,7 @@ test('the previous working server remains controllable after its replacement fai
 });
 
 test('Run again follows the returned live server after a failed restart without hiding later attempts', async (context) => {
+  const opened = trackOpenedTabs(context);
   const original = row('a');
   const restarted = row('b');
   const failed = row('c', 'failed');
@@ -166,6 +170,7 @@ test('Run again follows the returned live server after a failed restart without 
   assert.match(runs.error(), /entry file is missing/);
 
   await runs.control(failed, 'restart');
+  assert.deepEqual(opened, [restarted.url]);
   assert.equal(runs.tabs().get(key).previewId, restarted.previewId);
   assert.equal(runs.tabs().get(key).state, 'running');
   assert.equal(runs.tabs().size, 1);
@@ -189,6 +194,7 @@ test('Run again follows the returned live server after a failed restart without 
 });
 
 test('a confirmed app tab follows its stopped or failed server until that record disappears', async (context) => {
+  const opened = trackOpenedTabs(context);
   const failed = row('b', 'failed');
   const running = row('a');
   let list = [failed, running];
@@ -211,6 +217,7 @@ test('a confirmed app tab follows its stopped or failed server until that record
   });
   await flush();
   await runs.control(failed, 'restart');
+  assert.deepEqual(opened, [running.url]);
   assert.equal(runs.tabs().get(runTabId('worker', expectedRun)).previewId, running.previewId);
   await runs.control(running, 'stop');
   assert.equal(runs.tabs().get(runTabId('worker', expectedRun)).previewId, running.previewId);
@@ -226,6 +233,7 @@ test('a confirmed app tab follows its stopped or failed server until that record
 });
 
 test('late Run again completion cannot select a server after its project scope was replaced', async (context) => {
+  const opened = trackOpenedTabs(context);
   const failed = row('b', 'failed');
   const running = row('a');
   const pending = Promise.withResolvers();
@@ -252,6 +260,7 @@ test('late Run again completion cannot select a server after its project scope w
     detail: 'Ready',
   });
   await starting;
+  assert.deepEqual(opened, []);
   assert.equal(runs.tabs().size, 0);
   setProject('project');
   await flush();
@@ -264,20 +273,6 @@ test('dock rejects another project’s run list before displaying output or open
   assert.equal(runs.tabs().size, 0);
   assert.match(runs.error(), /different project/);
 });
-
-function trackOpenedTabs(context) {
-  const opened = [];
-  const previous = globalThis.chrome;
-  globalThis.chrome = { tabs: { create: async ({ url }) => opened.push(url) } };
-  context.after(() => {
-    if (previous) {
-      globalThis.chrome = previous;
-    } else {
-      delete globalThis.chrome;
-    }
-  });
-  return opened;
-}
 
 test('Open app checks the exact server again and never opens a stopped or replaced URL', async (context) => {
   const original = row('a');
