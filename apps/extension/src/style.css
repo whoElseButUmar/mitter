@@ -543,6 +543,12 @@ p {
   background: var(--editor);
 }
 
+.task-output .editor-surface > [role='tabpanel'] {
+  max-block-size: min(20rem, 45dvh);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+
 .empty-editor {
   padding: 30px 24px;
   max-width: 430px;

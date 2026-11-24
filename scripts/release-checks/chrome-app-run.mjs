@@ -79,6 +79,55 @@ async function completeProject(native) {
   }
 }
 
+async function checkOutputScroll(chrome, session) {
+  const panel = `document.querySelector('.editor-surface > [role="tabpanel"]:not([hidden])')`;
+  await waitFor(
+    chrome,
+    session,
+    `${panel}.scrollHeight > ${panel}.clientHeight`,
+    'activity overflows its panel',
+  );
+  const point = await evaluate(
+    chrome,
+    session,
+    `(() => {
+    const activity = ${panel};
+    const task = document.querySelector('.task-scroll');
+    const output = document.querySelector('.task-output');
+    output.style.paddingBottom = '720px';
+    activity.scrollTop = 0;
+    activity.scrollIntoView({block: 'start'});
+    const box = activity.getBoundingClientRect();
+    if (task.scrollHeight - task.clientHeight <= task.scrollTop + 1) {
+      throw new Error('The parent must have room to scroll to test scroll chaining.');
+    }
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2, parentTop: task.scrollTop };
+  })()`,
+  );
+  try {
+    const wheel = { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: 140 };
+    await chrome.request('Input.dispatchMouseEvent', wheel, session);
+    await waitFor(chrome, session, `${panel}.scrollTop > 0`, 'wheel scrolls the activity panel');
+    await evaluate(chrome, session, `${panel}.scrollTop = ${panel}.scrollHeight`);
+    await chrome.request('Input.dispatchMouseEvent', wheel, session);
+    assert.equal(
+      await evaluate(
+        chrome,
+        session,
+        `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(document.querySelector('.task-scroll').scrollTop))))`,
+      ),
+      point.parentTop,
+      'Activity scrolling stops at the panel edge.',
+    );
+  } finally {
+    await evaluate(
+      chrome,
+      session,
+      'document.querySelector(".task-output").style.removeProperty("padding-bottom")',
+    );
+  }
+}
+
 async function checkChangedTree(chrome, session) {
   const tree = '.task-output .file-tree';
   const folders = tree + ' .file-tree-folder';
@@ -123,6 +172,7 @@ async function checkChangedTree(chrome, session) {
   await press(chrome, session, 'ArrowRight', 39);
   assert.equal(await evaluate(chrome, session, 'document.activeElement.textContent === "Activity"'), true);
   await press(chrome, session, 'Enter', 13);
+  await checkOutputScroll(chrome, session);
   await press(chrome, session, 'ArrowLeft', 37);
   await press(chrome, session, 'Enter', 13);
   assert.equal(
