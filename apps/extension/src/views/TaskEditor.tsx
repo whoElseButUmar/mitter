@@ -1,12 +1,19 @@
 import type { WorkspaceController } from '../ui/workspace-controller';
 import type { Worker } from '../../../../packages/protocol/src/index';
-import { checkDescription } from '../ui/task-view';
+import { navigationIndex } from '../../../../packages/ui/src/native/keyboard';
+import type { OutputView } from '../ui/task-output';
 import { FileViewer } from '../FileViewer';
 import { TeamPanel } from '../TeamPanel';
 import { ContextArea } from '../ContextArea';
-import { createEffect, For, Show } from 'solid-js';
+import { createEffect, createUniqueId, For, Show } from 'solid-js';
 import { Icon } from '../icons';
-import { InfoPopover } from '../controls';
+import { TaskFileTree } from '../components/TaskFileTree';
+
+const outputViews: { id: OutputView; label: string }[] = [
+  { id: 'result', label: 'Files' },
+  { id: 'activity', label: 'Activity' },
+  { id: 'team', label: 'Team' },
+];
 
 export function TaskEditor(props: { controller: WorkspaceController; task: Worker }) {
   const { snapshot, success, setNotice, output, rpc, copy, sendFollowup, showText, connected } =
@@ -34,6 +41,15 @@ export function TaskEditor(props: { controller: WorkspaceController; task: Worke
     setExpanded,
   } = output;
   const task = () => props.task;
+  const tabs = createUniqueId();
+  const tabId = (id: OutputView) => tabs + '-' + id;
+  const panelId = (id: OutputView) => tabId(id) + '-panel';
+  const tabStop = (id: OutputView) => {
+    if (view() === id) {
+      return 0;
+    }
+    return -1;
+  };
   let disclosure: HTMLDetailsElement | undefined;
 
   createEffect(() => {
@@ -44,14 +60,6 @@ export function TaskEditor(props: { controller: WorkspaceController; task: Worke
       disclosure.open = open;
     }
   });
-
-  const checksLabel = () => {
-    const count = task().checks.length;
-    if (count === 0) {
-      return 'Checks';
-    }
-    return `Checks (${count})`;
-  };
 
   return (
     <details
@@ -69,147 +77,162 @@ export function TaskEditor(props: { controller: WorkspaceController; task: Worke
         <Icon name="right" />
         Files and activity
       </summary>
-      <div class="editor-tabs">
-        <button
-          classList={{
-            selected: view() === 'result',
-          }}
-          onClick={() => setView('result')}
-        >
-          Files{' '}
-          <Show when={files().length}>
-            <span>{files().length}</span>
-          </Show>
-        </button>
-        <button
-          classList={{
-            selected: view() === 'activity',
-          }}
-          onClick={() => setView('activity')}
-        >
-          Activity
-        </button>
-        <button
-          classList={{
-            selected: view() === 'team',
-          }}
-          onClick={() => setView('team')}
-        >
-          Team
-        </button>
-        <div class="spacer" />
-        <InfoPopover label={checksLabel()} title="Completion checks">
-          <p>
-            Miter checks shared controls, runs domain tests, and tests web apps in Chrome on desktop and
-            mobile.
-          </p>
-          <For each={task().checks}>{(check) => <p>{checkDescription(check)}</p>}</For>
-        </InfoPopover>
-      </div>
-      <section class="editor-surface">
-        <Show when={view() === 'team'}>
-          <TeamPanel
-            workerId={task().id}
-            rpc={rpc}
-            copy={copy}
-            success={success}
-            revision={snapshot().events[0]?.time || 0}
-          />
-        </Show>
-        <Show when={view() === 'activity'}>
-          <ContextArea
-            items={[
-              {
-                id: 'copy-all',
-                label: 'Copy task activity',
-                run: () =>
-                  void copy(
-                    activity()
-                      .map((event) => new Date(event.time).toISOString() + ' ' + event.message)
-                      .join('\n'),
-                  ),
-              },
-              {
-                id: 'report',
-                label: 'View full report…',
-                run: () => void showText('report'),
-              },
-            ]}
-          >
-            <div class="activity-list">
-              <Show when={historyBusy() && !activity().length}>
-                <p class="preview-hint" role="status">
-                  Loading activity…
-                </p>
-              </Show>
-              <Show when={historyError()}>
-                <div class="read-error">
-                  <p class="error" role="alert">
-                    Could not load activity. {historyError()}
-                  </p>
-                  <button
-                    type="button"
-                    disabled={!connected() || historyBusy()}
-                    onClick={() => void retryHistory()}
-                  >
-                    Retry activity
-                  </button>
-                </div>
-              </Show>
-              <For
-                each={activity()}
-                fallback={
-                  <Show when={!historyBusy() && !historyError()}>
-                    <p class="muted">
-                      <Show when={connected()} fallback="Reconnect to load activity.">
-                        No activity yet.
-                      </Show>
-                    </p>
-                  </Show>
+      <div class="editor-tabs" role="tablist" aria-label="Task output">
+        <For each={outputViews}>
+          {(tab, index) => (
+            <button
+              type="button"
+              role="tab"
+              id={tabId(tab.id)}
+              aria-selected={view() === tab.id}
+              aria-controls={panelId(tab.id)}
+              tabindex={tabStop(tab.id)}
+              classList={{ selected: view() === tab.id }}
+              onClick={() => setView(tab.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                  return;
                 }
-              >
-                {(event) => (
-                  <ContextArea
-                    items={[
-                      {
-                        id: 'copy',
-                        label: 'Copy event',
-                        run: () => void copy(event.message),
-                      },
-                      {
-                        id: 'timestamp',
-                        label: 'Copy timestamp',
-                        run: () => void copy(new Date(event.time).toISOString()),
-                      },
-                    ]}
-                  >
-                    <div class={`activity-line kind-${event.kind}`}>
-                      <time>
-                        {new Date(event.time).toLocaleTimeString([], {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                      </time>
-                      <span>
-                        <Show when={event.kind === 'action'} fallback={event.message}>
-                          {event.message.split(': {')[0]}
+                const next = navigationIndex(event.key, index(), outputViews.length);
+                if (next === undefined) {
+                  return;
+                }
+                const target = outputViews[next];
+                if (target) {
+                  event.preventDefault();
+                  event.currentTarget.ownerDocument.getElementById(tabId(target.id))?.focus();
+                }
+              }}
+            >
+              {tab.label}
+            </button>
+          )}
+        </For>
+      </div>
+      <div class="editor-surface">
+        <section
+          role="tabpanel"
+          id={panelId('team')}
+          aria-labelledby={tabId('team')}
+          hidden={view() !== 'team'}
+        >
+          <Show when={view() === 'team'}>
+            <TeamPanel
+              workerId={task().id}
+              rpc={rpc}
+              copy={copy}
+              success={success}
+              revision={snapshot().events[0]?.time || 0}
+            />
+          </Show>
+        </section>
+        <section
+          role="tabpanel"
+          id={panelId('activity')}
+          aria-labelledby={tabId('activity')}
+          hidden={view() !== 'activity'}
+          tabindex="0"
+        >
+          <Show when={view() === 'activity'}>
+            <ContextArea
+              items={[
+                {
+                  id: 'copy-all',
+                  label: 'Copy task activity',
+                  run: () =>
+                    void copy(
+                      activity()
+                        .map((event) => new Date(event.time).toISOString() + ' ' + event.message)
+                        .join('\n'),
+                    ),
+                },
+                {
+                  id: 'report',
+                  label: 'View full report…',
+                  run: () => void showText('report'),
+                },
+              ]}
+            >
+              <div class="activity-list">
+                <Show when={historyBusy() && !activity().length}>
+                  <p class="preview-hint" role="status">
+                    Loading activity…
+                  </p>
+                </Show>
+                <Show when={historyError()}>
+                  <div class="read-error">
+                    <p class="error" role="alert">
+                      Could not load activity. {historyError()}
+                    </p>
+                    <button
+                      type="button"
+                      disabled={!connected() || historyBusy()}
+                      onClick={() => void retryHistory()}
+                    >
+                      Retry activity
+                    </button>
+                  </div>
+                </Show>
+                <For
+                  each={activity()}
+                  fallback={
+                    <Show when={!historyBusy() && !historyError()}>
+                      <p class="muted">
+                        <Show when={connected()} fallback="Reconnect to load activity.">
+                          No activity yet.
                         </Show>
-                      </span>
-                    </div>
-                  </ContextArea>
-                )}
-              </For>
-              <Show when={historyMore() && !historyError()}>
-                <button class="history-load" disabled={historyBusy()} onClick={() => void loadHistory()}>
-                  <Show when={historyBusy()} fallback={'Load older activity'}>
-                    {'Loading…'}
-                  </Show>
-                </button>
-              </Show>
-            </div>
-          </ContextArea>
-        </Show>
-        <Show when={view() === 'result'}>
+                      </p>
+                    </Show>
+                  }
+                >
+                  {(event) => (
+                    <ContextArea
+                      items={[
+                        {
+                          id: 'copy',
+                          label: 'Copy event',
+                          run: () => void copy(event.message),
+                        },
+                        {
+                          id: 'timestamp',
+                          label: 'Copy timestamp',
+                          run: () => void copy(new Date(event.time).toISOString()),
+                        },
+                      ]}
+                    >
+                      <div class={`activity-line kind-${event.kind}`}>
+                        <time dateTime={new Date(event.time).toISOString()}>
+                          {new Date(event.time).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </time>
+                        <span>
+                          <Show when={event.kind === 'action'} fallback={event.message}>
+                            {event.message.split(': {')[0]}
+                          </Show>
+                        </span>
+                      </div>
+                    </ContextArea>
+                  )}
+                </For>
+                <Show when={historyMore() && !historyError()}>
+                  <button class="history-load" disabled={historyBusy()} onClick={() => void loadHistory()}>
+                    <Show when={historyBusy()} fallback={'Load older activity'}>
+                      {'Loading…'}
+                    </Show>
+                  </button>
+                </Show>
+              </div>
+            </ContextArea>
+          </Show>
+        </section>
+        <section
+          role="tabpanel"
+          id={panelId('result')}
+          aria-labelledby={tabId('result')}
+          hidden={view() !== 'result'}
+        >
           <ContextArea
             items={[
               {
@@ -232,11 +255,7 @@ export function TaskEditor(props: { controller: WorkspaceController; task: Worke
             ]}
           >
             <div class="files-heading">
-              <span>
-                <Show when={files().length} fallback={'Workspace files'}>
-                  {'Changed files'}
-                </Show>
-              </span>
+              <span>Changed files</span>
               <button
                 class="text-button"
                 disabled={!connected() || browsing()}
@@ -266,8 +285,8 @@ export function TaskEditor(props: { controller: WorkspaceController; task: Worke
                 </button>
               </div>
             </Show>
-            <For
-              each={files()}
+            <Show
+              when={files().length}
               fallback={
                 <Show when={!filesLoading() && !filesError()}>
                   <p class="preview-hint">
@@ -278,29 +297,20 @@ export function TaskEditor(props: { controller: WorkspaceController; task: Worke
                 </Show>
               }
             >
-              {(fileEntry) => (
-                <ContextArea items={fileMenu(task().id, fileEntry.path)}>
-                  <button
-                    classList={{
-                      'file-row': true,
-                      selected: file() === fileEntry.path,
-                    }}
-                    onClick={() => preview(fileEntry.path)}
-                  >
-                    <Icon name="file" />
-                    <span>{fileEntry.path}</span>
-                    <small>
-                      <Show when={fileEntry.status === 'rolled_back'} fallback={fileEntry.bytes + ' B'}>
-                        {'restored'}
-                      </Show>
-                    </small>
-                    <Icon name="right" />
-                  </button>
-                </ContextArea>
-              )}
-            </For>
+              <Show when={task().id} keyed>
+                {(id) => (
+                  <TaskFileTree
+                    files={files()}
+                    selected={file()}
+                    previewRequest={output.previewRequest()}
+                    preview={preview}
+                    menu={(path) => fileMenu(id, path)}
+                  />
+                )}
+              </Show>
+            </Show>
           </ContextArea>
-          <Show when={file()}>
+          <Show when={view() === 'result' && file()}>
             {(path) => (
               <FileViewer
                 workerId={task().id}
@@ -315,8 +325,8 @@ export function TaskEditor(props: { controller: WorkspaceController; task: Worke
               />
             )}
           </Show>
-        </Show>
-      </section>
+        </section>
+      </div>
     </details>
   );
 }

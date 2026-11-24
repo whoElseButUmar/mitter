@@ -3,6 +3,7 @@ import { createSignal, Show } from 'solid-js';
 import { coreRpcRegistry, type PreviewElement } from '../../../../packages/protocol/src/rpc';
 import { errorMessage } from '../schemas/primitives';
 import { callResult, type ViewRPC } from '../ui/rpc';
+import { Icon } from '../icons';
 
 export function SelectedPreviewElement(props: { workerId: string; rpc: ViewRPC }) {
   const [elements, setElements] = createSignal<PreviewElement[]>();
@@ -35,14 +36,19 @@ export function SelectedPreviewElement(props: { workerId: string; rpc: ViewRPC }
 
   return (
     <details class="task-details" onToggle={(event) => void load(event.currentTarget.open)}>
-      <summary>Preview captures</summary>
-      <Show when={loading()}>
-        <p role="status">Loading selection…</p>
-      </Show>
-      <Show when={error()}>
-        <p role="alert">{error()}</p>
-      </Show>
-      <Show when={elements()}>{(selected) => <PreviewCaptureGallery elements={selected()} />}</Show>
+      <summary>
+        <Icon name="right" />
+        Preview captures
+      </summary>
+      <div class="task-disclosure-content">
+        <Show when={loading()}>
+          <p role="status">Loading selection…</p>
+        </Show>
+        <Show when={error()}>
+          <p role="alert">{error()}</p>
+        </Show>
+        <Show when={elements()}>{(selected) => <PreviewCaptureGallery elements={selected()} />}</Show>
+      </div>
     </details>
   );
 }

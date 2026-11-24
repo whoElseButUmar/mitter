@@ -4,8 +4,6 @@ import { createEffect, onMount, onCleanup, type JSX } from 'solid-js';
 import { mountMenu, type MenuItem } from '../../../packages/ui/src/menu';
 import { mountTabRow, type TabRowOptions } from '../../../packages/ui/src/tab-row';
 import { enhanceSelects } from '../../../packages/ui/src/select';
-import { bindInfoPopover, uiId } from '../../../packages/ui/src/popover';
-import { Icon } from './icons';
 
 export function WorkspaceTabRow(props: TabRowOptions) {
   let root: HTMLDivElement | undefined;
@@ -41,47 +39,6 @@ export function MenuButton(props: { label: string; items: MenuItem[]; disabled?:
         root = element;
       }}
     />
-  );
-}
-
-export function InfoPopover(props: { label: string; title: string; children: JSX.Element }) {
-  let trigger: HTMLButtonElement | undefined;
-  let panel: HTMLDivElement | undefined;
-  const id = uiId('info-button');
-
-  onMount(() => {
-    const popover = bindInfoPopover(
-      requireElement(trigger, 'info popover trigger'),
-      requireElement(panel, 'info popover panel'),
-    );
-    onCleanup(popover.dispose);
-  });
-
-  return (
-    <div class="info-control">
-      <button
-        id={id}
-        ref={(element) => {
-          trigger = element;
-        }}
-        type="button"
-        class="info-trigger"
-      >
-        {props.label}
-        <Icon name="down" />
-      </button>
-      <div
-        ref={(element) => {
-          panel = element;
-        }}
-        hidden
-        tabindex="-1"
-        class="info-popup"
-        aria-label={props.title}
-      >
-        {props.children}
-      </div>
-    </div>
   );
 }
 

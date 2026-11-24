@@ -43,9 +43,13 @@ async function completeProject(native) {
       const changes = [];
       if (name === firstTask) {
         for (let index = 1; index <= 12; index++) {
+          let folder = 'notes';
+          if (index === 12) {
+            folder = 'notes/archive';
+          }
           changes.push({
             type: 'write',
-            path: 'notes/file-' + index + '.txt',
+            path: folder + '/file-' + index + '.txt',
             base: 'missing',
             content: 'Saved project note ' + index,
           });
@@ -75,6 +79,66 @@ async function completeProject(native) {
   }
 }
 
+async function checkChangedTree(chrome, session) {
+  const tree = '.task-output .file-tree';
+  const folders = tree + ' .file-tree-folder';
+  const nestedFile = tree + ' button[title^="notes/archive/file-12.txt"]';
+  await waitFor(
+    chrome,
+    session,
+    'document.querySelectorAll("' + tree + ' .file-row").length === 12',
+    'changed file tree',
+  );
+  await click(chrome, session, '.task-output > summary');
+  assert.deepEqual(
+    await evaluate(
+      chrome,
+      session,
+      '[...document.querySelectorAll(".editor-tabs > button")].map(button => button.textContent.trim())',
+    ),
+    ['Files', 'Activity', 'Team'],
+  );
+  assert.equal(
+    await evaluate(
+      chrome,
+      session,
+      'document.querySelector(".completion-evidence ul").textContent.includes("Exists: index.html")',
+    ),
+    true,
+    'Configured checks moved to Verification details.',
+  );
+  for (const index of [0, 1]) {
+    await evaluate(chrome, session, `document.querySelectorAll('${folders}')[${index}].focus()`);
+    await press(chrome, session, 'Enter', 13);
+  }
+  await evaluate(chrome, session, `document.querySelector('${nestedFile}').focus()`);
+  await press(chrome, session, 'Enter', 13);
+  await waitFor(
+    chrome,
+    session,
+    `document.querySelector('.file-caption span')?.textContent === 'notes/archive/file-12.txt' && document.querySelector('${nestedFile}').getAttribute('aria-current') === 'true'`,
+    'nested file opens its full path',
+  );
+  await evaluate(chrome, session, `document.querySelector('.editor-tabs .selected').focus()`);
+  await press(chrome, session, 'ArrowRight', 39);
+  assert.equal(await evaluate(chrome, session, 'document.activeElement.textContent === "Activity"'), true);
+  await press(chrome, session, 'Enter', 13);
+  await press(chrome, session, 'ArrowLeft', 37);
+  await press(chrome, session, 'Enter', 13);
+  assert.equal(
+    await evaluate(chrome, session, `document.querySelector('${nestedFile}').checkVisibility()`),
+    true,
+    'Folders retain expansion when switching output tabs.',
+  );
+  await evaluate(chrome, session, `document.querySelector('${folders}').focus()`);
+  await press(chrome, session, 'Enter', 13);
+  assert.equal(
+    await evaluate(chrome, session, `document.querySelector('${folders}').parentElement.open`),
+    false,
+    'A folder can be collapsed with the keyboard.',
+  );
+}
+
 async function checkFileHandoff(chrome, session) {
   const opener = `document.querySelector('.task-handoff-actions button[aria-label="Open files"]')`;
   await waitFor(chrome, session, 'Boolean(' + opener + ')', 'completed-task file action');
@@ -83,12 +147,7 @@ async function checkFileHandoff(chrome, session) {
     'Checks passed.',
     'An existing runnable entry does not imply browser verification.',
   );
-  await waitFor(
-    chrome,
-    session,
-    'document.querySelectorAll(".task-output .file-row").length === 12',
-    'the completed task retains its changed file list',
-  );
+  await checkChangedTree(chrome, session);
   for (let attempt = 0; attempt < 2; attempt++) {
     await evaluate(chrome, session, opener + '.focus()');
     await press(chrome, session, 'Enter', 13);

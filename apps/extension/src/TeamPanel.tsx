@@ -15,11 +15,7 @@ export function TeamPanel(props: {
   const { data, text, setText, busy, loading, error } = updates;
 
   return (
-    <section class="team-panel">
-      <h2>Project team</h2>
-      <p class="muted small">
-        Updates reach other tasks in their next model turn. File checks protect shared work in the meantime.
-      </p>
+    <section class="team-panel" aria-label="Project team">
       <Show when={loading()}>
         <p class="muted" role="status">
           Loading team updates…
@@ -29,7 +25,7 @@ export function TeamPanel(props: {
         each={data().peers}
         fallback={
           <Show when={!loading() && !error()}>
-            <p class="muted">No other tasks in this project yet.</p>
+            <p class="muted">No other tasks in this project.</p>
           </Show>
         }
       >
@@ -52,37 +48,38 @@ export function TeamPanel(props: {
           </ContextArea>
         )}
       </For>
-      <h3>Recent updates</h3>
-      <For
-        each={data().messages}
-        fallback={
-          <Show when={!loading() && !error()}>
-            <p class="muted">No team messages yet.</p>
-          </Show>
-        }
-      >
-        {(message) => (
-          <ContextArea
-            items={[
-              {
-                id: 'copy',
-                label: 'Copy update',
-                run: () => void props.copy(message.message),
-              },
-            ]}
-          >
-            <div class="team-message">
-              <time>
-                {new Date(message.time).toLocaleTimeString([], {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-              </time>
-              <p>{message.message}</p>
-            </div>
-          </ContextArea>
-        )}
-      </For>
+      <div class="team-updates">
+        <For
+          each={data().messages}
+          fallback={
+            <Show when={!loading() && !error()}>
+              <p class="muted">No team updates yet.</p>
+            </Show>
+          }
+        >
+          {(message) => (
+            <ContextArea
+              items={[
+                {
+                  id: 'copy',
+                  label: 'Copy update',
+                  run: () => void props.copy(message.message),
+                },
+              ]}
+            >
+              <div class="activity-line">
+                <time dateTime={new Date(message.time).toISOString()}>
+                  {new Date(message.time).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </time>
+                <p>{message.message}</p>
+              </div>
+            </ContextArea>
+          )}
+        </For>
+      </div>
       <form
         aria-busy={busy()}
         onSubmit={(event) => {
@@ -91,7 +88,7 @@ export function TeamPanel(props: {
         }}
       >
         <label class="field">
-          <span>Share a project update</span>
+          <span>Project update</span>
           <textarea
             required
             maxlength="3000"
@@ -106,7 +103,9 @@ export function TeamPanel(props: {
           />
         </label>
         <div class="button-row end">
-          <button disabled={busy()}>Send update</button>
+          <button type="submit" disabled={busy()}>
+            Send update
+          </button>
         </div>
       </form>
       <Show when={error()}>

@@ -7,10 +7,10 @@ import { taskStatus } from '../ui/task-status';
 import { TaskRunnerControls } from './TaskRunnerControls';
 import type { WorkspaceController } from '../ui/workspace-controller';
 import type { Worker } from '../../../../packages/protocol/src/index';
-import { approvalDescription } from '../ui/task-view';
+import { approvalDescription, checkDescription } from '../ui/task-view';
 import { FollowupPanel } from '../Followups';
 import { ContextArea } from '../ContextArea';
-import { createResource, Show } from 'solid-js';
+import { createResource, For, Show } from 'solid-js';
 import { createApprovalTrust } from '../ui/approval-trust';
 
 import { displayTaskName } from '../../../../packages/protocol/src/task-brief';
@@ -151,34 +151,44 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
               <Icon name="right" />
               Task details
             </summary>
-            <TaskMarkdown source={task().goal.replace(/^(Worker name|The goal):\s*/i, '')} />
-            <Show when={task().worktree}>
-              <small class="muted">Isolated worktree · {task().worktree?.branch}</small>
-            </Show>
+            <div class="task-disclosure-content">
+              <TaskMarkdown source={task().goal.replace(/^(Worker name|The goal):\s*/i, '')} />
+              <Show when={task().worktree}>
+                <small class="muted">Isolated worktree · {task().worktree?.branch}</small>
+              </Show>
+            </div>
           </details>
           <Show keyed when={task().hasPreviewSelection && task().id}>
             {(workerId) => <SelectedPreviewElement workerId={workerId} rpc={props.controller.rpc} />}
           </Show>
+          <Show when={completed() || completionEvidence() || task().checks.length}>
+            <details class="completion-evidence">
+              <summary>
+                <Icon name="right" />
+                Verification details
+              </summary>
+              <div class="task-disclosure-content">
+                <Show when={completed() && progress().detail}>{(detail) => <p>{detail()}</p>}</Show>
+                <Show when={completionEvidence()}>{(evidence) => <p>{evidence().detail}</p>}</Show>
+                <Show when={task().checks.length}>
+                  <strong>Configured checks</strong>
+                  <ul>
+                    <For each={task().checks}>{(check) => <li>{checkDescription(check)}</li>}</For>
+                  </ul>
+                </Show>
+                <Show when={task().completion?.summary}>
+                  {(summary) => (
+                    <>
+                      <strong>Model summary</strong>
+                      <TaskMarkdown source={summary()} />
+                    </>
+                  )}
+                </Show>
+              </div>
+            </details>
+          </Show>
         </section>
       </ContextArea>
-      <Show when={completed() || completionEvidence()}>
-        <details class="completion-evidence">
-          <summary>
-            <Icon name="right" />
-            Verification details
-          </summary>
-          <Show when={completed() && progress().detail}>{(detail) => <p>{detail()}</p>}</Show>
-          <Show when={completionEvidence()}>{(evidence) => <p>{evidence().detail}</p>}</Show>
-          <Show when={task().completion?.summary}>
-            {(summary) => (
-              <>
-                <strong>Model summary</strong>
-                <TaskMarkdown source={summary()} />
-              </>
-            )}
-          </Show>
-        </details>
-      </Show>
       <Show when={task().error && task().error !== progress().detail}>
         <div class="error-banner" role="alert">
           {task().error}
