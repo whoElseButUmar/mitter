@@ -38,7 +38,7 @@ type Pending = { run: AppRun; controller: AbortController; result: Promise<Previ
 type Session = {
   run: AppRun;
   closing?: Promise<void>;
-  picker?: { controller: AbortController; done: Promise<PreviewElement> };
+  picker?: { controller: AbortController; done: Promise<PreviewElement[]> };
   server: PreviewServer;
   result: PreviewStartResult;
   fingerprint?: string;

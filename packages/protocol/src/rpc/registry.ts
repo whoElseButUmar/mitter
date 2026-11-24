@@ -26,7 +26,7 @@ import {
   appRunListResultSchema,
   previewPickParamsSchema,
   previewPickResultSchema,
-  previewElementSchema,
+  previewCaptureListSchema,
   previewCancelPickResultSchema,
   previewStatusParamsSchema,
   previewStatusResultSchema,
@@ -183,7 +183,7 @@ export const coreRpcRegistry = Object.freeze({
   'worker.history': contract(workerHistoryParamsSchema, historyResultSchema),
   'worker.previewSelection': contract(
     workerParamsSchema,
-    previewElementSchema.nullable().describe('The attached local preview selection, if any.'),
+    previewCaptureListSchema.nullable().describe('The task’s saved preview captures, if any.'),
   ),
   'worker.report': contract(workerParamsSchema, reportResultSchema),
   'worker.handoffSeen': contract(workerHandoffSeenParamsSchema, handoffSeenResultSchema),

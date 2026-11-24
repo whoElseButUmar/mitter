@@ -336,7 +336,7 @@ export const guideTopics: DocsTopic[] = [
           {
             name: 'Point to edit',
             description:
-              'Open the app picker, select a visible control, and describe a change to it. The resulting task has the route, selector and a cropped reference under Selected element.',
+              'Click the highlighted element to capture it. Hold Option (Alt) to interact with the app, then release it to capture. Capture up to ten elements and choose Done to review them together before starting the edit task.',
           },
         ],
       },

@@ -345,6 +345,23 @@ export async function checkPointEdit(chrome, session) {
     await evaluate(chrome, session, "document.querySelector('.element-selection strong').textContent"),
     'Save <parcel>',
   );
+  assert.equal(
+    await evaluate(chrome, session, "document.querySelectorAll('.capture-thumbnails button').length"),
+    2,
+  );
+  await click(chrome, session, '.capture-thumbnails button:nth-child(2)');
+  assert.equal(
+    await evaluate(chrome, session, "document.querySelector('.capture-preview').alt"),
+    'Captured Recent parcels',
+  );
+  assert.equal(
+    await evaluate(
+      chrome,
+      session,
+      "document.querySelector('.capture-thumbnails button[aria-pressed=true]').getAttribute('aria-label')",
+    ),
+    'Capture 2: Recent parcels',
+  );
   assert.equal(await evaluate(chrome, session, "document.querySelector('[data-goal]').value"), '');
   const draft = await evaluate(chrome, session, fixture + '.inspect()');
   assert.deepEqual([draft.created, draft.started, draft.authorizations], [0, 0, 0]);

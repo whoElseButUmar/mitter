@@ -5,13 +5,13 @@ import { errorMessage } from '../schemas/primitives';
 import type { ViewRpcResult } from '../schemas/view-rpc';
 import { callResult, type ViewRPC } from '../ui/rpc';
 
-export type PickedElement = ViewRpcResult<'worker.pickElement'>;
+export type PickedElements = ViewRpcResult<'worker.pickElement'>;
 
 export function ElementPicker(props: {
   run: AppRunSession;
   rpc: ViewRPC;
   close: () => void;
-  picked: (selection: PickedElement) => void;
+  picked: (selection: PickedElements) => void;
 }) {
   const params = {
     workerId: props.run.workerId,
@@ -76,7 +76,7 @@ export function ElementPicker(props: {
 
   return (
     <Modal title="Point to edit" close={() => void close()} closeDisabled={closing()}>
-      <Show when={error()} fallback={<p role="status">Select an element in the preview window.</p>}>
+      <Show when={error()} fallback={<p role="status">Capture elements in the preview, then choose Done.</p>}>
         <p class="error" role="alert">
           {error()}
         </p>

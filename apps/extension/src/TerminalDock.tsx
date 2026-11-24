@@ -6,7 +6,7 @@ import { disposeTerminalScreen, type TerminalScreen as Screen } from './ui/termi
 import { createTerminalAppearance } from './ui/terminal-appearance';
 import { terminalSettings } from './ui/terminal-settings';
 import { TerminalSessionPicker } from './components/TerminalSessionPicker';
-import { ElementPicker, type PickedElement } from './components/ElementPicker';
+import { ElementPicker, type PickedElements } from './components/ElementPicker';
 import { TooltipButton } from './components/TooltipButton';
 import { AppRunOutput } from './components/AppRunOutput';
 import {
@@ -44,7 +44,7 @@ export function TerminalDock(props: {
   rpc: ViewRPC;
   runFocus?: TerminalRunFocus | undefined;
   setupFocus?: SetupTerminalFocus | undefined;
-  editElement: (projectId: string, selection: PickedElement) => void;
+  editElements: (projectId: string, selection: PickedElements) => void;
   close: () => void;
 }) {
   const frames = createAnimationFrames();
@@ -821,7 +821,7 @@ export function TerminalDock(props: {
             close={() => setPickTarget(undefined)}
             picked={(selection) => {
               setPickTarget(undefined);
-              props.editElement(target.projectId, selection);
+              props.editElements(target.projectId, selection);
             }}
           />
         )}

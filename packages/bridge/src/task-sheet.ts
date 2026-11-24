@@ -103,7 +103,7 @@ export function mountTaskSheet(root: HTMLElement, deps: TaskSheetDependencies): 
     }
     workspaceSelect.disabled = true;
     requiredElement(root, '[data-workspace-field]', HTMLElement).hidden = true;
-    goalInput.placeholder = 'Describe the change to this element.';
+    goalInput.placeholder = 'Describe what to change in the selection.';
   }
 
   // A disabled, hidden native control retains the form source for compatibility;

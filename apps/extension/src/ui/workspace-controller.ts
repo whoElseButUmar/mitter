@@ -8,7 +8,7 @@ import {
   type Worker,
 } from '../../../../packages/protocol/src/index';
 import { reviewedTaskBoundary } from './task-boundary';
-import type { PickedElement } from '../components/ElementPicker';
+import type { PickedElements } from '../components/ElementPicker';
 import type { TerminalRunFocus, SetupTerminalFocus } from './terminal-runs';
 import { parseProposalEnvelope } from '../../../../packages/protocol/src/proposal';
 import { exceedsHandoffBytes } from '../../../../packages/protocol/src/reply-json';
@@ -76,7 +76,7 @@ export function createWorkspaceController() {
 
   // New-task forms capture their project when opened, never when submitted.
   const [formProjectId, setFormProjectId] = createSignal('');
-  const [pickedElement, setPickedElement] = createSignal<PickedElement>();
+  const [pickedElements, setPickedElements] = createSignal<PickedElements>();
   const [modal, setModal] = createSignal('');
   const [textValue, setTextValue] = createSignal('');
   const [handoff, writeHandoff] = createSignal('');
@@ -123,7 +123,7 @@ export function createWorkspaceController() {
 
   createEffect(() => {
     if (modal() !== 'worker') {
-      setPickedElement(undefined);
+      setPickedElements(undefined);
     }
     modalGeneration++;
   });
@@ -497,7 +497,7 @@ export function createWorkspaceController() {
   });
   const syntaxSelection = createMemo(() => ({ workerId: selected(), path: output.file() }));
 
-  const newWorker = (projectId = navigation().projectId, element?: PickedElement) => {
+  const newWorker = (projectId = navigation().projectId, element?: PickedElements) => {
     const projectEntry = snapshot().projects.find((entry) => entry.id === projectId);
 
     if (!projectEntry) {
@@ -507,7 +507,7 @@ export function createWorkspaceController() {
 
     batch(() => {
       setFormProjectId(projectEntry.id);
-      setPickedElement(element);
+      setPickedElements(element);
       setModal('worker');
     });
   };
@@ -1087,7 +1087,7 @@ export function createWorkspaceController() {
     connectionBuilds,
     selected,
     formProjectId,
-    pickedElement,
+    pickedElements,
     success,
     setNotice,
     modal,

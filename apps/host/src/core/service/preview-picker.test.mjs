@@ -26,7 +26,7 @@ test('picker opens only the owned host URL and stores the capture after current-
   const driver = context.mock.method(service.previews, 'picker', async (target, signal) => {
     assert.equal(target, url);
     assert.equal(signal.aborted, false);
-    return element;
+    return [element];
   });
   for (const extra of [
     { url: 'https://example.com' },
@@ -36,8 +36,8 @@ test('picker opens only the owned host URL and stores the capture after current-
     await assert.rejects(service.handle('worker.pickElement', { ...input, ...extra }));
   }
   assert.equal(driver.mock.callCount(), 0);
-  const { captureId, ...result } = await service.handle('worker.pickElement', input);
-  assert.deepEqual(result, element);
+  const { captureId, elements } = await service.handle('worker.pickElement', input);
+  assert.deepEqual(elements, [element]);
   assert.ok(captureId);
   assert.deepEqual(await service.handle('worker.cancelPick', input), { cancelled: false });
 });
@@ -54,7 +54,7 @@ test('a task changing during selection cannot publish the resulting capture', as
   const result = assert.rejects(service.handle('worker.pickElement', input), /earlier task run/);
   await started.promise;
   worker.runId = 'replacement';
-  chosen.resolve(element);
+  chosen.resolve([element]);
   await result;
   assert.equal(capture.mock.callCount(), 0);
 });
@@ -85,7 +85,7 @@ for (const action of ['worker.cancelPick', 'worker.previewStop', 'worker.stop', 
         cleanup = service.handle(action, input);
       }
       assert.equal(signal.aborted, true);
-      chosen.resolve(element);
+      chosen.resolve([element]);
       await Promise.all([result, cleanup]);
       assert.equal(driver.mock.callCount(), 1);
       assert.equal(capture.mock.callCount(), 0);
@@ -99,7 +99,7 @@ test('replacing a running app retires its picker before publishing the next prev
   context.mock.method(service.previews, 'picker', async (_target, signal) => {
     started.resolve();
     await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
-    return element;
+    return [element];
   });
   const stale = assert.rejects(service.handle('worker.pickElement', input), /cancelled/);
   await started.promise;

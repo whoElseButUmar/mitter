@@ -1,5 +1,5 @@
-import { PreviewElementFigure } from '../components/PreviewElementFigure';
-import type { PickedElement } from '../components/ElementPicker';
+import { PreviewCaptureGallery } from '../components/PreviewCaptureGallery';
+import type { PickedElements } from '../components/ElementPicker';
 import { requireElement } from '../ui/dom';
 import { onMount, onCleanup, Show } from 'solid-js';
 import { Modal } from '../components';
@@ -11,7 +11,7 @@ import { createChatStartCleanup } from '../ui/chat-start-cleanup';
 import { createReadiness } from '../ui/readiness';
 
 type WorkerFormProps = Omit<TaskSheetDependencies, 'create' | 'start' | 'captureId'> & {
-  selection?: PickedElement | undefined;
+  selection?: PickedElements | undefined;
   rpc: ViewRPC;
   create: (params: Record<string, unknown>) => Promise<Worker>;
   start: (taskId: string, mode: Worker['mode'], expectedRun: TaskBoundary) => Promise<unknown>;
@@ -97,6 +97,9 @@ export function WorkerForm(props: WorkerFormProps) {
   let title = 'New task';
   if (selection) {
     title = 'Edit selected element';
+    if (selection.elements.length > 1) {
+      title = 'Edit selected elements';
+    }
   }
   const requests = createWorkerFormRequests(props);
   const readiness = createReadiness(() => true, props.rpc);
@@ -112,7 +115,7 @@ export function WorkerForm(props: WorkerFormProps) {
 
   return (
     <Modal title={title} close={requests.close}>
-      <Show when={selection}>{(element) => <PreviewElementFigure element={element()} />}</Show>
+      <Show when={selection}>{(captures) => <PreviewCaptureGallery elements={captures().elements} />}</Show>
       <Show when={readiness.report()?.webChecks.status === 'unavailable'}>
         <div class="setup-attention" role="status">
           <strong>Web-app checks need setup</strong>

@@ -18,7 +18,9 @@ async function setup(t) {
   const first = '<a id="go" href="edit.html?token=private-value#private">Edit note</a>';
   const second = `<input type="password" id="private" value="must-stay-private">
     <button id="save" aria-labelledby="save-name" onclick="document.body.dataset.activated='yes'">OK</button>
-    <span id="save-name">Save note</span>`;
+    <span id="save-name">Save note</span>
+    <button id="open-list" onclick="document.querySelector('dialog').showModal()">Open list</button>
+    <dialog><ul id="list" aria-label="Recent notes" style="width:650px;padding:20px"><li>First note</li></ul></dialog>`;
   const assets = new Map(
     [
       ['index.html', first],
@@ -41,13 +43,13 @@ async function setup(t) {
 
 // Accessibility sees the controls in the closed shadow tree without making
 // their DOM or the host callback available to the preview's JavaScript.
-async function choose(page) {
+async function pickerButton(page, accessibleName) {
   const session = await page.createCDPSession();
   try {
     const { root } = await session.send('DOM.getDocument');
     const { nodes } = await session.send('Accessibility.queryAXTree', {
       nodeId: root.nodeId,
-      accessibleName: 'Select element',
+      accessibleName,
       role: 'button',
     });
     const button = nodes.find((node) => !!node.backendDOMNodeId);
@@ -60,8 +62,63 @@ async function choose(page) {
   }
 }
 
+async function waitForPickerStatus(page, accessibleName) {
+  const session = await page.createCDPSession();
+  try {
+    const { root } = await session.send('DOM.getDocument');
+    for (let attempt = 0; attempt < 80; attempt++) {
+      const { nodes } = await session.send('Accessibility.queryAXTree', {
+        nodeId: root.nodeId,
+        accessibleName,
+      });
+      if (nodes.length) {
+        return;
+      }
+      await delay(25);
+    }
+    assert.fail('Missing picker status: ' + accessibleName);
+  } finally {
+    await session.detach();
+  }
+}
+
+async function optionClick(page, selector) {
+  await page.keyboard.down('Alt');
+  try {
+    await page.click(selector);
+  } finally {
+    await page.keyboard.up('Alt');
+  }
+}
+
+async function assertHighlight(page, selector) {
+  const session = await page.createCDPSession();
+  try {
+    const { root } = await session.send('DOM.getDocument', { depth: -1, pierce: true });
+    const { nodeId: toolbarId } = await session.send('DOM.querySelector', {
+      nodeId: root.nodeId,
+      selector: 'miter-picker-toolbar',
+    });
+    const { node: toolbar } = await session.send('DOM.describeNode', { nodeId: toolbarId, pierce: true });
+    const shadow = toolbar.shadowRoots?.[0];
+    assert.ok(shadow);
+    const { nodeId } = await session.send('DOM.querySelector', {
+      nodeId: shadow.nodeId,
+      selector: '.outline:not([hidden])',
+    });
+    const { model } = await session.send('DOM.getBoxModel', { nodeId });
+    const expected = await page.$eval(selector, (element) => {
+      const { left, top, right, bottom } = element.getBoundingClientRect();
+      return [left, top, right, top, right, bottom, left, bottom];
+    });
+    assert.deepEqual(model.border.map(Math.round), expected.map(Math.round));
+  } finally {
+    await session.detach();
+  }
+}
+
 test(
-  'Chrome can navigate, skip a private field and select without activating the control',
+  'Chrome captures immediately, passes Option-click, and collects captures across navigation and a modal',
   { skip: !chrome },
   async (t) => {
     const { page, url } = await setup(t);
@@ -69,16 +126,34 @@ test(
     void choice.catch(() => {});
     await page.waitForSelector('#go');
     assert.equal(await page.evaluate(() => typeof window.miterPick), 'undefined');
-    await Promise.all([page.waitForNavigation(), page.click('#go')]);
-    await choose(page);
+    await page.hover('#go');
+    await assertHighlight(page, '#go');
+    assert.equal(await page.$eval('#go', (element) => element.matches(':hover')), false);
+    await page.click('#go');
+    await waitForPickerStatus(page, '1 captured. Click another element or choose Done.');
+    assert.equal(page.url(), url);
+    await Promise.all([page.waitForNavigation(), optionClick(page, '#go')]);
+    await waitForPickerStatus(page, '1 captured. Click another element or choose Done.');
     await page.click('#private');
+    await waitForPickerStatus(page, 'Choose a visible area away from private fields.');
     await page.click('#save');
-    const result = await choice;
+    await waitForPickerStatus(page, '2 captured. Click another element or choose Done.');
+    assert.equal(await page.evaluate(() => document.body.dataset.activated), undefined);
+    await optionClick(page, '#open-list');
+    await page.waitForSelector('dialog:modal #list');
+    await page.click('#list', { offset: { x: 8, y: 8 } });
+    await waitForPickerStatus(page, '3 captured. Click another element or choose Done.');
+    await pickerButton(page, 'Done');
+    const captures = await choice;
+    assert.deepEqual(
+      captures.map((capture) => capture.name),
+      ['Edit note', 'Save note', 'Recent notes'],
+    );
+    const result = captures[1];
     assert.equal(result.role, 'button');
     assert.equal(result.name, 'Save note');
     assert.equal(result.route, '/edit.html');
     assert.equal(await page.$eval(result.selector, (el) => el.id), 'save');
-    assert.equal(await page.evaluate(() => document.body.dataset.activated), undefined);
     assert.match(result.screenshot, /^data:image\/jpeg;base64,\/9j\//);
     assert.ok(result.screenshot.length < 80_000);
     const clipped = await page.evaluate(async (data) => {
@@ -89,6 +164,13 @@ test(
       return Math.abs(image.naturalWidth - width) <= 1 && Math.abs(image.naturalHeight - height) <= 1;
     }, result.screenshot);
     assert.equal(clipped, true);
+    const listImageWidth = await page.evaluate(async (data) => {
+      const image = new Image();
+      image.src = data;
+      await image.decode();
+      return image.naturalWidth;
+    }, captures[2].screenshot);
+    assert.ok(listImageWidth > 640);
     assert.deepEqual(result.viewport, { width: 800, height: 600 });
   },
 );
@@ -100,13 +182,10 @@ test('Enter picks the focused element; Escape and abort cancel selection', { ski
   await page.waitForSelector('#go');
   await page.keyboard.press('Tab');
   assert.equal(await page.evaluate(() => document.activeElement.id), 'go');
-  await page.keyboard.down('Alt');
-  await page.keyboard.down('Shift');
-  await page.keyboard.press('KeyP');
-  await page.keyboard.up('Shift');
-  await page.keyboard.up('Alt');
   await page.keyboard.press('Enter');
-  assert.equal((await choice).name, 'Edit note');
+  await waitForPickerStatus(page, '1 captured. Click another element or choose Done.');
+  await pickerButton(page, 'Done');
+  assert.equal((await choice)[0].name, 'Edit note');
   assert.equal(page.url(), url);
   await page.goto('about:blank');
   choice = pickInPage(page, url, AbortSignal.timeout(10_000));

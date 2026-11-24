@@ -306,7 +306,7 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
           projectId={navigation().projectId}
           {...terminalScope()}
           projectName={project()?.name || ''}
-          editElement={newWorker}
+          editElements={newWorker}
           close={() => setTerminalOpen(false)}
         />
       </Show>

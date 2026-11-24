@@ -171,12 +171,16 @@ const fixtures = {
     { ...task, expectedRun: { runId: worker.runId, epoch: 0 }, previewId: 'b'.repeat(32) },
     {
       captureId: 'capture_1',
-      route: '/cards',
-      viewport: { width: 1280, height: 800 },
-      role: 'button',
-      name: 'New card',
-      selector: '#new-card',
-      screenshot: 'data:image/jpeg;base64,/9j/2Q==',
+      elements: [
+        {
+          route: '/cards',
+          viewport: { width: 1280, height: 800 },
+          role: 'button',
+          name: 'New card',
+          selector: '#new-card',
+          screenshot: 'data:image/jpeg;base64,/9j/2Q==',
+        },
+      ],
     },
   ],
   'worker.cancelPick': [
@@ -621,7 +625,18 @@ test('picker contracts bind the exact session and reject foreign routes, unbound
     { screenshot: 'data:image/svg+xml,<svg/>' },
     { screenshot: 'data:image/jpeg;base64,/9j/' + 'a'.repeat(80000) },
     { viewport: { width: 800, height: 0 } },
+  ]) {
+    assert.throws(() =>
+      parseRpcResult(registry, 'worker.pickElement', {
+        ...captured,
+        elements: [{ ...captured.elements[0], ...changed }],
+      }),
+    );
+  }
+  for (const changed of [
     { captureId: undefined },
+    { elements: [] },
+    { elements: Array(11).fill(captured.elements[0]) },
   ]) {
     assert.throws(() => parseRpcResult(registry, 'worker.pickElement', { ...captured, ...changed }));
   }

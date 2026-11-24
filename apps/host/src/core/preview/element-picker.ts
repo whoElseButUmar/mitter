@@ -4,7 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Browser, CDPSession, Page } from 'puppeteer-core';
 import { z } from 'zod';
-import { previewElementSchema, type PreviewElement } from '../../../../../packages/protocol/src/rpc.js';
+import {
+  previewCaptureLimit,
+  previewElementSchema,
+  type PreviewElement,
+} from '../../../../../packages/protocol/src/rpc.js';
 import { browserExecutable } from '../quality/browser-executable.js';
 import {
   browserNetworkArguments,
@@ -24,8 +28,8 @@ const bounds = z
     clip: z.strictObject({
       x: z.number().nonnegative(),
       y: z.number().nonnegative(),
-      width: z.number().min(1).max(640),
-      height: z.number().min(1).max(320),
+      width: z.number().min(1).max(16384),
+      height: z.number().min(1).max(16384),
     }),
   })
   .describe('Visible coordinates of the chosen element in the isolated picker document.');
@@ -61,7 +65,7 @@ async function capture(session: CDPSession, contextId: number, entry: URL): Prom
   const selected = await session.send('Runtime.evaluate', {
     contextId,
     expression: 'globalThis.miterSelectedElement()',
-    objectGroup: 'picked-element',
+    objectGroup: 'picked-element-' + contextId,
   });
   if (!selected.result.objectId) {
     throw new Error('The element disappeared. Select it again.');
@@ -93,10 +97,11 @@ async function capture(session: CDPSession, contextId: number, entry: URL): Prom
     throw new Error('The element moved or includes private fields. Select a smaller element.');
   }
   const { clip, viewport, selector, pathname } = safe.data;
+  const fit = Math.min(1, 960 / clip.width, 560 / clip.height);
   for (const [scale, quality] of [
-    [1, 75],
-    [0.7, 55],
-    [0.35, 40],
+    [fit, 75],
+    [fit * 0.7, 55],
+    [fit * 0.35, 40],
   ] as const) {
     const { data } = await session.send('Page.captureScreenshot', {
       format: 'jpeg',
@@ -127,18 +132,63 @@ async function capture(session: CDPSession, contextId: number, entry: URL): Prom
   throw new Error('This element is too large to attach. Select a smaller area.');
 }
 
-export async function pickInPage(page: Page, url: string, signal: AbortSignal): Promise<PreviewElement> {
+export async function pickInPage(page: Page, url: string, signal: AbortSignal): Promise<PreviewElement[]> {
   signal.throwIfAborted();
   const entry = previewAddress(url);
   const session = await page.createCDPSession();
-  const outcome = Promise.withResolvers<number>();
+  const outcome = Promise.withResolvers<PreviewElement[]>();
+  const elements: PreviewElement[] = [];
   void outcome.promise.catch(() => {});
-  const cancelled = () => outcome.reject(new Error('Element selection cancelled.'));
+  let finished = false;
+  const cancelled = () => {
+    finished = true;
+    outcome.reject(new Error('Element selection cancelled.'));
+  };
   let contextId: number | undefined;
+  let scriptId: string | undefined;
   const world = 'miter-picker-' + randomUUID();
   signal.addEventListener('abort', cancelled, { once: true });
   page.once('close', cancelled);
+
+  const matchesDocument = (candidate: number) =>
+    contextId === candidate && new URL(page.url()).origin === entry.origin;
+
+  async function settle(candidate: number, message = '') {
+    if (!finished && !signal.aborted && matchesDocument(candidate)) {
+      await session.send('Runtime.evaluate', {
+        contextId: candidate,
+        expression: 'globalThis.miterSettleCapture(' + elements.length + ',' + JSON.stringify(message) + ')',
+      });
+    }
+  }
+
+  async function collect(candidate: number) {
+    let message = '';
+    try {
+      const element = await capture(session, candidate, entry);
+      if (
+        !finished &&
+        !signal.aborted &&
+        matchesDocument(candidate) &&
+        elements.length < previewCaptureLimit
+      ) {
+        elements.push(element);
+      }
+    } catch (error) {
+      message = 'Couldn’t capture that element. Choose a smaller area and try again.';
+      if (error instanceof Error && error.message.startsWith('The element')) {
+        message = error.message;
+      }
+    } finally {
+      await session
+        .send('Runtime.releaseObjectGroup', { objectGroup: 'picked-element-' + candidate })
+        .catch(() => {});
+      await settle(candidate, message);
+    }
+  }
+
   try {
+    signal.throwIfAborted();
     const { frameTree } = await session.send('Page.getFrameTree');
     session.on('Runtime.executionContextCreated', ({ context }) => {
       if (context.name === world && context.auxData?.frameId === frameTree.frame.id) {
@@ -156,45 +206,68 @@ export async function pickInPage(page: Page, url: string, signal: AbortSignal): 
     session.on('Runtime.bindingCalled', (event) => {
       if (
         event.name !== 'miterPick' ||
-        contextId !== event.executionContextId ||
-        new URL(page.url()).origin !== entry.origin
+        !matchesDocument(event.executionContextId) ||
+        finished ||
+        signal.aborted
       ) {
         return;
       }
-      if (event.payload === 'cancel') {
-        cancelled();
-      }
-      if (event.payload === 'selected') {
-        outcome.resolve(event.executionContextId);
+      switch (event.payload) {
+        case 'ready':
+          void settle(event.executionContextId).catch(() => {});
+          break;
+        case 'cancel':
+          cancelled();
+          break;
+        case 'done':
+          if (elements.length) {
+            finished = true;
+            outcome.resolve(elements);
+          }
+          break;
+        case 'selected':
+          void collect(event.executionContextId).catch(() => {});
+          break;
       }
     });
     await session.send('Runtime.enable');
     await session.send('Page.enable');
     await session.send('Runtime.addBinding', { name: 'miterPick', executionContextName: world });
-    await session.send('Page.addScriptToEvaluateOnNewDocument', {
+    const script = await session.send('Page.addScriptToEvaluateOnNewDocument', {
       worldName: world,
-      source: '(' + mountElementPicker.toString() + ')(' + JSON.stringify(entry.origin) + ')',
+      source:
+        '(' +
+        mountElementPicker.toString() +
+        ')(' +
+        JSON.stringify(entry.origin) +
+        ',' +
+        previewCaptureLimit +
+        ')',
     });
+    scriptId = script.identifier;
     const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20_000 });
     if (!response?.ok() || new URL(page.url()).origin !== entry.origin) {
       throw new Error('The preview could not open. Run the app and try again.');
     }
     await page.bringToFront();
     signal.throwIfAborted();
-    const selectedContext = await outcome.promise;
+    const captures = await outcome.promise;
     signal.throwIfAborted();
-    if (new URL(page.url()).origin !== entry.origin || selectedContext !== contextId) {
-      throw new Error('The preview navigated. Select the element again.');
-    }
-    return await capture(session, selectedContext, entry);
+    return captures;
   } finally {
+    finished = true;
     signal.removeEventListener('abort', cancelled);
     page.off('close', cancelled);
+    if (scriptId) {
+      await session
+        .send('Page.removeScriptToEvaluateOnNewDocument', { identifier: scriptId })
+        .catch(() => {});
+    }
     await session.detach().catch(() => {});
   }
 }
 
-export async function pickPreviewElement(url: string, signal: AbortSignal): Promise<PreviewElement> {
+export async function pickPreviewElement(url: string, signal: AbortSignal): Promise<PreviewElement[]> {
   previewAddress(url);
   const deadline = AbortSignal.any([signal, AbortSignal.timeout(120_000)]);
   deadline.throwIfAborted();

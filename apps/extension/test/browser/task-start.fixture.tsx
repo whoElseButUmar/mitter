@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js';
 import { projectSchema, workerSchema } from '../../../../packages/protocol/src/index';
-import { ElementPicker, type PickedElement } from '../../src/components/ElementPicker';
+import { ElementPicker, type PickedElements } from '../../src/components/ElementPicker';
 import { WorkerForm } from '../../src/forms/WorkerForm';
 import { bridgeStartResultSchema } from '../../src/schemas/local-results';
 import { workerCreateParamsSchema } from '../../../../packages/protocol/src/rpc';
@@ -58,12 +58,24 @@ export function createTaskStartFixture(mount: (component: () => JSX.Element) => 
             chooseElement = () =>
               resolve({
                 captureId: 'parcel_capture',
-                route: '/parcels',
-                viewport: { width: 390, height: 844 },
-                role: 'button',
-                name: 'Save <parcel>',
-                selector: '#save',
-                screenshot: document.createElement('canvas').toDataURL('image/jpeg'),
+                elements: [
+                  {
+                    route: '/parcels',
+                    viewport: { width: 390, height: 844 },
+                    role: 'button',
+                    name: 'Save <parcel>',
+                    selector: '#save',
+                    screenshot: document.createElement('canvas').toDataURL('image/jpeg'),
+                  },
+                  {
+                    route: '/parcels/recent',
+                    viewport: { width: 390, height: 844 },
+                    role: 'list',
+                    name: 'Recent parcels',
+                    selector: '#recent',
+                    screenshot: document.createElement('canvas').toDataURL('image/jpeg'),
+                  },
+                ],
               });
           });
         }}
@@ -73,7 +85,7 @@ export function createTaskStartFixture(mount: (component: () => JSX.Element) => 
     ));
   }
 
-  function mountTask(selection?: PickedElement) {
+  function mountTask(selection?: PickedElements) {
     if (resolveStart) {
       throw new Error('Finish the previous controlled admission before mounting another task.');
     }

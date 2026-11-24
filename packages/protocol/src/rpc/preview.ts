@@ -83,9 +83,21 @@ export const previewElementSchema = z
 
 export type PreviewElement = z.infer<typeof previewElementSchema>;
 
-export const previewPickResultSchema = previewElementSchema
-  .extend({ captureId: identifierSchema('preview capture ID') })
-  .describe('A captured preview element available for a new edit task.');
+// Keep the gallery below Chrome's native messaging response limit.
+export const previewCaptureLimit = 10;
+
+export const previewCaptureListSchema = z
+  .array(previewElementSchema)
+  .min(1)
+  .max(previewCaptureLimit)
+  .describe('The selected preview elements in capture order.');
+
+export const previewPickResultSchema = z
+  .strictObject({
+    captureId: identifierSchema('preview capture ID'),
+    elements: previewCaptureListSchema,
+  })
+  .describe('A reviewed group of preview captures available for one new edit task.');
 
 export const previewCancelPickResultSchema = z
   .strictObject({ cancelled: z.boolean().describe('Whether the selected session had an active picker.') })
