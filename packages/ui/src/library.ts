@@ -3,7 +3,13 @@ import { enhanceSelect } from './select.js';
 import type { TabKind } from './workspace.js';
 import { isHTMLElement, requireWindow } from './dom/elements.js';
 import { navigationIndex } from './native/keyboard.js';
-import { LibraryFilterSchema, libraryRows, type LibraryData, type LibraryView } from './library/rows.js';
+import {
+  LibraryFilterSchema,
+  libraryRows,
+  libraryStatusLabel,
+  type LibraryData,
+  type LibraryView,
+} from './library/rows.js';
 import { createIcon } from './icons.js';
 
 export {
@@ -119,8 +125,9 @@ export function mountLibrary(root: HTMLElement, initial: LibraryOptions) {
   };
   allProjects.addEventListener('click', scopeClick);
   const count = document.createElement('span');
-  count.className = 'muted small';
-  scopeRow.append(count, allProjects);
+  count.className = 'library-count';
+  count.setAttribute('role', 'status');
+  scopeRow.append(allProjects);
   const panel = document.createElement('div');
   panel.className = 'library-panel';
   panel.setAttribute('role', 'tabpanel');
@@ -132,8 +139,6 @@ export function mountLibrary(root: HTMLElement, initial: LibraryOptions) {
   panel.append(list, empty);
   const foot = document.createElement('div');
   foot.className = 'library-foot';
-  const hint = document.createElement('span');
-  hint.textContent = 'Closing a tab keeps its work saved. Running tasks continue.';
   const clear = document.createElement('button');
   clear.type = 'button';
   clear.textContent = 'Clear list…';
@@ -182,8 +187,8 @@ export function mountLibrary(root: HTMLElement, initial: LibraryOptions) {
   clear.addEventListener('click', clearClick);
   cancel.addEventListener('click', cancelClick);
   confirm.addEventListener('click', confirmClick);
-  foot.append(hint, clear);
-  root.append(tabs, tools, scopeRow, panel, confirmation, foot);
+  foot.append(clear);
+  root.append(tabs, tools, scopeRow, count, panel, confirmation, foot);
   const filterControl = enhanceSelect(filterSelect);
   const filterChanged = () => {
     const result = LibraryFilterSchema.safeParse(filterSelect.value);
@@ -219,6 +224,7 @@ export function mountLibrary(root: HTMLElement, initial: LibraryOptions) {
 
     filterRoot.hidden = view === 'history';
     allProjects.hidden = view === 'projects' || !options.scopeProjectId;
+    scopeRow.hidden = allProjects.hidden;
     const project = options.projects.find((project) => project.id === scope);
     allProjects.textContent =
       options.projects.find((project) => project.id === options.scopeProjectId)?.label + ' only';
@@ -231,7 +237,7 @@ export function mountLibrary(root: HTMLElement, initial: LibraryOptions) {
       scope = '';
     }
 
-    clear.hidden = view !== 'history';
+    foot.hidden = view !== 'history';
     confirmation.hidden = true;
     renderList();
   }
@@ -271,7 +277,15 @@ export function mountLibrary(root: HTMLElement, initial: LibraryOptions) {
     }
 
     clear.disabled = !options.state.recentlyClosed.length;
-    const shape = JSON.stringify([view, rows]);
+    const projectNames = new Set<string>();
+    const duplicateNames = new Set<string>();
+    for (const { label } of options.projects) {
+      if (projectNames.has(label)) {
+        duplicateNames.add(label);
+      }
+      projectNames.add(label);
+    }
+    const shape = JSON.stringify([view, scope, rows, [...duplicateNames]]);
 
     if (shape === lastShape) {
       return;
@@ -309,31 +323,46 @@ export function mountLibrary(root: HTMLElement, initial: LibraryOptions) {
       }
 
       button.setAttribute('aria-label', action + row.label);
+      button.title = [row.label, row.subtitle].filter(Boolean).join('\n');
 
       if (row.selected) {
         button.setAttribute('aria-current', 'true');
       }
 
-      const dot = document.createElement('i');
-      dot.className = 'state-dot dot-' + row.status;
-      dot.setAttribute('aria-hidden', 'true');
+      let itemIcon: 'fileText' | 'folder' = 'fileText';
+      if (row.kind === 'project') {
+        itemIcon = 'folder';
+      }
       const body = document.createElement('span');
       body.className = 'library-item-body';
       const title = document.createElement('strong');
       title.textContent = row.label;
-      const subtitle = document.createElement('small');
-      subtitle.textContent = row.subtitle;
-      body.append(title, subtitle);
+      body.append(title);
+      let context = '';
+      if (row.kind === 'task' && !scope) {
+        context = row.projectLabel;
+      } else if (row.kind === 'project' && duplicateNames.has(row.label)) {
+        context = row.subtitle;
+      }
+      if (context) {
+        const subtitle = document.createElement('small');
+        subtitle.textContent = context;
+        body.append(subtitle);
+      }
       const detail = document.createElement('span');
       detail.className = 'library-item-detail';
-      detail.textContent = row.status.replaceAll('_', ' ');
-
-      if (view === 'history') {
-        detail.textContent = 'Restore';
-      } else if (row.opened) {
-        detail.textContent = 'Open tab';
-      } else if (row.status === 'idle') {
-        detail.textContent = 'Saved';
+      let status = libraryStatusLabel(row.status);
+      if (view === 'history' && row.available) {
+        status = 'Restore';
+      }
+      if (status) {
+        const notice = document.createElement('span');
+        notice.className = 'library-item-notice';
+        notice.textContent = status;
+        detail.append(notice);
+        if (view !== 'history') {
+          button.setAttribute('aria-description', status);
+        }
       }
 
       if (row.stamp) {
@@ -348,7 +377,10 @@ export function mountLibrary(root: HTMLElement, initial: LibraryOptions) {
         detail.append(time);
       }
 
-      button.append(dot, body, detail);
+      button.append(createIcon(document, itemIcon, 'library-item-icon'), body);
+      if (detail.children.length) {
+        button.append(detail);
+      }
       button.addEventListener('click', () => {
         if (view === 'history') {
           options.restore(row.key);

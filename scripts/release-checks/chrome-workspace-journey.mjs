@@ -213,6 +213,19 @@ export async function checkWorkspaceJourney(chrome, session, projectRoot, modelP
     'draft task is saved',
   );
   await click(chrome, session, '.task-tab-row .list-tabs');
+  assert.equal(
+    await evaluate(
+      chrome,
+      session,
+      `(() => {
+      const task = document.querySelector('.library-open');
+      return !task.querySelector('small') && !task.querySelector('.library-item-notice') &&
+        task.title.includes('Create an offline journal.');
+    })()`,
+    ),
+    true,
+    'Scoped task rows show their names and retain the searchable goal in the tooltip.',
+  );
   await click(chrome, session, '.library-row .library-more .menu-trigger');
   await evaluate(
     chrome,
@@ -329,6 +342,7 @@ export async function checkWorkspaceJourney(chrome, session, projectRoot, modelP
       const more = row.querySelector('.library-more');
       const transparent = 'rgba(0, 0, 0, 0)';
       return !!more && row.getBoundingClientRect().right === more.getBoundingClientRect().right &&
+        !action.querySelector('small') && action.title.includes('\\n/') &&
         getComputedStyle(row).backgroundColor !== transparent &&
         getComputedStyle(action).backgroundColor === transparent &&
         getComputedStyle(more).backgroundColor === transparent;

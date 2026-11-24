@@ -11,7 +11,7 @@ export const LibraryRecordSchema = z
     projectId: z.string().optional().describe('Owning project for task records.'),
     label: z.string().describe('Display label rendered as text.'),
     subtitle: z.string().describe('Project directory or task goal rendered as text.'),
-    status: z.string().describe('Status token used by existing state-dot CSS selectors.'),
+    status: z.string().describe('Record status used for filters and attention messages.'),
     createdAt: z.number().optional().describe('Creation epoch milliseconds, used to order tasks.'),
   })
   .describe('Searchable retained workspace record, independent of open tabs.');
@@ -33,6 +33,7 @@ export const LibraryRowSchema = z
     kind: TabKindSchema,
     id: z.string().describe('Registered project or task identifier.'),
     projectId: z.string().describe('Owning project identifier.'),
+    projectLabel: z.string().describe('Display name of the owning project, when available.'),
     label: z.string().describe('Resolved display name, or retained closed-tab label.'),
     subtitle: z.string().describe('Resolved directory or project/task description.'),
     status: z.string().describe('Record status or unavailable.'),
@@ -69,6 +70,19 @@ const attentionStatuses = new Set([
   'error',
 ]);
 
+export function libraryStatusLabel(status: string): string {
+  if (attentionStatuses.has(status)) {
+    return 'Needs attention';
+  }
+  if (activeStatuses.has(status)) {
+    return 'Working';
+  }
+  if (status === 'unavailable') {
+    return 'Unavailable';
+  }
+  return '';
+}
+
 export function libraryRows(
   options: LibraryData,
   view: LibraryView,
@@ -87,9 +101,8 @@ export function libraryRows(
       }
 
       const record = records.find((record) => record.id === tab.id);
-      let subtitle =
-        'Task · ' +
-        (options.projects.find((project) => project.id === tab.projectId)?.label || 'Unavailable project');
+      const projectLabel = options.projects.find((project) => project.id === tab.projectId)?.label || '';
+      let subtitle = 'Task · ' + (projectLabel || 'Unavailable project');
 
       if (tab.kind === 'project') {
         subtitle = 'Project · ' + (record?.subtitle || 'Unavailable');
@@ -100,6 +113,7 @@ export function libraryRows(
         kind: tab.kind,
         id: tab.id,
         projectId: tab.projectId,
+        projectLabel,
         label: record?.label || tab.label,
         subtitle,
         status: record?.status || 'unavailable',
@@ -120,6 +134,7 @@ export function libraryRows(
 
     rows = records.map((record) => {
       let projectId = record.projectId || '';
+      let projectLabel = '';
       let subtitle = record.subtitle;
       let opened = (options.state.openTasks[projectId] || []).includes(record.id);
       let selected =
@@ -130,10 +145,8 @@ export function libraryRows(
         opened = options.state.openProjects.includes(record.id);
         selected = options.state.projectId === record.id;
       } else {
-        subtitle =
-          (options.projects.find((project) => project.id === projectId)?.label || '') +
-          ' · ' +
-          record.subtitle;
+        projectLabel = options.projects.find((project) => project.id === projectId)?.label || '';
+        subtitle = [projectLabel, record.subtitle].filter(Boolean).join(' · ');
       }
 
       return {
@@ -141,6 +154,7 @@ export function libraryRows(
         kind,
         id: record.id,
         projectId,
+        projectLabel,
         label: record.label,
         subtitle,
         status: record.status,

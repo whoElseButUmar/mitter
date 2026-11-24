@@ -48,6 +48,9 @@ test('library keeps focused rows and scroll across updates, with text-only label
   const first = root.querySelector('.library-open');
   assert.equal(first.querySelector('strong').textContent, '<script>Literal</script>');
   assert.equal(first.querySelector('script'), null);
+  assert.equal(first.querySelector('small'), null, 'Scoped tasks omit the repeated project and goal text.');
+  assert.equal(first.title, '<script>Literal</script>\nProject · Goal');
+  assert.equal(first.querySelector('.library-item-notice'), null);
   first.focus();
   root.querySelector('.library-panel').scrollTop = 42;
   library.update({
@@ -56,7 +59,8 @@ test('library keeps focused rows and scroll across updates, with text-only label
   });
   assert.equal(document.activeElement.dataset.libraryKey, 'task:a');
   assert.equal(root.querySelector('.library-panel').scrollTop, 42);
-  assert.equal(root.querySelector('.state-dot').className, 'state-dot dot-working');
+  assert.equal(root.querySelector('.library-item-notice').textContent, 'Working');
+  assert.equal(document.activeElement.getAttribute('aria-description'), 'Working');
   library.dispose();
   assert.equal(root.listenerCount, 0);
   assert.equal(document.listenerCount, 0);
