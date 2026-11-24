@@ -231,28 +231,24 @@ export function WorkspaceDialogs(props: { controller: WorkspaceController }) {
         </Modal>
       </Show>
       <Show when={modal() === 'health'}>
-        <Modal title="Setup & connection" close={() => setModal('')} wide>
-          <SetupPanel
-            connected={props.controller.connected()}
-            error={props.controller.connectionError()}
-            builds={props.controller.connectionBuilds()}
-            rpc={rpc}
-            reconnect={() => props.controller.client.reconnect()}
-            reload={reloadWorkspace}
-            openProject={() => setModal('project')}
-            createProject={() => setModal('project-create')}
-            newTask={props.controller.newWorker}
-            projectName={props.controller.project()?.name}
-          />
-          <Show when={props.controller.connected()}>
-            <details class="setup-diagnostics setup-disclosure">
-              <summary>
-                <Icon name="down" />
-                Advanced diagnostics and backups
-              </summary>
+        <Modal title="Setup & connection" close={() => setModal('')}>
+          <div class="setup-connection">
+            <SetupPanel
+              connected={props.controller.connected()}
+              error={props.controller.connectionError()}
+              builds={props.controller.connectionBuilds()}
+              rpc={rpc}
+              reconnect={() => props.controller.client.reconnect()}
+              reload={reloadWorkspace}
+              openProject={() => setModal('project')}
+              createProject={() => setModal('project-create')}
+              newTask={props.controller.newWorker}
+              projectName={props.controller.project()?.name}
+            />
+            <Show when={props.controller.connected()}>
               <HealthPanel rpc={rpc} copy={copy} notice={success} />
-            </details>
-          </Show>
+            </Show>
+          </div>
         </Modal>
       </Show>
       <Show when={modal() === 'changes' && selected()}>

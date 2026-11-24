@@ -21,7 +21,7 @@ import { checkPreviewSandbox } from './chrome-preview.mjs';
 import { checkDomReader } from './chrome-dom-reader.mjs';
 import { checkAppFoundation } from './chrome-app-foundation.mjs';
 import { checkAppComponents } from './chrome-app-components.mjs';
-import { checkSetup } from './chrome-setup.mjs';
+import { checkHealthDialog, checkSetup } from './chrome-setup.mjs';
 import { checkProjectHome } from './chrome-project-home.mjs';
 import { checkProjectForm } from './chrome-project-form.mjs';
 import { checkWorkspaceJourney } from './chrome-workspace-journey.mjs';
@@ -29,7 +29,7 @@ import { preparePickerHost } from './chrome-picker-host.mjs';
 import { checkTaskRecovery } from './chrome-task-recovery.mjs';
 import { checkStaticPreview } from './chrome-static-preview.mjs';
 import { checkAppRun } from './chrome-app-run.mjs';
-import { checkDocs, openHelpItem } from './chrome-docs.mjs';
+import { checkDocs } from './chrome-docs.mjs';
 import { checkConfirmation } from './chrome-confirmation.mjs';
 import { checkFeedback } from './chrome-feedback.mjs';
 import { assertNoSystemHost, installNativeHost } from './chrome-native.mjs';
@@ -42,7 +42,7 @@ import {
   nativeCheckSchema,
   targetCloseSchema,
 } from './chrome-schemas.mjs';
-import { evaluate, waitFor, page, press, click, checkDialogs, checkResources } from './chrome-ui.mjs';
+import { evaluate, waitFor, page, click, checkDialogs, checkResources } from './chrome-ui.mjs';
 
 const root = path.resolve(import.meta.dirname, '../..');
 
@@ -162,20 +162,7 @@ async function main() {
       await evaluate(chrome, app.session, '!!document.querySelector(".titlebar .health-button")'),
       false,
     );
-    await openHelpItem(chrome, app.session, 'Setup & connection');
-    await waitFor(
-      chrome,
-      app.session,
-      'document.querySelector("dialog[open] h2")?.textContent === "Setup & connection"',
-      'packaged health dialog',
-    );
-    await press(chrome, app.session, 'Escape', 27);
-    await waitFor(
-      chrome,
-      app.session,
-      'document.querySelector("dialog[open]") === null',
-      'packaged dialog dismissal',
-    );
+    await checkHealthDialog(chrome, app.session);
     await checkAppRun(executable, directory, path.join(directory, 'extension'), log.fd, signal);
     console.log(
       'PASS: Run opens the completed app in a browser tab and manages its existing terminal session.',

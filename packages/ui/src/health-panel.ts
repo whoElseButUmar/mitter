@@ -2,6 +2,7 @@ import { describeBuild } from '../../protocol/src/index.js';
 import { textElement } from './dom/elements.js';
 import type { HealthReport } from './forms/report-schemas.js';
 import { callCoreRpc } from './rpc.js';
+import { createIcon } from './icons.js';
 
 export type HealthPanelOptions = {
   rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>;
@@ -19,11 +20,12 @@ export function mountHealthPanel(root: HTMLElement, options: HealthPanelOptions)
   let report: HealthReport | undefined;
   const make = <Tag extends keyof HTMLElementTagNameMap>(tag: Tag, text = '', className = '') =>
     textElement(document, tag, text, className);
-  const state = make('p', 'Checking the local host…', 'health-status');
+  const state = make('p', 'Checking the database…', 'health-status');
   state.setAttribute('role', 'status');
   const detail = make('dl', '', 'health-details');
   const attention = make('div');
-  const actions = make('div', '', 'button-row');
+  const actions = make('div', '', 'health-actions button-row');
+  const backupHeading = make('div', '', 'backup-heading');
   const backups = make('div', '', 'backup-list');
   const error = make('p', '', 'error');
   error.setAttribute('role', 'alert');
@@ -35,14 +37,14 @@ export function mountHealthPanel(root: HTMLElement, options: HealthPanelOptions)
     button.type = 'button';
   }
 
-  actions.append(refresh, backup, copy);
+  actions.append(refresh, copy);
+  backupHeading.append(make('h3', 'Task-state backups'), backup);
   const note = make(
     'p',
-    'State backups include task history and journaled source, ' +
-      'not project folders or worktree files. Keep them private.',
-    'preview-hint',
+    'Backups contain task history and journaled source. Keep them private.',
+    'backup-note',
   );
-  root.append(state, detail, attention, actions, error, make('h3', 'Recent state backups'), backups, note);
+  root.append(state, detail, attention, actions, error, backupHeading, backups, note);
 
   function pending(value: boolean): void {
     busy = value;
@@ -90,11 +92,12 @@ export function mountHealthPanel(root: HTMLElement, options: HealthPanelOptions)
     detail.replaceChildren();
     attention.replaceChildren();
     backups.replaceChildren();
-    state.textContent = 'Local host connected · Database needs attention';
+    state.textContent = 'Database needs attention';
 
     if (next.database.ok) {
-      state.textContent = 'Local host connected · Database check passed';
+      state.textContent = 'Database check passed';
     }
+    state.classList.toggle('healthy', next.database.ok);
 
     for (const [label, value] of [
       ['Helper build', describeBuild(next.version, next.buildId)],
@@ -116,14 +119,7 @@ export function mountHealthPanel(root: HTMLElement, options: HealthPanelOptions)
     }
 
     if (!next.backups.length) {
-      backups.append(
-        make(
-          'p',
-          'No state backup yet. An existing database is backed up before ' +
-            'the first launch of a different release.',
-          'muted',
-        ),
-      );
+      backups.append(make('p', 'No backups yet.', 'muted'));
     }
 
     for (const item of next.backups) {
@@ -167,18 +163,18 @@ export function mountHealthPanel(root: HTMLElement, options: HealthPanelOptions)
     void run(async () => {
       await options.copy(JSON.stringify(report, null, 2));
     });
-  const help = make('details');
-  const summary = make('summary', 'Restore and safety');
+  const help = make('details', '', 'setup-disclosure backup-help');
+  const summary = make('summary');
+  summary.append(createIcon(document, 'chevronDown'), make('span', 'Restore and safety'));
   help.append(
     summary,
     make(
       'p',
-      'To restore: close or disable Miter first, then run the copied command ' +
-        'from the installed mitter folder. A backup of the current state is made before replacement. ' +
-        'Restoring state does not roll back project files. ' +
-        'Approved commands run with your operating-system ' +
-        'permissions, not in an OS sandbox.',
-      'preview-hint',
+      'Close or disable Miter, then run the copied restore command from the installed Miter folder. ' +
+        'Miter backs up the current state before a restore and before the first launch of a different release. ' +
+        'Project files retain their current contents during a restore. ' +
+        'Approved commands run outside an OS sandbox with your operating-system permissions.',
+      'backup-note',
     ),
   );
   root.append(help);

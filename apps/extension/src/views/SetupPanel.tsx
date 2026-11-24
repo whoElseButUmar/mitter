@@ -113,37 +113,42 @@ export function SetupPanel(props: {
           />
         }
       >
-        <Show when={props.projectName} fallback={<h1>Start your project</h1>}>
-          {(name) => (
-            <>
-              <h1>Local helper connected</h1>
-              <p>{name()} is open.</p>
-            </>
-          )}
-        </Show>
-        <div class="button-row home-actions">
-          <Show
-            when={props.projectName}
-            fallback={
-              <>
-                <button type="button" class="primary" onClick={props.createProject}>
-                  New project
-                </button>
-                <button type="button" onClick={props.openProject}>
-                  Open project
-                </button>
-              </>
-            }
-          >
-            <button type="button" class="primary" onClick={() => props.newTask()}>
-              New task
-            </button>
-            <button type="button" onClick={props.openProject}>
-              Open another project
-            </button>
-          </Show>
+        <div class="setup-overview">
+          <div class="setup-current">
+            <p class="setup-connected-label">
+              <span class="state-dot" aria-hidden="true" />
+              Local helper connected
+            </p>
+            <Show when={props.projectName} fallback={<h1>Start your project</h1>}>
+              {(name) => <p class="setup-project-name">{name()}</p>}
+            </Show>
+          </div>
+          <div class="button-row home-actions">
+            <Show
+              when={props.projectName}
+              fallback={
+                <>
+                  <button type="button" class="primary" onClick={props.createProject}>
+                    New project
+                  </button>
+                  <button type="button" onClick={props.openProject}>
+                    Open project
+                  </button>
+                </>
+              }
+            >
+              <button type="button" class="primary" onClick={() => props.newTask()}>
+                New task
+              </button>
+              <button type="button" onClick={props.openProject}>
+                Open another project
+              </button>
+            </Show>
+          </div>
         </div>
-        <p class="setup-account-note">Use the Chrome profile where you’re signed in to ChatGPT.</p>
+        <Show when={!props.projectName}>
+          <p class="setup-account-note">Use the Chrome profile where you’re signed in to ChatGPT.</p>
+        </Show>
         <Show when={readiness.report()}>
           {(report) => (
             <>

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { evaluate, waitFor, press } from './chrome-ui.mjs';
+import { openHelpItem } from './chrome-docs.mjs';
 
 const fixture = 'window.mitterReleaseFixture.setup';
 
@@ -214,6 +215,76 @@ async function checkBuildMismatch(chrome, session, mode, width) {
     'Not reported',
     'A disconnected helper does not retain the previous build as current.',
   );
+}
+
+export async function checkHealthDialog(chrome, session) {
+  await chrome.request(
+    'Emulation.setDeviceMetricsOverride',
+    { width: 320, height: 640, deviceScaleFactor: 1, mobile: false },
+    session,
+  );
+  try {
+    await openHelpItem(chrome, session, 'Setup & connection');
+    await waitFor(
+      chrome,
+      session,
+      'document.querySelector("dialog[open] h2")?.textContent === "Setup & connection"',
+      'packaged health dialog',
+    );
+    await waitFor(
+      chrome,
+      session,
+      '!!document.querySelector("dialog .readiness-details")',
+      'automatic checks disclosure',
+    );
+    assert.equal(
+      await evaluate(
+        chrome,
+        session,
+        `document.querySelector('.setup-connected-label').textContent.includes('Local helper connected') &&
+        [...document.querySelectorAll('dialog .setup-disclosure')].every(details => !details.open) && !document.querySelector('dialog .health-status')`,
+      ),
+      true,
+      'Connection status remains visible while details start collapsed and diagnostics wait for disclosure.',
+    );
+    await evaluate(chrome, session, 'document.querySelector("dialog .setup-diagnostics > summary").focus()');
+    await press(chrome, session, 'Enter', 13);
+    await waitFor(
+      chrome,
+      session,
+      'document.querySelector("dialog .health-status.healthy")?.textContent === "Database check passed"',
+      'healthy database status appears when expanded',
+    );
+    assert.deepEqual(
+      await evaluate(
+        chrome,
+        session,
+        '[...document.querySelectorAll("dialog .health-panel button")].map(button => button.textContent.trim())',
+      ),
+      ['Check again', 'Copy health report', 'Back up task state'],
+    );
+    assert.equal(
+      await evaluate(
+        chrome,
+        session,
+        `(() => {
+        const body = document.querySelector('dialog .modal-body');
+        return body.scrollWidth <= body.clientWidth + 1 && !document.querySelector('dialog .backup-help').open;
+      })()`,
+      ),
+      true,
+      'Expanded diagnostics fit the narrow dialog and restore instructions stay folded.',
+    );
+    await press(chrome, session, 'Escape', 27);
+    await waitFor(
+      chrome,
+      session,
+      'document.querySelector("dialog[open]") === null',
+      'packaged dialog dismissal',
+    );
+  } finally {
+    await chrome.request('Emulation.clearDeviceMetricsOverride', {}, session);
+  }
 }
 
 export async function checkSetup(chrome, session) {

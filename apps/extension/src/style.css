@@ -3322,6 +3322,151 @@ button.miter-toast-close:hover {
   overflow-wrap: anywhere;
 }
 
+dialog:has(.setup-connection) {
+  max-width: 560px;
+  background: var(--panel);
+  border-color: var(--line);
+  border-radius: 8px;
+}
+
+dialog:has(.setup-connection) .modal-head {
+  padding: var(--space-md) var(--space-lg);
+  border-bottom-color: var(--line);
+}
+
+dialog:has(.setup-connection) .modal-body {
+  padding: 0 var(--space-lg) var(--space-sm);
+}
+
+.setup-connection > .setup-panel {
+  width: 100%;
+  padding: 0;
+}
+
+.setup-connection .setup-overview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm) var(--space-lg);
+  padding-block: var(--space-lg);
+}
+
+.setup-connection .home-actions {
+  margin: 0;
+  gap: var(--space-sm);
+}
+
+.setup-connection .home-actions button {
+  min-height: 32px;
+}
+
+.setup-current {
+  min-width: 0;
+}
+
+.setup-current .setup-connected-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--green);
+  font-size: var(--font-small);
+}
+
+.setup-connected-label .state-dot {
+  flex: none;
+  background: currentColor;
+}
+
+.setup-panel .setup-current :is(.setup-project-name, h1) {
+  margin-block: var(--space-xs) 0;
+  margin-inline-start: 12px;
+}
+
+.setup-current .setup-project-name {
+  font-size: var(--font-body);
+  font-weight: 600;
+}
+
+.setup-connection .setup-disclosure {
+  margin: 0;
+  padding: 0;
+}
+
+.setup-connection .setup-disclosure > summary {
+  min-height: 38px;
+  padding: var(--space-xs) var(--space-xs) var(--space-xs) 0;
+  color: var(--text);
+  font-size: var(--font-body);
+  font-weight: 500;
+}
+
+.setup-connection .setup-disclosure > summary:hover {
+  background: var(--raised);
+}
+
+.setup-connection .setup-disclosure > summary .miter-icon {
+  color: var(--muted);
+}
+
+.setup-connection .connection-guide {
+  padding-top: var(--space-lg);
+}
+
+.setup-connection .connection-guide > .button-row {
+  margin-block-end: var(--space-md);
+}
+
+.setup-connection :is(.health-details, .readiness-details dl) {
+  margin: 0;
+  padding: var(--space-xs) 0 var(--space-md);
+  border: 0;
+}
+
+.setup-connection .health-panel {
+  padding: 0 0 var(--space-xs) 24px;
+  overflow-wrap: anywhere;
+}
+
+.setup-connection .build-versions .health-details {
+  margin-inline-start: 24px;
+}
+
+.setup-connection .health-status {
+  margin-bottom: var(--space-xs);
+  font-weight: 600;
+}
+
+.setup-connection .health-status.healthy {
+  color: var(--green);
+}
+
+.setup-connection .health-actions {
+  justify-content: flex-start;
+  margin-block-end: var(--space-md);
+}
+
+.setup-connection .backup-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  border-top: 1px solid var(--line);
+  padding-block: var(--space-sm);
+}
+
+.setup-connection .backup-heading h3 {
+  margin: 0;
+}
+
+.setup-connection .backup-note {
+  margin-block: var(--space-xs) var(--space-sm);
+  color: var(--muted);
+  font-size: var(--font-small);
+}
+
 .task-view > .setup-panel {
   min-height: 0;
   overflow: auto;
