@@ -129,7 +129,7 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
       rewrite.close();
     }
     options = next;
-    attachments.setScope('followup:' + next.workerId);
+    attachments.setScope('followup:' + next.workerId, { persistText: true });
     render();
   }
 
@@ -150,7 +150,8 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
     const generation = taskGeneration;
     const instruction = input.value.trim();
     const submission = attachments.submission();
-    const requestKey = JSON.stringify([kind, instruction, submission?.images.map(({ id }) => id)]);
+    const images = submission?.images;
+    const requestKey = JSON.stringify([kind, instruction, images?.map(({ id }) => id)]);
 
     if (key !== requestKey) {
       key = requestKey;
@@ -163,7 +164,7 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
       id,
       instruction,
       autoStart: true,
-      ...(submission && { imageAttachments: submission.images }),
+      ...(images?.length && { imageAttachments: images }),
     };
 
     busy = true;
@@ -171,7 +172,7 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
     render();
 
     try {
-      const reserveImages = async () => {
+      const reserveDraft = async () => {
         await submission?.reserve({ id: request.id, key: requestKey });
         if (!alive || generation !== taskGeneration) {
           throw new Error('This follow-up composer is closed. Reopen it before sending.');
@@ -182,13 +183,13 @@ export function mountFollowupComposer(root: HTMLElement, options: FollowupCompos
           throw new Error('Steering is unavailable.');
         }
         if (submission) {
-          await reserveImages();
+          await reserveDraft();
         }
         await options.steer(request);
       } else if (submission) {
         // send() acquires ChatGPT access in the original click before awaiting
-        // reservation. The native follow-up is only saved once the bytes are pinned.
-        await options.send(request, reserveImages);
+        // reservation. The native follow-up is saved after reserving the draft.
+        await options.send(request, reserveDraft);
       } else {
         await options.send(request);
       }

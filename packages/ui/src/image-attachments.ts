@@ -16,6 +16,7 @@ import {
 type DraftScope = {
   key: string;
   text: string;
+  persistText: boolean;
   touched: boolean;
   blocked: boolean;
   draft: AttachmentDraft | undefined;
@@ -145,11 +146,11 @@ export function mountImageAttachments(
       .catch((error: unknown) => {
         if (scope === current) {
           if (error instanceof DOMException && error.name === 'QuotaExceededError') {
-            show('Image storage is full. Remove an image from an unsent draft and try again.');
+            show('Draft storage is full. Clear an unused draft or remove an image and try again.');
           } else if (error instanceof Error) {
             show(error.message);
           } else {
-            show('Miter could not save the image draft.');
+            show('Miter could not save the draft.');
           }
         }
       })
@@ -168,15 +169,18 @@ export function mountImageAttachments(
   async function save(
     current: DraftScope,
     images: SavedImage[],
-    added: SavedImage[] = [],
-    retain = false,
-    attempt = current.draft?.attempt,
+    {
+      added = [],
+      retain = false,
+      attempt = current.draft?.attempt,
+      text = current.text,
+    }: { added?: SavedImage[]; retain?: boolean; attempt?: DraftAttempt | undefined; text?: string } = {},
   ): Promise<void> {
     let draft: AttachmentDraft | undefined;
-    if (images.length) {
+    if (images.length || (current.persistText && text)) {
       draft = {
         revision: crypto.randomUUID(),
-        text: current.text,
+        text,
         images: images.map(({ reference }) => reference),
         ...(attempt && { attempt }),
       };
@@ -186,16 +190,17 @@ export function mountImageAttachments(
     current.images = images;
   }
 
-  function setScope(key: string): void {
+  function setScope(key: string, { persistText = false } = {}): void {
     if (!supported || scope?.key === key) {
       return;
     }
-    if (scope?.images.length) {
+    if (scope?.images.length || scope?.persistText) {
       input.value = '';
     }
     const current: DraftScope = {
       key,
       text: input.value,
+      persistText,
       touched: false,
       blocked: false,
       draft: undefined,
@@ -272,7 +277,7 @@ export function mountImageAttachments(
           }
         }
         if (added.length) {
-          await save(current, [...current.images, ...added], added);
+          await save(current, [...current.images, ...added], { added });
         } else if (!notice) {
           notice = 'This image is already attached.';
         }
@@ -328,9 +333,9 @@ export function mountImageAttachments(
     }
     current.text = input.value;
     current.touched = true;
-    if (current.images.length || current.busy) {
+    if (current.persistText || current.images.length || current.busy) {
       void run(current, async () => {
-        if (current.images.length && current.draft?.text !== current.text) {
+        if ((current.persistText || current.images.length) && (current.draft?.text ?? '') !== current.text) {
           await save(current, current.images);
         }
       }).catch(() => {});
@@ -381,17 +386,18 @@ export function mountImageAttachments(
     },
     submission() {
       const current = scope;
-      if (!current?.images.length) {
+      if (!current || (!current.images.length && !current.persistText)) {
         return undefined;
       }
       return {
         images: current.images.map(({ reference }) => reference),
         previousAttempt: current.draft?.attempt,
         reserve: (attempt?: DraftAttempt) =>
-          run(current, () => save(current, current.images, [], true, attempt)),
+          run(current, () => save(current, current.images, { retain: true, attempt })),
         confirm: async () => {
           await run(current, async () => {
-            await save(current, []);
+            await save(current, [], { text: '' });
+            current.text = '';
             if (scope === current) {
               renderPreviews();
             }

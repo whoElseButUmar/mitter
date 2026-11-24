@@ -17,11 +17,11 @@ const draftAttemptSchema = z
 const attachmentDraftSchema = z
   .strictObject({
     revision: z.uuid().describe('Revision used to protect against changes in another Miter tab.'),
-    text: z.string().max(4000).describe('Draft text associated with these images.'),
+    text: z.string().max(4000).describe('Unsent composer text.'),
     images: imageAttachmentsSchema,
     attempt: draftAttemptSchema.optional().describe('Submission ID to reuse if this exact draft is retried.'),
   })
-  .describe('Saved composer draft with its image references.');
+  .describe('Saved composer draft and any attached image references.');
 
 const savedImageSchema = z
   .strictObject({

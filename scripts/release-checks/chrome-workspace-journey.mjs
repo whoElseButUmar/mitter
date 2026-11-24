@@ -266,6 +266,7 @@ export async function checkWorkspaceJourney(chrome, session, projectRoot, modelP
   );
 
   await checkFollowupLayout(chrome, session);
+  await checkPlainFollowupDraft(chrome, session);
   await checkFollowupRewrite(chrome, session);
   await assertCloseInsideTab(chrome, session, '.task-tab[aria-selected=true]', 'Close Evening journal tab');
   await chrome.request(
@@ -453,6 +454,35 @@ async function checkFollowupLayout(chrome, session) {
   }
 }
 
+async function checkPlainFollowupDraft(chrome, session) {
+  const input = 'document.querySelector(".followup-composer textarea")';
+  const storageIdle =
+    'document.querySelector(".followup-composer .image-attachments")?.getAttribute("aria-busy") === "false"';
+  const draft = '  Keep the weekly view.\nUse the original dates.  ';
+  const type = (value) =>
+    evaluate(
+      chrome,
+      session,
+      `${input}.value = ${JSON.stringify(value)};
+      ${input}.dispatchEvent(new Event('input', { bubbles: true }));`,
+    );
+
+  await type(draft);
+  await waitFor(chrome, session, storageIdle, 'text-only follow-up draft is saved');
+  await reloadWorkspace(chrome, session);
+  await waitFor(
+    chrome,
+    session,
+    `${input}?.value === ${JSON.stringify(draft)} && ${storageIdle}`,
+    'reload restores the exact unsent text without attachments',
+  );
+
+  await type('');
+  await waitFor(chrome, session, storageIdle, 'the cleared follow-up draft is saved');
+  await reloadWorkspace(chrome, session);
+  await waitFor(chrome, session, `${input}?.value === "" && ${storageIdle}`, 'the cleared draft stays empty');
+}
+
 async function checkFollowupRewrite(chrome, session) {
   const followup = '.followup-composer';
   const send = `document.querySelector('${followup} button[type=submit]')`;
@@ -516,7 +546,16 @@ async function checkFollowupRewrite(chrome, session) {
   await waitFor(
     chrome,
     session,
-    'document.querySelectorAll(".followup-composer .attachment-previews li").length === 0',
+    'document.querySelectorAll(".followup-composer .attachment-previews li").length === 0 && ' +
+      'document.querySelector(".followup-composer .image-attachments")?.getAttribute("aria-busy") === "false"',
     'image removed from the draft',
+  );
+  await reloadWorkspace(chrome, session);
+  await waitFor(
+    chrome,
+    session,
+    `document.querySelector('${followup} textarea')?.value.startsWith('Requested change:') === true &&
+      !document.querySelector('${followup} .attachment-previews li')`,
+    'draft text survives the removal of its final image',
   );
 }
