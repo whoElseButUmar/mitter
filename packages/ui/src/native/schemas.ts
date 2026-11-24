@@ -19,7 +19,6 @@ export const TabItemSchema = z
     id: z.string().describe('Registered project or task identifier.'),
     label: z.string().describe('Visible tab label rendered as text.'),
     title: z.string().optional().describe('Optional full tab tooltip.'),
-    status: z.string().optional().describe('Status token used by the existing CSS state-dot selectors.'),
   })
   .describe('Workspace tab presentation data.');
 

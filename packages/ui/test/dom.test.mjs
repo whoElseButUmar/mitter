@@ -260,7 +260,7 @@ test('tab status updates preserve keyed DOM and roving focus with closing outsid
   first.focus();
   tabs.update({
     ...options,
-    items: [{ id: 'a', label: 'A changed', status: 'working' }, options.items[1]],
+    items: [{ id: 'a', label: 'A changed' }, options.items[1]],
   });
   assert.equal(root.querySelector('[role=tab]'), first);
   assert.equal(first.textContent, 'A changed');
@@ -269,7 +269,7 @@ test('tab status updates preserve keyed DOM and roving focus with closing outsid
   const close = root.querySelector('.tab-close');
   assert.equal(list.contains(close), false);
   assert.equal(close.getAttribute('aria-label'), 'Close A changed tab');
-  assert.equal(first.querySelector('i').className, 'state-dot dot-working');
+  assert.equal(first.querySelector('.state-dot'), null);
   await list.emit('keydown', { key: 'ArrowRight', target: first });
   assert.equal(document.activeElement.dataset.tabId, 'b');
   await list.emit('keydown', { key: 'Delete', target: document.activeElement });

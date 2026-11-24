@@ -370,10 +370,6 @@ export function createWorkspaceTabs(dependencies: TabActionsDependencies) {
           id: task.id,
           label: displayTaskName(task),
           title: displayTaskName(task),
-          status: taskPresentation(
-            task,
-            bridges().find((bridgeStatus) => bridgeStatus.workerId === task.id),
-          ).status,
         },
       ];
     }),

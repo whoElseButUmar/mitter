@@ -28,7 +28,6 @@ type TabEntry = {
   closeButton: HTMLButtonElement;
   closeClick: () => void;
   text: HTMLSpanElement;
-  dot: HTMLElement;
   menu?: MenuHandle;
 };
 
@@ -145,11 +144,8 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
         tab.setAttribute('role', 'tab');
         tab.id = tabId(next.kind, item.id);
         tab.dataset.tabId = item.id;
-        const dot = document.createElement('i');
-        dot.setAttribute('aria-hidden', 'true');
-        dot.className = 'state-dot';
         const text = document.createElement('span');
-        tab.append(dot, text);
+        tab.append(text);
         tab.addEventListener('click', () => {
           closeActivePopover(document);
           options.onSelect(item.id);
@@ -173,7 +169,7 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
         const closeClick = () => close(item.id);
         closeButton.addEventListener('click', closeClick);
         bar.append(closeButton);
-        entry = { tab, closeButton, closeClick, text, dot };
+        entry = { tab, closeButton, closeClick, text };
         entries.set(item.id, entry);
 
         if (next.menuItems) {
@@ -202,7 +198,6 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
 
       entry.text.textContent = item.label;
       entry.tab.title = item.title || item.label;
-      entry.dot.className = `state-dot dot-${item.status || 'idle'}`;
       const isSelected = next.selected === item.id;
       entry.tab.classList.toggle('selected', isSelected);
       entry.tab.classList.toggle('closable', !!next.onClose);

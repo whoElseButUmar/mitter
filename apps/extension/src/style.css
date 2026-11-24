@@ -363,27 +363,6 @@ p {
   padding: 4px 8px;
 }
 
-.dot-complete {
-  background: #a4bf72;
-}
-
-.dot-executing,
-.dot-verifying,
-.dot-planning,
-.dot-waiting_model,
-.dot-queued {
-  background: #d7b067;
-}
-
-.dot-blocked,
-.dot-cancelled {
-  background: #cb826b;
-}
-
-.dot-awaiting_approval {
-  background: #dfb364;
-}
-
 .task-layout {
   display: flex;
   flex-direction: column;
@@ -1452,15 +1431,6 @@ select {
   padding-top: 4px;
 }
 
-/* The tab and task body reflect the bridge, not only idle native state. */
-
-.dot-working,
-.dot-connecting,
-.dot-reconnecting,
-.dot-needs_approval {
-  background: #d7b067;
-}
-
 .status-needs_approval,
 .status-reconnecting {
   color: #e4bc8a;
@@ -1640,10 +1610,6 @@ select {
 
 .workspace-tab-row .worker-tab.closable {
   padding-inline-end: 32px;
-}
-
-.workspace-tab-row .state-dot {
-  flex: 0 0 6px;
 }
 
 .workspace-tab-row .add-tab {

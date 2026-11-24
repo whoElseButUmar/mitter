@@ -243,7 +243,7 @@ test('tab roving focus survives reorders and resets at selection or focus bounda
   first.focus();
   await list.emit('keydown', { key: 'ArrowRight', target: first });
   assert.equal(document.activeElement, second);
-  tabs.update({ ...options, items: [options.items[1], { ...options.items[0], status: 'working' }] });
+  tabs.update({ ...options, items: [options.items[1], options.items[0]] });
   assert.deepEqual(root.querySelectorAll('[role=tab]'), [second, first]);
   assert.equal(first.tabIndex, -1);
   assert.equal(second.tabIndex, 0);
