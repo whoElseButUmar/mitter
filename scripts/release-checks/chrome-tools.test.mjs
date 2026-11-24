@@ -653,8 +653,8 @@ test('source CSS checks and CSS-free release fixture modules retain canonical pr
   const originalStyle = await readFile(original.style, 'utf8');
   const taskLayout = originalStyle.match(/\.task-layout\s*\{([^}]+)\}/)?.[1];
   assert.ok(taskLayout);
-  assert.match(taskLayout, /flex:\s*1 0 auto\s*;/);
-  assert.doesNotMatch(taskLayout, /min-height:\s*[1-9]|overflow:\s*(hidden|clip)/);
+  assert.match(taskLayout, /min-height:\s*0\s*;/);
+  assert.match(originalStyle, /\.task-scroll\s*\{[^}]*overflow:\s*auto\s*;/);
   assert.match(originalStyle, /\.bridge-note\s*\{[^}]*flex-wrap:\s*wrap\s*;/);
   class Element {
     addEventListener() {}
