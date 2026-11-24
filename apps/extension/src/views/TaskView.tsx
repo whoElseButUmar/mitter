@@ -79,22 +79,29 @@ export function TaskView(props: { controller: WorkspaceController; task: Worker 
         ]}
       >
         <section class="goal-block">
-          <div class="task-heading-row">
-            <h1 title={displayTaskName(task())}>{displayTaskName(task())}</h1>
-          </div>
           <div classList={{ 'task-handoff': task().state === 'complete' }}>
-            <div
-              class="task-state"
-              data-tone={progress().tone}
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-            >
-              <h2 class="task-status-heading">{progress().heading}</h2>
-              <span class="state-summary">{progress().detail}</span>
+            <div class="task-heading-row">
+              <h1 title={displayTaskName(task())}>{displayTaskName(task())}</h1>
+              <div
+                class="task-state"
+                data-tone={progress().tone}
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                <h2 class="task-status-heading">
+                  <Show when={progress().tone === 'success'}>
+                    <Icon name="check" />
+                  </Show>
+                  {progress().heading}
+                </h2>
+                <Show when={progress().detail}>
+                  <span class="state-summary">{progress().detail}</span>
+                </Show>
+              </div>
             </div>
             <Show when={task().state === 'complete' && !task().pending}>
-              <div class="task-handoff-actions" role="group" aria-label="Project files and app">
+              <div class="task-handoff-actions" role="group" aria-label="Completed task actions">
                 <TaskAppRunButton controller={props.controller} task={task()} />
                 <button
                   type="button"

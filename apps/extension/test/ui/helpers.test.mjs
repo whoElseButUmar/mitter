@@ -79,7 +79,7 @@ test('App ready requires recorded browser and Lighthouse evidence and ignores st
   const stale = bridge({ phase: 'error', monitoring: true, reason: 'An earlier reply was unreadable.' });
   assert.deepEqual(taskStatus(worker({ state: 'complete', completion }), stale), {
     heading: 'App ready',
-    detail: 'Browser checks passed.',
+    detail: '',
     tone: 'success',
     requiresAttention: false,
   });

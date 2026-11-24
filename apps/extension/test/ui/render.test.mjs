@@ -435,7 +435,10 @@ test('task stages keep output and technical information in closed disclosures', 
     ['unverified', 'Task complete'],
   ]) {
     const html = renderTaskState(scenario);
-    assert.ok(html.includes('<h2 class="task-status-heading">' + heading + '</h2>'));
+    assert.equal(
+      /<h2 class="task-status-heading">(?:<svg\b[\s\S]*?<\/svg>)?([^<]+)<\/h2>/.exec(html)?.[1],
+      heading,
+    );
     assert.match(html, /role="status" aria-live="polite" aria-atomic="true"/);
     for (const className of ['task-output', 'task-diagnostics']) {
       const disclosure = html.match(new RegExp('<details([^>]*class="' + className + '[^>]*)>'));
@@ -654,7 +657,7 @@ test('verified results group Run and Open files with the outcome and keep full e
     buttons(handoff).map((button) => button.label),
     ['Run', 'Open files'],
   );
-  assert.match(html, /<span class="state-summary">Browser checks passed\.<\/span>/);
+  assert.doesNotMatch(handoff, /state-summary/);
   assert.equal(html.split(detail).length, 2);
   assert.ok(html.indexOf(detail) < html.indexOf(proposal));
   const evidence = /<details\b([^>]*\bclass="completion-evidence"[^>]*)>([\s\S]*?)<\/details>/.exec(html);

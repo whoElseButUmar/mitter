@@ -133,6 +133,7 @@ function mountTaskState(scenario: TaskViewScenario) {
       consoleOpen={false}
       workerError=""
       scenario={scenario}
+      savedChat={scenario === 'ready'}
       onOutputReady={(showActivity) => {
         showTaskActivity = showActivity;
       }}

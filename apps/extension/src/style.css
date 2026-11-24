@@ -427,28 +427,42 @@ p {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-sm) var(--space-lg);
-  margin-bottom: var(--space-sm);
+  gap: var(--space-md) var(--space-lg);
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid var(--line);
 }
 
-.task-handoff > .task-state {
+.task-handoff > .task-heading-row {
   flex: 1 1 12rem;
   min-width: 0;
+}
+
+.task-handoff .task-state {
+  padding: var(--space-xs) 0 0;
 }
 
 .task-handoff-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
-  gap: var(--space-sm);
+  gap: var(--space-xs);
   max-width: 100%;
 }
 
-.task-handoff-actions button {
-  min-height: 32px;
+.task-handoff-actions > button {
+  padding-inline: var(--space-sm);
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
 }
 
-.task-handoff-actions button[aria-busy='true'] {
+.task-handoff-actions > button:enabled:hover,
+.task-handoff-actions > button:focus-visible {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.task-handoff-actions > button[aria-busy='true'] {
   cursor: progress;
   color: var(--muted);
 }
@@ -457,6 +471,18 @@ p {
   font-size: 1rem;
   font-weight: 600;
   line-height: 1.4;
+}
+
+.task-handoff .task-status-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--font-small);
+}
+
+.task-handoff .task-status-heading .miter-icon {
+  width: 0.875rem;
+  height: 0.875rem;
 }
 
 .task-state[data-tone='attention'] .task-status-heading {
@@ -3385,17 +3411,6 @@ button.miter-toast-close:hover {
 
 .task-output .editor-surface {
   margin-inline: calc(-1 * var(--space-lg));
-}
-
-.task-heading-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: var(--space-md);
-}
-
-.task-heading-row > h1 {
-  flex: 1 1 160px;
 }
 
 .app-preview-launch {

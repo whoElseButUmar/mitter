@@ -651,7 +651,7 @@ async function checkTaskStages(chrome, session) {
     { scenario: 'running', heading: 'Updating project', controls: ['Pause', 'Stop'] },
     { scenario: 'checking', heading: 'Checking results', controls: ['Pause', 'Stop'] },
     { scenario: 'approval', heading: 'Approval needed', controls: ['Reject', 'Approve', 'Pause', 'Stop'] },
-    { scenario: 'ready', heading: 'App ready', controls: ['Run', 'Open files'] },
+    { scenario: 'ready', heading: 'App ready', controls: ['Run', 'Open files', 'Open chat'] },
     { scenario: 'unverified', heading: 'Task complete', controls: ['Open files'] },
     { scenario: 'unverified-app', heading: 'Task complete', controls: ['Run', 'Open files'] },
   ];
@@ -673,6 +673,33 @@ async function checkTaskStages(chrome, session) {
           session,
           '!!document.querySelector(".app-preview-launch button")',
           'existing unverified app entry',
+        );
+      }
+      if (stage.scenario === 'ready') {
+        await waitFor(
+          chrome,
+          session,
+          'document.querySelectorAll(".task-handoff-actions > button").length === 2',
+          'saved chat action',
+        );
+        assert.equal(
+          await evaluate(
+            chrome,
+            session,
+            `(() => {
+              const title = document.querySelector('.task-heading-row').getBoundingClientRect();
+              const group = document.querySelector('.task-handoff-actions');
+              const actions = group.getBoundingClientRect();
+              const besideTitle = actions.left >= title.right;
+              const belowTitle = actions.top >= title.bottom;
+              return !document.querySelector('.task-state .state-summary') &&
+                document.querySelector('.task-status-heading svg[aria-hidden="true"]').checkVisibility() &&
+                besideTitle === (innerWidth === 1024) && belowTitle === (innerWidth === 320) &&
+                [...group.querySelectorAll('button')].every(button => button.getBoundingClientRect().top === actions.top);
+            })()`,
+          ),
+          true,
+          'The compact ready state keeps actions beside the title when wide and below it when narrow.',
         );
       }
       assert.deepEqual(

@@ -3,6 +3,7 @@ import { Dynamic } from 'solid-js/web';
 import {
   AppWindow,
   Bell,
+  Check,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -40,6 +41,7 @@ export function Mark(props: { size?: number }) {
 const icons = {
   app: AppWindow,
   bell: Bell,
+  check: Check,
   close: X,
   copy: Copy,
   clear: Eraser,

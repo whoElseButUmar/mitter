@@ -17,7 +17,7 @@ function completedStatus(worker: Worker): TaskStatus {
   const completion = worker.completion;
   const evidence = completion?.evidence;
   if (isAppReady(worker)) {
-    return status('App ready', 'Browser checks passed.', 'success');
+    return status('App ready', '', 'success');
   }
 
   let detail = 'Verification was not recorded.';
