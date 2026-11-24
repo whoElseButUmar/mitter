@@ -162,17 +162,17 @@ export async function pickInPage(page: Page, url: string, signal: AbortSignal): 
     }
   }
 
-  async function collect(candidate: number) {
+  async function collect(candidate: number, append: boolean) {
     let message = '';
     try {
       const element = await capture(session, candidate, entry);
-      if (
-        !finished &&
-        !signal.aborted &&
-        matchesDocument(candidate) &&
-        elements.length < previewCaptureLimit
-      ) {
-        elements.push(element);
+      if (!finished && !signal.aborted && matchesDocument(candidate)) {
+        if (!append) {
+          elements.length = 0;
+        }
+        if (elements.length < previewCaptureLimit) {
+          elements.push(element);
+        }
       }
     } catch (error) {
       message = 'Couldn’t capture that element. Choose a smaller area and try again.';
@@ -226,7 +226,8 @@ export async function pickInPage(page: Page, url: string, signal: AbortSignal): 
           }
           break;
         case 'selected':
-          void collect(event.executionContextId).catch(() => {});
+        case 'selected-add':
+          void collect(event.executionContextId, event.payload === 'selected-add').catch(() => {});
           break;
       }
     });

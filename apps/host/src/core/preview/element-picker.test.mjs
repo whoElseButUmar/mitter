@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { previewCaptureLimit } from '../../../../../packages/protocol/src/rpc.js';
 import { browserExecutable } from '../quality/browser-executable.ts';
 import { closeBrowser, launchPreviewBrowser } from '../quality/browser-launch.ts';
 import { serveSnapshot } from './server.ts';
@@ -82,12 +83,12 @@ async function waitForPickerStatus(page, accessibleName) {
   }
 }
 
-async function optionClick(page, selector) {
-  await page.keyboard.down('Alt');
+async function modifiedClick(page, key, selector, options) {
+  await page.keyboard.down(key);
   try {
-    await page.click(selector);
+    await page.click(selector, options);
   } finally {
-    await page.keyboard.up('Alt');
+    await page.keyboard.up(key);
   }
 }
 
@@ -117,8 +118,32 @@ async function assertHighlight(page, selector) {
   }
 }
 
+const singleCapture = '1 captured. Click to replace or Shift-click to add.';
+
+test('plain clicks keep only the most recent successful capture', { skip: !chrome }, async (t) => {
+  const { page, url } = await setup(t);
+  const choice = pickInPage(page, url, AbortSignal.timeout(10_000));
+  void choice.catch(() => {});
+  await page.waitForSelector('#go');
+  await page.click('#go');
+  await waitForPickerStatus(page, singleCapture);
+  await Promise.all([page.waitForNavigation(), modifiedClick(page, 'Alt', '#go')]);
+  await waitForPickerStatus(page, singleCapture);
+
+  await page.click('#save');
+  await waitForPickerStatus(page, singleCapture);
+  await page.click('#private');
+  await waitForPickerStatus(page, 'Choose a visible area away from private fields.');
+  await pickerButton(page, 'Done');
+  assert.deepEqual(
+    (await choice).map(({ name }) => name),
+    ['Save note'],
+  );
+  assert.equal(await page.evaluate(() => document.body.dataset.activated), undefined);
+});
+
 test(
-  'Chrome captures immediately, passes Option-click, and collects captures across navigation and a modal',
+  'Chrome captures immediately, passes Option-click, and adds with Shift-click across navigation and a modal',
   { skip: !chrome },
   async (t) => {
     const { page, url } = await setup(t);
@@ -130,19 +155,19 @@ test(
     await assertHighlight(page, '#go');
     assert.equal(await page.$eval('#go', (element) => element.matches(':hover')), false);
     await page.click('#go');
-    await waitForPickerStatus(page, '1 captured. Click another element or choose Done.');
+    await waitForPickerStatus(page, singleCapture);
     assert.equal(page.url(), url);
-    await Promise.all([page.waitForNavigation(), optionClick(page, '#go')]);
-    await waitForPickerStatus(page, '1 captured. Click another element or choose Done.');
+    await Promise.all([page.waitForNavigation(), modifiedClick(page, 'Alt', '#go')]);
+    await waitForPickerStatus(page, singleCapture);
     await page.click('#private');
     await waitForPickerStatus(page, 'Choose a visible area away from private fields.');
-    await page.click('#save');
-    await waitForPickerStatus(page, '2 captured. Click another element or choose Done.');
+    await modifiedClick(page, 'Shift', '#save');
+    await waitForPickerStatus(page, '2 captured. Click to replace or Shift-click to add.');
     assert.equal(await page.evaluate(() => document.body.dataset.activated), undefined);
-    await optionClick(page, '#open-list');
+    await modifiedClick(page, 'Alt', '#open-list');
     await page.waitForSelector('dialog:modal #list');
-    await page.click('#list', { offset: { x: 8, y: 8 } });
-    await waitForPickerStatus(page, '3 captured. Click another element or choose Done.');
+    await modifiedClick(page, 'Shift', '#list', { offset: { x: 8, y: 8 } });
+    await waitForPickerStatus(page, '3 captured. Click to replace or Shift-click to add.');
     await pickerButton(page, 'Done');
     const captures = await choice;
     assert.deepEqual(
@@ -175,7 +200,34 @@ test(
   },
 );
 
-test('Enter picks the focused element; Escape and abort cancel selection', { skip: !chrome }, async (t) => {
+test('clicking can replace a full selection', { skip: !chrome }, async (t) => {
+  const { page, url } = await setup(t);
+  const choice = pickInPage(page, url, AbortSignal.timeout(15_000));
+  void choice.catch(() => {});
+  await page.waitForSelector('#go');
+  await page.click('#go');
+  await waitForPickerStatus(page, singleCapture);
+
+  for (let count = 2; count <= previewCaptureLimit; count++) {
+    await modifiedClick(page, 'Shift', '#go');
+    if (count < previewCaptureLimit) {
+      await waitForPickerStatus(page, count + ' captured. Click to replace or Shift-click to add.');
+    }
+  }
+  const fullSelection = previewCaptureLimit + ' captured. Click to replace or choose Done.';
+  await waitForPickerStatus(page, fullSelection);
+  await modifiedClick(page, 'Shift', '#go');
+  await waitForPickerStatus(page, fullSelection);
+  await page.click('#go');
+  await waitForPickerStatus(page, singleCapture);
+  await pickerButton(page, 'Done');
+  assert.deepEqual(
+    (await choice).map(({ name }) => name),
+    ['Edit note'],
+  );
+});
+
+test('Enter replaces, Shift+Enter adds, and Escape and abort cancel', { skip: !chrome }, async (t) => {
   const { page, url } = await setup(t);
   let choice = pickInPage(page, url, AbortSignal.timeout(10_000));
   void choice.catch(() => {});
@@ -183,10 +235,26 @@ test('Enter picks the focused element; Escape and abort cancel selection', { ski
   await page.keyboard.press('Tab');
   assert.equal(await page.evaluate(() => document.activeElement.id), 'go');
   await page.keyboard.press('Enter');
-  await waitForPickerStatus(page, '1 captured. Click another element or choose Done.');
+  await waitForPickerStatus(page, singleCapture);
+  await Promise.all([page.waitForNavigation(), modifiedClick(page, 'Alt', '#go')]);
+  await waitForPickerStatus(page, singleCapture);
+  await page.focus('#open-list');
+  await page.keyboard.down('Shift');
+  try {
+    await page.keyboard.press('Enter');
+  } finally {
+    await page.keyboard.up('Shift');
+  }
+  await waitForPickerStatus(page, '2 captured. Click to replace or Shift-click to add.');
+  await page.focus('#save');
+  await page.keyboard.press('Enter');
+  await waitForPickerStatus(page, singleCapture);
   await pickerButton(page, 'Done');
-  assert.equal((await choice)[0].name, 'Edit note');
-  assert.equal(page.url(), url);
+  assert.deepEqual(
+    (await choice).map(({ name }) => name),
+    ['Save note'],
+  );
+  assert.equal(await page.evaluate(() => document.body.dataset.activated), undefined);
   await page.goto('about:blank');
   choice = pickInPage(page, url, AbortSignal.timeout(10_000));
   void choice.catch(() => {});

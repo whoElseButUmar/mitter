@@ -85,12 +85,12 @@ export function mountElementPicker(origin: string, captureLimit: number) {
     if (message) {
       status.textContent = message;
     } else if (count >= captureLimit) {
-      status.textContent = count + ' captured. Choose Done to review.';
+      status.textContent = count + ' captured. Click to replace or choose Done.';
     } else if (count > 0) {
-      status.textContent = count + ' captured. Click another element or choose Done.';
+      status.textContent = count + ' captured. Click to replace or Shift-click to add.';
     } else {
       status.textContent =
-        'Click to capture. Option/Alt-click to use the app. Tab and Enter to capture by keyboard.';
+        'Click to capture. Shift-click to add. Option/Alt-click to use the app. Tab and Enter to capture.';
     }
   }
 
@@ -142,7 +142,7 @@ export function mountElementPicker(origin: string, captureLimit: number) {
   }
 
   function highlighted(element?: Element | null) {
-    if (!element || interacting || selected || count >= captureLimit || unsafe(element)) {
+    if (!element || interacting || selected || unsafe(element)) {
       outline.hidden = true;
       label.hidden = true;
       return;
@@ -180,8 +180,8 @@ export function mountElementPicker(origin: string, captureLimit: number) {
     highlighted(elementAt(pointer.x, pointer.y));
   }
 
-  function select(element: Element | null) {
-    if (selected || count >= captureLimit) {
+  function select(element: Element | null, append: boolean) {
+    if (selected || (append && count >= captureLimit)) {
       return;
     }
     if (!element || unsafe(element)) {
@@ -198,7 +198,11 @@ export function mountElementPicker(origin: string, captureLimit: number) {
     selected = element;
     highlighted();
     toolbar.style.setProperty('display', 'none', 'important');
-    notify('selected');
+    if (append) {
+      notify('selected-add');
+    } else {
+      notify('selected');
+    }
   }
 
   Reflect.set(globalThis, 'miterSettleCapture', (total: number, message: string) => {
@@ -332,8 +336,8 @@ export function mountElementPicker(origin: string, captureLimit: number) {
       if (event.key !== 'Tab') {
         event.preventDefault();
       }
-      if (event.key === 'Enter' && event.target instanceof Element) {
-        select(event.target);
+      if (event.key === 'Enter' && !event.repeat && event.target instanceof Element) {
+        select(event.target, event.shiftKey);
       }
     },
     true,
@@ -397,7 +401,7 @@ export function mountElementPicker(origin: string, captureLimit: number) {
         if (name === 'pointermove') {
           highlighted(elementAt(event.clientX, event.clientY));
         } else if (name === 'click' && event.button === 0) {
-          select(elementAt(event.clientX, event.clientY));
+          select(elementAt(event.clientX, event.clientY), event.shiftKey);
         }
       },
       true,

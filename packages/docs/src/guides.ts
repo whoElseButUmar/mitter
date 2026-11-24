@@ -336,7 +336,7 @@ export const guideTopics: DocsTopic[] = [
           {
             name: 'Point to edit',
             description:
-              'Click the highlighted element to capture it. Hold Option (Alt) to interact with the app, then release it to capture. Capture up to ten elements and choose Done to review them together before starting the edit task.',
+              'Click to capture one element and replace any previous captures. Shift-click to add more, up to ten. Option-click (Alt-click) lets you use the app. With the keyboard, Tab to an element and press Enter to capture it or Shift+Enter to add it. Choose Done to review the captures before starting the edit task.',
           },
         ],
       },
