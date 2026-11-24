@@ -231,12 +231,12 @@ async function main() {
     await checkProjectHome(chrome, fixture.session);
     await checkProjectForm(chrome, fixture.session);
     await checkConfirmation(chrome, fixture.session);
-    await checkFeedback(chrome, fixture.session);
-    console.log(
-      'PASS: file loading, retry and empty states; notification preferences and in-dialog feedback.',
-    );
     console.log(
       'PASS: styled confirmations, keyboard focus, duplicate prevention, stale ownership and cleanup.',
+    );
+    await checkFeedback(chrome, fixture.session);
+    console.log(
+      'PASS: file loading, retry and empty states; independent notification settings and in-dialog feedback.',
     );
     console.log(
       'PASS: first-run setup, missing helper, version mismatch, unsupported checks and recovery controls at 1024/320/290px.',

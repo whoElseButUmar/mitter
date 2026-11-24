@@ -40,15 +40,23 @@ export async function checkConfirmation(chrome, session) {
   try {
     await evaluate(chrome, session, fixture + '.open()');
     const initial = await inspect(chrome, session);
-    assert.equal(initial.count, 1);
-    assert.equal(initial.modal && initial.labelled && initial.described, true);
+    assert.equal(initial.count, 1, 'Open exactly one confirmation.');
+    assert.equal(
+      initial.modal && initial.labelled && initial.described,
+      true,
+      'Expose the native modal and its accessible labels.',
+    );
     assert.equal(initial.focused, 'Cancel', 'Opening the modal focuses its safe Cancel action.');
     assert.equal(
       initial.message,
       'Paste multiple lines or control characters into the real shell? This may execute commands.',
     );
-    assert.equal(await evaluate(chrome, session, fixture + '.duplicate()'), false);
-    assert.equal((await inspect(chrome, session)).count, 1);
+    assert.equal(
+      await evaluate(chrome, session, fixture + '.duplicate()'),
+      false,
+      'Reject a second confirmation.',
+    );
+    assert.equal((await inspect(chrome, session)).count, 1, 'Keep the original confirmation open.');
     await press(chrome, session, 'Tab', 9);
     assert.equal(
       (await inspect(chrome, session)).focused,
@@ -97,9 +105,9 @@ export async function checkConfirmation(chrome, session) {
     );
     await press(chrome, session, 'Escape', 27);
     const escaped = await settled(chrome, session);
-    assert.equal(escaped.result, false);
-    assert.equal(escaped.count, 0);
-    assert.equal(escaped.openerFocused, true);
+    assert.equal(escaped.result, false, 'Escape declines the confirmation.');
+    assert.equal(escaped.count, 0, 'Escape removes the confirmation.');
+    assert.equal(escaped.openerFocused, true, 'Escape restores focus to the opener.');
 
     await evaluate(chrome, session, fixture + '.open()');
     await press(chrome, session, 'Enter', 13);
@@ -107,7 +115,11 @@ export async function checkConfirmation(chrome, session) {
 
     await evaluate(chrome, session, fixture + '.open()');
     await click(chrome, session, '[data-miter-confirmation] button.primary');
-    assert.equal((await settled(chrome, session)).result, true);
+    assert.equal(
+      (await settled(chrome, session)).result,
+      true,
+      'Activate the explicitly chosen confirmation.',
+    );
 
     await evaluate(chrome, session, fixture + '.open(); ' + fixture + '.invalidate()');
     await click(chrome, session, '[data-miter-confirmation] button.primary');

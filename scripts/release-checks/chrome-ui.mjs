@@ -243,6 +243,9 @@ export async function checkDialogs(chrome, session) {
   );
   await evaluate(chrome, session, 'window.mitterReleaseFixture.dispose()');
   await checkPointEdit(chrome, session);
+  console.log(
+    'PASS: Point to edit opens the picker once, switches capture thumbnails and starts one reviewed task.',
+  );
   await checkTaskStart(chrome, session);
   await checkSetupApproval(chrome, session);
   await checkAttentionLayout(chrome, session);

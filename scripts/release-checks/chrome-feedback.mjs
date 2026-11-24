@@ -230,14 +230,25 @@ export async function checkFeedback(chrome, session) {
         '[...document.querySelectorAll("dialog .checkline span")].map(element => element.textContent.trim())',
       );
       assert.deepEqual(labels, ['Desktop notifications', 'Play a sound']);
-      const desktop = 'dialog input[type=checkbox]:first-of-type';
+      const desktopControl = 'document.querySelector("dialog input[type=checkbox]:first-of-type")';
       const sound = 'document.querySelectorAll("dialog input[type=checkbox]")[1]';
-      assert.equal(await evaluate(chrome, session, sound + '.disabled && ' + sound + '.checked'), true);
-      await evaluate(chrome, session, 'document.querySelector(' + JSON.stringify(desktop) + ').focus()');
+      const preferenceState =
+        '[' + desktopControl + '.checked, ' + sound + '.checked, ' + sound + '.disabled]';
+      assert.deepEqual(
+        await evaluate(chrome, session, preferenceState),
+        [false, true, false],
+        'Sound is available while desktop notifications are off.',
+      );
+      await evaluate(chrome, session, sound + '.focus()');
       await press(chrome, session, ' ', 32);
-      assert.equal(await evaluate(chrome, session, '!' + sound + '.disabled && ' + sound + '.checked'), true);
+      assert.deepEqual(await evaluate(chrome, session, preferenceState), [false, false, false]);
+      await evaluate(chrome, session, desktopControl + '.focus()');
       await press(chrome, session, ' ', 32);
-      assert.equal(await evaluate(chrome, session, sound + '.disabled && ' + sound + '.checked'), true);
+      assert.deepEqual(await evaluate(chrome, session, preferenceState), [true, false, false]);
+      await press(chrome, session, ' ', 32);
+      await evaluate(chrome, session, sound + '.focus()');
+      await press(chrome, session, ' ', 32);
+      assert.deepEqual(await evaluate(chrome, session, preferenceState), [false, true, false]);
       await fits(chrome, session, 'dialog .checkline, dialog button, dialog p');
 
       const saved = await evaluate(chrome, session, fixture + '.inspect().saves.length');
@@ -281,7 +292,7 @@ export async function checkFeedback(chrome, session) {
       );
       assert.equal(await evaluate(chrome, session, sound + '.checked'), true);
 
-      await evaluate(chrome, session, 'document.querySelector(' + JSON.stringify(desktop) + ').focus()');
+      await evaluate(chrome, session, desktopControl + '.focus()');
       const message =
         'Could not open the saved project. Its files are unchanged; check the folder and try again.';
       await evaluate(
@@ -296,14 +307,7 @@ export async function checkFeedback(chrome, session) {
         'notification remains in active dialog',
       );
       assert.equal(await evaluate(chrome, session, 'document.querySelectorAll(".miter-toast").length'), 1);
-      assert.equal(
-        await evaluate(
-          chrome,
-          session,
-          'document.activeElement === document.querySelector(' + JSON.stringify(desktop) + ')',
-        ),
-        true,
-      );
+      assert.equal(await evaluate(chrome, session, 'document.activeElement === ' + desktopControl), true);
       await fits(chrome, session, '.miter-toast, .miter-toast button');
       const calls = await evaluate(chrome, session, fixture + '.inspect().actionCalls');
       await activate(chrome, session, '.miter-toast-action');
@@ -320,14 +324,7 @@ export async function checkFeedback(chrome, session) {
       await press(chrome, session, 'Escape', 27);
       assert.equal(await evaluate(chrome, session, 'document.querySelectorAll(".miter-toast").length'), 0);
       assert.equal(await evaluate(chrome, session, '!!document.querySelector("dialog[open]")'), true);
-      assert.equal(
-        await evaluate(
-          chrome,
-          session,
-          'document.activeElement === document.querySelector(' + JSON.stringify(desktop) + ')',
-        ),
-        true,
-      );
+      assert.equal(await evaluate(chrome, session, 'document.activeElement === ' + desktopControl), true);
       await press(chrome, session, 'Escape', 27);
       await waitFor(chrome, session, '!document.querySelector("dialog[open]")', 'preferences dismissed');
       await evaluate(chrome, session, fixture + '.showNotifications()');
