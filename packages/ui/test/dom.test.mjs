@@ -261,11 +261,14 @@ test('tab status updates preserve keyed DOM and roving focus with closing outsid
   assert.equal(root.querySelector('[role=tab]'), first);
   assert.equal(first.textContent, 'A changed');
   assert.equal(first.querySelector('button'), null);
-  assert.equal(root.querySelector('.tabbar').contains(root.querySelector('.close-active-tab')), false);
+  const list = root.querySelector('[role=tablist]');
+  const close = root.querySelector('.tab-close');
+  assert.equal(list.contains(close), false);
+  assert.equal(close.getAttribute('aria-label'), 'Close A changed tab');
   assert.equal(first.querySelector('i').className, 'state-dot dot-working');
-  await root.querySelector('.tabbar').emit('keydown', { key: 'ArrowRight', target: first });
+  await list.emit('keydown', { key: 'ArrowRight', target: first });
   assert.equal(document.activeElement.dataset.tabId, 'b');
-  await root.querySelector('.tabbar').emit('keydown', { key: 'Delete', target: document.activeElement });
+  await list.emit('keydown', { key: 'Delete', target: document.activeElement });
   assert.deepEqual(closed, ['b']);
   tabs.dispose();
   assert.equal(root.children.length, 0);

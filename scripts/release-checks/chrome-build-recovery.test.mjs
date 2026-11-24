@@ -34,7 +34,7 @@ async function recoveredWorkspace(chrome, url, previousWorker) {
       await waitFor(
         chrome,
         sessionId,
-        '!!document.querySelector(".health-button.online")',
+        '!!document.querySelector(".settings-button:enabled")',
         'restored local helper connection',
       );
       return sessionId;
@@ -123,7 +123,7 @@ test(
       );
       assert.deepEqual(await evaluate(chrome, app.session, rows), [expected, mismatched]);
       assert.equal(
-        await evaluate(chrome, app.session, '!!document.querySelector(".health-button.online")'),
+        await evaluate(chrome, app.session, '!!document.querySelector(".settings-button:enabled")'),
         false,
       );
       const previousWorker = (await targets(chrome)).find(

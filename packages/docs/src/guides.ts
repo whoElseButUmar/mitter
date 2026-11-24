@@ -65,7 +65,7 @@ export const guideTopics: DocsTopic[] = [
           'In Chrome, open chrome://extensions and turn on Developer mode. Choose Load unpacked.',
           'Select ~/Library/Application Support/Miter/extension, or the extension folder your installer prints.',
           'Open Miter from Chrome’s Extensions menu. Pin it there if you want a shortcut in your toolbar.',
-          'Check for Helper connected. If you want to run a ChatGPT task, use the same Chrome profile where you are signed in to ChatGPT and grant site access when Chrome asks.',
+          'Open Help → Setup & connection and check for Local helper connected. For ChatGPT tasks, use the same Chrome profile where you signed in to ChatGPT and grant site access when Chrome asks.',
         ],
       },
       { kind: 'heading', text: 'Install or update with npm' },
@@ -141,7 +141,7 @@ export const guideTopics: DocsTopic[] = [
       { kind: 'heading', text: 'Switch between projects and tasks' },
       {
         kind: 'text',
-        text: 'Use the project and task tabs near the top. If you close a tab, its saved project or task stays in the library. Use Actions → All project tasks or Recently closed to find it again. The status bar can show work still running in closed tabs.',
+        text: 'Use the project and task tabs near the top. Click the × on a tab or focus it and press Delete to close it. Its saved project or task stays in the library. Use Actions → All project tasks or Recently closed to find it again. The status bar can show work still running in closed tabs.',
       },
       {
         kind: 'text',

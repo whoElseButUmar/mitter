@@ -25,6 +25,8 @@ export type TabRowOptions = {
 
 type TabEntry = {
   tab: HTMLButtonElement;
+  closeButton: HTMLButtonElement;
+  closeClick: () => void;
   text: HTMLSpanElement;
   dot: HTMLElement;
   menu?: MenuHandle;
@@ -34,7 +36,7 @@ export function tabId(kind: 'project' | 'task', id: string): string {
   return `mitter-${kind}-tab-${encodeURIComponent(id)}`;
 }
 
-/** Only tabs belong to the tablist; row actions and popups stay outside it. */
+/** Tabs and close buttons share the scroller, but only tabs belong to the tablist. */
 export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
   const document = root.ownerDocument;
   const window = requireWindow(document);
@@ -51,11 +53,14 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
   }
 
   label.id = `mitter-${initial.kind}-tabs-label`;
+  const bar = document.createElement('div');
+  bar.className = 'tabbar';
   const list = document.createElement('div');
-  list.className = 'tabbar';
+  list.className = 'tab-list';
   list.setAttribute('role', 'tablist');
   list.setAttribute('aria-labelledby', label.id);
   list.setAttribute('aria-orientation', 'horizontal');
+  bar.append(list);
   const empty = document.createElement('span');
   empty.className = 'empty-tabs';
   empty.textContent = 'No open tasks';
@@ -88,13 +93,7 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
     options.onList?.();
   };
   all.addEventListener('click', listClick);
-  const closeActive = document.createElement('button');
-  closeActive.type = 'button';
-  closeActive.className = 'close-active-tab';
-  closeActive.append(createIcon(document, 'close'));
-  const closeClick = () => close(options.selected);
-  closeActive.addEventListener('click', closeClick);
-  root.append(label, list, empty, closeActive, add, all);
+  root.append(label, bar, empty, add, all);
 
   function resetRoving(): void {
     for (const [id, entry] of entries) {
@@ -117,16 +116,21 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
     options.onClose(id);
   }
 
+  function removeEntry(entry: TabEntry): void {
+    entry.menu?.dispose();
+    entry.closeButton.removeEventListener('click', entry.closeClick);
+    entry.tab.remove();
+    entry.closeButton.remove();
+  }
+
   function update(next: TabRowOptions): void {
     options = next;
-    const hadFocus = list.contains(document.activeElement);
-    const closeHadFocus = document.activeElement === closeActive;
+    const hadFocus = bar.contains(document.activeElement);
     const selectionChanged = selectedBefore !== next.selected;
 
     for (const [id, entry] of entries) {
       if (!next.items.some((item) => item.id === id)) {
-        entry.menu?.dispose();
-        entry.tab.remove();
+        removeEntry(entry);
         entries.delete(id);
       }
     }
@@ -162,7 +166,14 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
           }
         });
         list.append(tab);
-        entry = { tab, text, dot };
+        const closeButton = document.createElement('button');
+        closeButton.type = 'button';
+        closeButton.className = 'tab-close';
+        closeButton.append(createIcon(document, 'close'));
+        const closeClick = () => close(item.id);
+        closeButton.addEventListener('click', closeClick);
+        bar.append(closeButton);
+        entry = { tab, closeButton, closeClick, text, dot };
         entries.set(item.id, entry);
 
         if (next.menuItems) {
@@ -179,12 +190,31 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
       if (current !== entry.tab) {
         list.insertBefore(entry.tab, current || null);
       }
+      const currentClose = bar.children[index + 1];
+      if (currentClose !== entry.closeButton) {
+        bar.insertBefore(entry.closeButton, currentClose || null);
+      }
+
+      // The tab and its close button occupy the same grid cell.
+      const column = String(index + 1);
+      entry.tab.style.gridColumn = column;
+      entry.closeButton.style.gridColumn = column;
 
       entry.text.textContent = item.label;
       entry.tab.title = item.title || item.label;
       entry.dot.className = `state-dot dot-${item.status || 'idle'}`;
-      entry.tab.classList.toggle('selected', next.selected === item.id);
-      entry.tab.setAttribute('aria-selected', String(next.selected === item.id));
+      const isSelected = next.selected === item.id;
+      entry.tab.classList.toggle('selected', isSelected);
+      entry.tab.classList.toggle('closable', !!next.onClose);
+      entry.tab.setAttribute('aria-selected', String(isSelected));
+      const closeLabel = 'Close ' + item.label + ' tab';
+      entry.closeButton.hidden = !next.onClose;
+      entry.closeButton.title = closeLabel + ' (keeps work saved)';
+      entry.closeButton.setAttribute('aria-label', closeLabel);
+      entry.closeButton.tabIndex = -1;
+      if (isSelected && next.onClose) {
+        entry.closeButton.tabIndex = 0;
+      }
       let controls = 'mitter-task-view';
 
       if (next.kind === 'project') {
@@ -194,15 +224,9 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
       entry.tab.setAttribute('aria-controls', controls);
     }
 
-    list.hidden = !next.items.length;
+    bar.hidden = !next.items.length;
+    list.hidden = bar.hidden;
     empty.hidden = next.items.length > 0;
-    const selected = next.items.find((item) => item.id === next.selected);
-    closeActive.hidden = !next.onClose || !selected;
-
-    if (selected) {
-      closeActive.title = 'Close ' + selected.label + ' tab (keeps work saved)';
-      closeActive.setAttribute('aria-label', 'Close ' + selected.label + ' tab');
-    }
 
     add.disabled = !!next.addDisabled || !next.canAdd;
     add.title = next.addLabel;
@@ -220,10 +244,9 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
       selectedBefore = next.selected;
     }
 
-    if (
-      (hadFocus && !list.contains(document.activeElement)) ||
-      (closeHadFocus && (selectionChanged || closeActive.hidden))
-    ) {
+    const focused = document.activeElement;
+    const hiddenClose = focused instanceof window.HTMLButtonElement && focused.hidden;
+    if (hadFocus && (!bar.contains(focused) || hiddenClose)) {
       (entries.get(next.selected)?.tab || add).focus({ preventScroll: true });
     }
   }
@@ -292,12 +315,11 @@ export function mountTabRow(root: HTMLElement, initial: TabRowOptions) {
     update,
     dispose() {
       for (const entry of entries.values()) {
-        entry.menu?.dispose();
+        removeEntry(entry);
       }
 
       add.removeEventListener('click', addClick);
       all.removeEventListener('click', listClick);
-      closeActive.removeEventListener('click', closeClick);
       list.removeEventListener('keydown', key);
       list.removeEventListener('focusout', leave);
       root.replaceChildren();

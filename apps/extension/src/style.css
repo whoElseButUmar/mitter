@@ -308,10 +308,6 @@ p {
   box-shadow: 0 1px 0 #fff1;
 }
 
-.connection.online {
-  color: var(--muted);
-}
-
 .shell-body {
   display: flex;
   min-height: 0;
@@ -1460,8 +1456,7 @@ select {
 }
 
 @media (max-width: 600px) {
-  .project-tabs,
-  .titlebar .connection.online {
+  .project-tabs {
     display: none;
   }
 
@@ -1503,6 +1498,9 @@ select {
 }
 
 .workspace-tab-row .tabbar {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: max-content;
   flex: 1;
   min-width: 0;
   min-height: 40px;
@@ -1512,12 +1510,20 @@ select {
   scrollbar-color: var(--scroll-thumb) var(--scroll-track);
 }
 
+.workspace-tab-row .tab-list:not([hidden]) {
+  display: contents;
+}
+
 .workspace-tab-row .worker-tab {
-  flex: 0 0 auto;
+  grid-row: 1;
   max-width: 210px;
   margin-bottom: 0;
   text-align: left;
   white-space: nowrap;
+}
+
+.workspace-tab-row .worker-tab.closable {
+  padding-inline-end: 32px;
 }
 
 .workspace-tab-row .state-dot {
@@ -1855,12 +1861,14 @@ select[data-enhanced] {
   color: #ead6b0;
 }
 
-.close-active-tab {
-  flex: 0 0 28px;
-  min-width: 28px;
-  width: 28px;
-  height: 28px;
-  min-height: 28px;
+.tab-close {
+  grid-row: 1;
+  z-index: 1;
+  justify-self: end;
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  margin-inline-end: 3px;
   padding: 0;
   border: 0;
   border-radius: 3px;
@@ -1870,16 +1878,17 @@ select[data-enhanced] {
   color: #bbb5a9;
 }
 
-.close-active-tab:hover {
+.tab-close:hover {
   background: #ffffff1c;
   color: #fff1d3;
 }
 
-.close-active-tab:active {
+.tab-close:active {
   background: #0004;
 }
 
-.close-active-tab[hidden] {
+.tab-close[hidden],
+.workspace-tab-row .tabbar[hidden] {
   display: none;
 }
 

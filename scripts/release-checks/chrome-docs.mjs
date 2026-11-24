@@ -4,25 +4,21 @@ import { parseContract } from '../helpers/runtime.mjs';
 import { browserTargetsSchema, sessionIdSchema } from './chrome-schemas.mjs';
 import { evaluate, waitFor, click, press } from './chrome-ui.mjs';
 
-export async function checkDocs(chrome, workspace, extensionId) {
+export async function openHelpItem(chrome, workspace, label) {
   await evaluate(
     chrome,
     workspace,
     `[...document.querySelectorAll('.statusbar .menu-trigger')]
       .find(button => button.textContent.trim() === 'Help').click()`,
   );
-  await waitFor(
-    chrome,
-    workspace,
-    `[...document.querySelectorAll('[role="menuitem"]')].some(item => item.textContent.trim() === 'Documentation')`,
-    'Documentation appears in Help',
-  );
-  await evaluate(
-    chrome,
-    workspace,
-    `[...document.querySelectorAll('[role="menuitem"]')]
-      .find(item => item.textContent.trim() === 'Documentation').click()`,
-  );
+  const item = `[...document.querySelectorAll('[role="menuitem"]')]
+    .find(item => item.textContent.trim() === ${JSON.stringify(label)})`;
+  await waitFor(chrome, workspace, 'Boolean(' + item + ')', label + ' appears in Help');
+  await evaluate(chrome, workspace, item + '.click()');
+}
+
+export async function checkDocs(chrome, workspace, extensionId) {
+  await openHelpItem(chrome, workspace, 'Documentation');
 
   const url = 'chrome-extension://' + extensionId + '/docs.html';
   const deadline = Date.now() + 5000;

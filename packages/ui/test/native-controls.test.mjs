@@ -237,8 +237,8 @@ test('tab roving focus survives reorders and resets at selection or focus bounda
     onClose() {},
   };
   const tabs = mountTabRow(root, options);
-  const list = root.querySelector('.tabbar');
-  const close = root.querySelector('.close-active-tab');
+  const list = root.querySelector('[role=tablist]');
+  const [firstClose, secondClose] = root.querySelectorAll('.tab-close');
   const [first, second] = root.querySelectorAll('[role=tab]');
   first.focus();
   await list.emit('keydown', { key: 'ArrowRight', target: first });
@@ -247,13 +247,17 @@ test('tab roving focus survives reorders and resets at selection or focus bounda
   assert.deepEqual(root.querySelectorAll('[role=tab]'), [second, first]);
   assert.equal(first.tabIndex, -1);
   assert.equal(second.tabIndex, 0);
-  assert.equal(close.getAttribute('aria-label'), 'Close Alpha tab');
+  assert.deepEqual(root.querySelectorAll('.tab-close'), [secondClose, firstClose]);
+  assert.equal(first.style.gridColumn, firstClose.style.gridColumn);
+  assert.equal(second.style.gridColumn, secondClose.style.gridColumn);
+  assert.equal(firstClose.tabIndex, 0);
 
   tabs.update({ ...options, selected: 'b' });
   assert.equal(document.activeElement, second);
   assert.equal(first.tabIndex, -1);
   assert.equal(second.tabIndex, 0);
-  assert.equal(close.getAttribute('aria-label'), 'Close Beta tab');
+  assert.equal(firstClose.tabIndex, -1);
+  assert.equal(secondClose.tabIndex, 0);
   const outside = document.createElement('input');
   root.append(outside);
   outside.focus();
@@ -269,7 +273,7 @@ test('tab roving focus survives reorders and resets at selection or focus bounda
   tabs.dispose();
 });
 
-test('closing the selected tab stays outside the tablist and restores focus after updates', async () => {
+test('each tab has its own close action and removing it restores selected-tab focus', async () => {
   const { root, document } = domFixture();
   const closed = [];
   const options = {
@@ -288,44 +292,46 @@ test('closing the selected tab stays outside the tablist and restores focus afte
   };
   const tabs = mountTabRow(root, options);
   const list = root.querySelector('[role=tablist]');
-  const close = root.querySelector('.close-active-tab');
+  const [firstClose, secondClose] = root.querySelectorAll('.tab-close');
   const add = root.querySelector('.add-tab');
   const [first, second] = list.children;
   assert.deepEqual(
     list.children.map((child) => child.getAttribute('role')),
     ['tab', 'tab'],
   );
-  assert.equal(list.contains(close), false);
+  assert.equal(list.contains(firstClose), false);
+  assert.equal(list.contains(secondClose), false);
   assert.equal(list.querySelector('.menu-popup'), null);
   assert.equal(document.body.querySelectorAll('.menu-popup').length, 2);
-  assert.equal(close.getAttribute('aria-label'), 'Close Alpha tab');
+  assert.equal(firstClose.getAttribute('aria-label'), 'Close Alpha tab');
+  assert.equal(secondClose.getAttribute('aria-label'), 'Close Beta tab');
 
   tabs.update({ ...options, selected: 'b' });
-  assert.equal(close.getAttribute('aria-label'), 'Close Beta tab');
-  close.focus();
-  await close.emit('click');
-  assert.deepEqual(closed, ['b']);
-  assert.equal(document.activeElement, close, 'Wait for the host update before moving focus');
-  tabs.update({ ...options, items: [options.items[0]] });
-  assert.equal(document.activeElement, first);
-  assert.equal(second.isConnected, false);
-  assert.equal(close.getAttribute('aria-label'), 'Close Alpha tab');
+  firstClose.focus();
+  await firstClose.emit('click');
+  assert.deepEqual(closed, ['a']);
+  assert.equal(document.activeElement, firstClose, 'Wait for the host update before moving focus');
+  tabs.update({ ...options, selected: 'b', items: [options.items[1]] });
+  assert.equal(document.activeElement, second);
+  assert.equal(second.getAttribute('aria-selected'), 'true');
+  assert.equal(first.isConnected, false);
+  assert.equal(firstClose.isConnected, false);
 
-  close.focus();
-  await close.emit('click');
+  secondClose.focus();
+  await secondClose.emit('click');
   tabs.update({ ...options, items: [], selected: '' });
-  assert.deepEqual(closed, ['b', 'a']);
+  assert.deepEqual(closed, ['a', 'b']);
   assert.equal(document.activeElement, add);
-  assert.equal(close.hidden, true);
   assert.equal(list.hidden, true);
   assert.equal(list.children.length, 0);
   assert.equal(root.querySelector('.empty-tabs').hidden, false);
 
   tabs.update({ ...options, onClose: undefined });
-  assert.equal(close.hidden, true);
+  assert.ok(root.querySelectorAll('.tab-close').every((close) => close.hidden));
   assert.equal(list.hidden, false);
   tabs.dispose();
-  assert.equal(close.listenerCount, 0);
+  assert.equal(firstClose.listenerCount, 0);
+  assert.equal(secondClose.listenerCount, 0);
 });
 
 test('library preserves local filters and observes mutated external options', async () => {

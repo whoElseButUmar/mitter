@@ -29,7 +29,7 @@ import { preparePickerHost } from './chrome-picker-host.mjs';
 import { checkTaskRecovery } from './chrome-task-recovery.mjs';
 import { checkStaticPreview } from './chrome-static-preview.mjs';
 import { checkAppRun } from './chrome-app-run.mjs';
-import { checkDocs } from './chrome-docs.mjs';
+import { checkDocs, openHelpItem } from './chrome-docs.mjs';
 import { checkConfirmation } from './chrome-confirmation.mjs';
 import { checkFeedback } from './chrome-feedback.mjs';
 import { assertNoSystemHost, installNativeHost } from './chrome-native.mjs';
@@ -152,11 +152,21 @@ async function main() {
       'packaged workspace mount',
     );
     assert.equal(await evaluate(chrome, app.session, 'chrome.runtime.id'), id);
-    await click(chrome, app.session, '.health-button');
     await waitFor(
       chrome,
       app.session,
-      'document.querySelector("dialog[open]") !== null',
+      '!!document.querySelector(".settings-button:enabled")',
+      'helper connected',
+    );
+    assert.equal(
+      await evaluate(chrome, app.session, '!!document.querySelector(".titlebar .health-button")'),
+      false,
+    );
+    await openHelpItem(chrome, app.session, 'Setup & connection');
+    await waitFor(
+      chrome,
+      app.session,
+      'document.querySelector("dialog[open] h2")?.textContent === "Setup & connection"',
       'packaged health dialog',
     );
     await press(chrome, app.session, 'Escape', 27);

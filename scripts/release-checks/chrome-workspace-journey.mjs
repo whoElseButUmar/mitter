@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { parseContract } from '../helpers/runtime.mjs';
 import { ownedTemporaryDirectory } from './chrome-native.mjs';
 import { journeyFolderName } from './chrome-picker-host.mjs';
+import { openHelpItem } from './chrome-docs.mjs';
 import { click, evaluate, press, waitFor } from './chrome-ui.mjs';
 
 const selectedProject = 'document.querySelector(".project-tab[aria-selected=true]")?.textContent.trim()';
@@ -18,6 +19,36 @@ const documentNodeSchema = z
 const elementNodeSchema = z
   .object({ nodeId: nodeIdSchema })
   .describe('The DOM node selected for file input.');
+
+async function assertCloseInsideTab(chrome, session, tabSelector, closeLabel) {
+  const closeSelector = '[aria-label=' + JSON.stringify(closeLabel) + ']';
+  assert.deepEqual(
+    await evaluate(
+      chrome,
+      session,
+      `(() => {
+      const tab = document.querySelector(${JSON.stringify(tabSelector)});
+      const close = document.querySelector(${JSON.stringify(closeSelector)});
+      if (!tab?.checkVisibility() || !close?.checkVisibility()) return {
+        width: innerWidth, tab: tab?.textContent, close: close?.getAttribute('aria-label'),
+      };
+      tab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      const tabRect = tab.getBoundingClientRect();
+      const rect = close.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return {
+        separate: !tab.closest('[role=tablist]').contains(close),
+        clickable: close.contains(hit),
+        labelClear: rect.left >= tab.querySelector('span').getBoundingClientRect().right,
+        inside: rect.left >= tabRect.left && rect.right <= tabRect.right &&
+          rect.top >= tabRect.top && rect.bottom <= tabRect.bottom,
+      };
+    })()`,
+    ),
+    { separate: true, clickable: true, labelClear: true, inside: true },
+    closeLabel + ' is clickable inside its tab, with space for the label.',
+  );
+}
 
 async function selectImage(chrome, session, input, file) {
   const { root } = parseContract(
@@ -222,8 +253,28 @@ export async function checkWorkspaceJourney(chrome, session, projectRoot, modelP
   );
 
   await checkFollowupRewrite(chrome, session);
+  await assertCloseInsideTab(chrome, session, '.task-tab[aria-selected=true]', 'Close Evening journal tab');
+  await chrome.request(
+    'Emulation.setDeviceMetricsOverride',
+    {
+      width: 320,
+      height: 900,
+      deviceScaleFactor: 1,
+      mobile: false,
+    },
+    session,
+  );
+  try {
+    await assertCloseInsideTab(chrome, session, '.task-tab[aria-selected=true]', 'Close Evening journal tab');
+  } finally {
+    await chrome.request(
+      'Emulation.setDeviceMetricsOverride',
+      { width: 1024, height: 900, deviceScaleFactor: 1, mobile: false },
+      session,
+    );
+  }
 
-  await click(chrome, session, '.health-button');
+  await openHelpItem(chrome, session, 'Setup & connection');
   await click(chrome, session, '.setup-panel .home-actions button:not(.primary)');
   await enterProject(chrome, session, path.join(parentRoot, folderName), {
     name: 'Do not rename on reopen',
@@ -231,9 +282,25 @@ export async function checkWorkspaceJourney(chrome, session, projectRoot, modelP
   assert.equal(await evaluate(chrome, session, 'document.querySelectorAll(".project-tab").length'), 2);
   assert.equal(await evaluate(chrome, session, selectedProject), folderName);
 
+  await assertCloseInsideTab(
+    chrome,
+    session,
+    '.project-tab[aria-selected=false]',
+    'Close Chrome release check tab',
+  );
+  await click(chrome, session, '[aria-label="Close Chrome release check tab"]');
+  await waitFor(
+    chrome,
+    session,
+    'document.querySelectorAll(".project-tab").length === 1',
+    'inactive tab closes',
+  );
+  assert.equal(
+    await evaluate(chrome, session, selectedProject),
+    folderName,
+    'Closing an inactive tab keeps the selected project.',
+  );
   await click(chrome, session, '[aria-label="Close Journey project tab"]');
-  await waitFor(chrome, session, 'document.querySelectorAll(".project-tab").length === 1', 'new tab closes');
-  await click(chrome, session, '.project-tab-row .close-active-tab');
   await waitFor(
     chrome,
     session,

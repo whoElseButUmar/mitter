@@ -121,27 +121,18 @@ export function WorkspaceView(props: { controller: WorkspaceController; children
             onClick={() => openLibrary('history', '')}
           />
         </Show>
-        <button
-          classList={{
-            connection: true,
-            online: connected(),
-            'health-button': true,
-          }}
-          title="Setup &amp; connection"
-          aria-haspopup="dialog"
-          onClick={() => setModal('health')}
-        >
-          <Show
-            when={connected()}
-            fallback={
-              <Show when={connectionError()} fallback="Connecting…">
-                Disconnected
-              </Show>
-            }
+        <Show when={!connected()}>
+          <button
+            class="connection health-button"
+            title="Setup &amp; connection"
+            aria-haspopup="dialog"
+            onClick={() => setModal('health')}
           >
-            Helper connected
-          </Show>
-        </button>
+            <Show when={connectionError()} fallback="Connecting…">
+              Disconnected
+            </Show>
+          </button>
+        </Show>
         <Show when={canExpand}>
           <button
             class="workspace-open"
